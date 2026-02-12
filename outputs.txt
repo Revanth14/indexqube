@@ -1,0 +1,6 @@
+rds_database_name = "indexqube"
+rds_endpoint = "indexqube-db.cc9om8gscoiw.us-east-1.rds.amazonaws.com:5432"
+s3_curated_bucket = "indexqube-curated-905161225521"
+s3_gold_bucket = "indexqube-gold-905161225521"
+s3_raw_bucket = "indexqube-raw-905161225521"
+vpc_id = "vpc-01b5645749b71a0a7"
