@@ -1,0 +1,569 @@
+============================================================
+FULL BACKFILL: 500 TICKERS × 5 YEARS
+============================================================
+Total:          503 tickers
+Already loaded: 10 tickers
+Remaining:      493 tickers
+Est. time:      ~2 minutes
+============================================================
+
+[1/493] ADP... 1004 records
+[2/493] ADSK... 1004 records
+[3/493] AEE... 1004 records
+[4/493] AEP... 1004 records
+[5/493] AES... 1004 records
+[6/493] AFL... 1004 records
+[7/493] AIG... 1004 records
+[8/493] AIZ... 1004 records
+[9/493] AJG... 1004 records
+[10/493] AKAM... 1004 records
+[11/493] ALB... 1004 records
+[12/493] ALGN... 1004 records
+[13/493] ALL... 1004 records
+[14/493] ALLE... 1004 records
+[15/493] AMAT... 1004 records
+[16/493] AMCR... 1004 records
+[17/493] AMD... 1004 records
+[18/493] AME... 1004 records
+[19/493] AMGN... 1004 records
+[20/493] AMP... 1004 records
+[21/493] AMT... 1004 records
+[22/493] AMZN... 1004 records
+[23/493] ANET... 1004 records
+[24/493] AON... 1004 records
+[25/493] AOS... 1004 records
+
+Saved 25,100 records | Elapsed: 0.1min | ETA: 3min
+
+[26/493] APA... 1004 records
+[27/493] APD... 1004 records
+[28/493] APH... 1004 records
+[29/493] APO... 1004 records
+[30/493] APTV... 1004 records
+[31/493] ARE... 1004 records
+[32/493] ATO... 1004 records
+[33/493] AVB... 1004 records
+[34/493] AVGO... 1004 records
+[35/493] AVY... 1004 records
+[36/493] AWK... 1004 records
+[37/493] AXON... 1004 records
+[38/493] AXP... 1004 records
+[39/493] AZO... 1004 records
+[40/493] BA... 1004 records
+[41/493] BAC... 1004 records
+[42/493] BALL... 693 records
+[43/493] BAX... 1004 records
+[44/493] BBY... 1004 records
+[45/493] BDX... 1004 records
+[46/493] BEN... 1004 records
+[47/493] BF-B... 0 records
+[48/493] BG... 1004 records
+[49/493] BIIB... 1003 records
+[50/493] BK... 1004 records
+
+Saved 23,784 records | Elapsed: 0.3min | ETA: 3min
+
+[51/493] BKNG... 1004 records
+[52/493] BKR... 1004 records
+[53/493] BLDR... 1004 records
+[54/493] BLK... 1004 records
+[55/493] BMY... 1004 records
+[56/493] BR... 1004 records
+[57/493] BRK-B... 0 records
+[58/493] BRO... 1004 records
+[59/493] BSX... 1004 records
+[60/493] BX... 1004 records
+[61/493] BXP... 1004 records
+[62/493] C... 1004 records
+[63/493] CAG... 1004 records
+[64/493] CAH... 1004 records
+[65/493] CARR... 1004 records
+[66/493] CAT... 1004 records
+[67/493] CB... 1004 records
+[68/493] CBOE... 1004 records
+[69/493] CBRE... 1004 records
+[70/493] CCI... 1004 records
+[71/493] CCL... 1004 records
+[72/493] CDNS... 1004 records
+[73/493] CDW... 1004 records
+[74/493] CEG... 760 records
+[75/493] CF... 1004 records
+
+Saved 23,852 records | Elapsed: 0.4min | ETA: 2min
+
+[76/493] CFG... 1004 records
+[77/493] CHD... 1004 records
+[78/493] CHRW... 1004 records
+[79/493] CHTR... 1004 records
+[80/493] CI... 1004 records
+[81/493] CINF... 1004 records
+[82/493] CL... 1004 records
+[83/493] CLX... 1004 records
+[84/493] CMCSA... 1004 records
+[85/493] CME... 1004 records
+[86/493] CMG... 1004 records
+[87/493] CMI... 1004 records
+[88/493] CMS... 1004 records
+[89/493] CNC... 1004 records
+[90/493] CNP... 1004 records
+[91/493] COF... 1004 records
+[92/493] COIN... 964 records
+[93/493] COO... 1004 records
+[94/493] COP... 1004 records
+[95/493] COR... 584 records
+[96/493] COST... 1004 records
+[97/493] CPAY... 223 records
+[98/493] CPB... 1004 records
+[99/493] CPRT... 1004 records
+[100/493] CPT... 1004 records
+
+Saved 23,859 records | Elapsed: 0.6min | ETA: 2min
+
+[101/493] CRL... 1004 records
+[102/493] CRM... 1004 records
+[103/493] CRWD... 1004 records
+[104/493] CSCO... 1004 records
+[105/493] CSGP... 1004 records
+[106/493] CSX... 1004 records
+[107/493] CTAS... 1004 records
+[108/493] CTRA... 844 records
+[109/493] CTSH... 1004 records
+[110/493] CTVA... 1004 records
+[111/493] CVS... 1004 records
+[112/493] CVX... 1004 records
+[113/493] CZR... 1004 records
+[114/493] D... 1004 records
+[115/493] DAL... 1004 records
+[116/493] DASH... 1004 records
+[117/493] DAY... 259 records
+[118/493] DD... 1004 records
+[119/493] DDOG... 1004 records
+[120/493] DE... 1004 records
+[121/493] DECK... 1004 records
+[122/493] DELL... 1004 records
+[123/493] DG... 1004 records
+[124/493] DGX... 1004 records
+[125/493] DHI... 1004 records
+
+Saved 24,195 records | Elapsed: 0.7min | ETA: 2min
+
+[126/493] DHR... 1004 records
+[127/493] DIS... 1004 records
+[128/493] DLR... 1004 records
+[129/493] DLTR... 1004 records
+[130/493] DOC... 1003 records
+[131/493] DOV... 1004 records
+[132/493] DOW... 1004 records
+[133/493] DPZ... 1004 records
+[134/493] DRI... 1004 records
+[135/493] DTE... 1004 records
+[136/493] DUK... 1004 records
+[137/493] DVA... 1004 records
+[138/493] DVN... 1004 records
+[139/493] DXCM... 1004 records
+[140/493] EA... 1004 records
+[141/493] EBAY... 1004 records
+[142/493] ECL... 1004 records
+[143/493] ED... 1004 records
+[144/493] EFX... 1004 records
+[145/493] EG... 402 records
+[146/493] EIX... 1004 records
+[147/493] EL... 1004 records
+[148/493] ELV... 660 records
+[149/493] EMN... 1004 records
+[150/493] EMR... 1004 records
+
+Saved 24,153 records | Elapsed: 0.9min | ETA: 2min
+
+[151/493] ENPH... 1004 records
+[152/493] EOG... 1004 records
+[153/493] EPAM... 1004 records
+[154/493] EQIX... 1004 records
+[155/493] EQR... 1004 records
+[156/493] EQT... 1004 records
+[157/493] ERIE... 1004 records
+[158/493] ES... 1004 records
+[159/493] ESS... 1004 records
+[160/493] ETN... 1004 records
+[161/493] ETR... 1004 records
+[162/493] EVRG... 1004 records
+[163/493] EW... 1004 records
+[164/493] EXC... 1004 records
+[165/493] EXE... 91 records
+[166/493] EXPD... 1004 records
+[167/493] EXPE... 1004 records
+[168/493] EXR... 1004 records
+[169/493] F... 1004 records
+[170/493] FANG... 1004 records
+[171/493] FAST... 1004 records
+[172/493] FCX... 1004 records
+[173/493] FDS... 1004 records
+[174/493] FDX... 1004 records
+[175/493] FE... 1004 records
+
+Saved 24,187 records | Elapsed: 1.0min | ETA: 2min
+
+[176/493] FFIV... 1004 records
+[177/493] FI... 583 records
+[178/493] FICO... 1004 records
+[179/493] FIS... 1004 records
+[180/493] FITB... 1004 records
+[181/493] FOX... 1004 records
+[182/493] FOXA... 1004 records
+[183/493] FRT... 1004 records
+[184/493] FSLR... 1004 records
+[185/493] FTNT... 1004 records
+[186/493] FTV... 1004 records
+[187/493] GD... 1004 records
+[188/493] GDDY... 1004 records
+[189/493] GE... 1004 records
+[190/493] GEHC... 529 records
+[191/493] GEN... 595 records
+[192/493] GEV... 218 records
+[193/493] GILD... 1004 records
+[194/493] GIS... 1004 records
+[195/493] GL... 1004 records
+[196/493] GLW... 1004 records
+[197/493] GM... 1004 records
+[198/493] GNRC... 1004 records
+[199/493] GOOG... 1004 records
+[200/493] GOOGL... 1004 records
+
+Saved 23,009 records | Elapsed: 1.2min | ETA: 2min
+
+[201/493] GPC... 1004 records
+[202/493] GPN... 1004 records
+[203/493] GRMN... 1004 records
+[204/493] GS... 1004 records
+[205/493] GWW... 1004 records
+[206/493] HAL... 1004 records
+[207/493] HAS... 1004 records
+[208/493] HBAN... 1004 records
+[209/493] HCA... 1004 records
+[210/493] HD... 1004 records
+[211/493] HIG... 1004 records
+[212/493] HII... 1004 records
+[213/493] HLT... 1004 records
+[214/493] HOLX... 1004 records
+[215/493] HON... 1004 records
+[216/493] HPE... 1004 records
+[217/493] HPQ... 1004 records
+[218/493] HRL... 1004 records
+[219/493] HSIC... 1004 records
+[220/493] HST... 1004 records
+[221/493] HSY... 1004 records
+[222/493] HUBB... 1004 records
+[223/493] HUM... 1004 records
+[224/493] HWM... 1004 records
+[225/493] IBM... 1004 records
+
+Saved 25,100 records | Elapsed: 1.3min | ETA: 2min
+
+[226/493] ICE... 1004 records
+[227/493] IDXX... 1004 records
+[228/493] IEX... 1004 records
+[229/493] IFF... 1004 records
+[230/493] INCY... 1004 records
+[231/493] INTC... 1004 records
+[232/493] INTU... 1004 records
+[233/493] INVH... 1004 records
+[234/493] IP... 1004 records
+[235/493] IPG... 1004 records
+[236/493] IQV... 1004 records
+[237/493] IR... 1004 records
+[238/493] IRM... 1004 records
+[239/493] ISRG... 1004 records
+[240/493] IT... 1004 records
+[241/493] ITW... 1004 records
+[242/493] IVZ... 1004 records
+[243/493] J... 1004 records
+[244/493] JBHT... 1004 records
+[245/493] JBL... 1004 records
+[246/493] JCI... 1004 records
+[247/493] JKHY... 1004 records
+[248/493] JNJ... 1004 records
+[249/493] JPM... 1004 records
+[250/493] K... 1004 records
+
+Saved 25,100 records | Elapsed: 1.5min | ETA: 1min
+
+[251/493] KDP... 1004 records
+[252/493] KEY... 1004 records
+[253/493] KEYS... 1004 records
+[254/493] KHC... 1004 records
+[255/493] KIM... 1004 records
+[256/493] KKR... 1004 records
+[257/493] KLAC... 1004 records
+[258/493] KMB... 1004 records
+[259/493] KMI... 1004 records
+[260/493] KMX... 1004 records
+[261/493] KO... 1004 records
+[262/493] KR... 1004 records
+[263/493] KVUE... 446 records
+[264/493] L... 1004 records
+[265/493] LDOS... 1004 records
+[266/493] LEN... 1004 records
+[267/493] LH... 1004 records
+[268/493] LHX... 1004 records
+[269/493] LII... 1004 records
+[270/493] LIN... 1004 records
+[271/493] LKQ... 1004 records
+[272/493] LLY... 1004 records
+[273/493] LMT... 1004 records
+[274/493] LNT... 1004 records
+[275/493] LOW... 1004 records
+
+Saved 24,542 records | Elapsed: 1.6min | ETA: 1min
+
+[276/493] LRCX... 1004 records
+[277/493] LULU... 1004 records
+[278/493] LUV... 1004 records
+[279/493] LVS... 1004 records
+[280/493] LW... 1004 records
+[281/493] LYB... 1004 records
+[282/493] LYV... 1004 records
+[283/493] MA... 1004 records
+[284/493] MAA... 1004 records
+[285/493] MAR... 1004 records
+[286/493] MAS... 1004 records
+[287/493] MCD... 1004 records
+[288/493] MCHP... 1004 records
+[289/493] MCK... 1004 records
+[290/493] MCO... 1004 records
+[291/493] MDLZ... 1004 records
+[292/493] MDT... 1004 records
+[293/493] MET... 1004 records
+[294/493] META... 820 records
+[295/493] MGM... 1004 records
+[296/493] MHK... 1004 records
+[297/493] MKC... 1004 records
+[298/493] MKTX... 1004 records
+[299/493] MLM... 1004 records
+[300/493] MMC... 1004 records
+
+Saved 24,916 records | Elapsed: 1.7min | ETA: 1min
+
+[301/493] MMM... 1004 records
+[302/493] MNST... 1004 records
+[303/493] MO... 1004 records
+[304/493] MOH... 1004 records
+[305/493] MOS... 1004 records
+[306/493] MPC... 1004 records
+[307/493] MPWR... 1004 records
+[308/493] MRK... 1004 records
+[309/493] MRNA... 1004 records
+[310/493] MS... 1004 records
+[311/493] MSCI... 1004 records
+[312/493] MSFT... 1004 records
+[313/493] MSI... 1004 records
+[314/493] MTB... 1004 records
+[315/493] MTCH... 1004 records
+[316/493] MTD... 1004 records
+[317/493] MU... 1004 records
+[318/493] NCLH... 1004 records
+[319/493] NDAQ... 1004 records
+[320/493] NDSN... 1004 records
+[321/493] NEE... 1004 records
+[322/493] NEM... 1004 records
+[323/493] NFLX... 1004 records
+[324/493] NI... 1004 records
+[325/493] NKE... 1004 records
+
+Saved 25,100 records | Elapsed: 1.9min | ETA: 1min
+
+[326/493] NOC... 1004 records
+[327/493] NOW... 1004 records
+[328/493] NRG... 1004 records
+[329/493] NSC... 1004 records
+[330/493] NTAP... 1004 records
+[331/493] NTRS... 1004 records
+[332/493] NUE... 1004 records
+[333/493] NVDA... 1004 records
+[334/493] NVR... 1004 records
+[335/493] NWS... 1004 records
+[336/493] NWSA... 1004 records
+[337/493] NXPI... 1004 records
+[338/493] O... 1004 records
+[339/493] ODFL... 1004 records
+[340/493] OKE... 1004 records
+[341/493] OMC... 1004 records
+[342/493] ON... 1004 records
+[343/493] ORCL... 1004 records
+[344/493] ORLY... 1004 records
+[345/493] OTIS... 1004 records
+[346/493] OXY... 1004 records
+[347/493] PANW... 1004 records
+[348/493] PAYC... 1004 records
+[349/493] PAYX... 1004 records
+[350/493] PCAR... 1004 records
+
+Saved 25,100 records | Elapsed: 2.1min | ETA: 1min
+
+[351/493] PCG... 1004 records
+[352/493] PEG... 1004 records
+[353/493] PEP... 1004 records
+[354/493] PFE... 1004 records
+[355/493] PFG... 1004 records
+[356/493] PG... 1004 records
+[357/493] PGR... 1004 records
+[358/493] PH... 1004 records
+[359/493] PHM... 1004 records
+[360/493] PKG... 1004 records
+[361/493] PLD... 1004 records
+[362/493] PLTR... 1004 records
+[363/493] PM... 1004 records
+[364/493] PNC... 1004 records
+[365/493] PNR... 1004 records
+[366/493] PNW... 1004 records
+[367/493] PODD... 1004 records
+[368/493] POOL... 1004 records
+[369/493] PPG... 1004 records
+[370/493] PPL... 1004 records
+[371/493] PRU... 1004 records
+[372/493] PSA... 1004 records
+[373/493] PSKY... 0 records
+[374/493] PSX... 1004 records
+[375/493] PTC... 1004 records
+
+Saved 24,096 records | Elapsed: 2.2min | ETA: 1min
+
+[376/493] PWR... 1004 records
+[377/493] PYPL... 1004 records
+[378/493] QCOM... 1004 records
+[379/493] RCL... 1004 records
+[380/493] REG... 1004 records
+[381/493] REGN... 1004 records
+[382/493] RF... 1004 records
+[383/493] RJF... 1004 records
+[384/493] RL... 1004 records
+[385/493] RMD... 1004 records
+[386/493] ROK... 1004 records
+[387/493] ROL... 1004 records
+[388/493] ROP... 1004 records
+[389/493] ROST... 1004 records
+[390/493] RSG... 1004 records
+[391/493] RTX... 1004 records
+[392/493] RVTY... 438 records
+[393/493] SBAC... 1004 records
+[394/493] SBUX... 1004 records
+[395/493] SCHW... 1004 records
+[396/493] SHW... 1004 records
+[397/493] SJM... 1004 records
+[398/493] SLB... 1004 records
+[399/493] SMCI... 1004 records
+[400/493] SNA... 1004 records
+
+Saved 24,534 records | Elapsed: 2.4min | ETA: 1min
+
+[401/493] SNPS... 1004 records
+[402/493] SO... 1004 records
+[403/493] SOLV... 219 records
+[404/493] SPG... 1004 records
+[405/493] SPGI... 1004 records
+[406/493] SRE... 1004 records
+[407/493] STE... 1004 records
+[408/493] STLD... 1004 records
+[409/493] STT... 1004 records
+[410/493] STX... 1004 records
+[411/493] STZ... 1004 records
+[412/493] SW... 152 records
+[413/493] SWK... 1004 records
+[414/493] SWKS... 1004 records
+[415/493] SYF... 1004 records
+[416/493] SYK... 1004 records
+[417/493] SYY... 1004 records
+[418/493] T... 1004 records
+[419/493] TAP... 1004 records
+[420/493] TDG... 1004 records
+[421/493] TDY... 1004 records
+[422/493] TECH... 1004 records
+[423/493] TEL... 1004 records
+[424/493] TER... 1004 records
+[425/493] TFC... 1004 records
+
+Saved 23,463 records | Elapsed: 2.5min | ETA: 0min
+
+[426/493] TGT... 1004 records
+[427/493] TJX... 1004 records
+[428/493] TKO... 357 records
+[429/493] TMO... 1004 records
+[430/493] TMUS... 1004 records
+[431/493] TPL... 1004 records
+[432/493] TPR... 1004 records
+[433/493] TRGP... 1004 records
+[434/493] TRMB... 1004 records
+[435/493] TROW... 1004 records
+[436/493] TRV... 1004 records
+[437/493] TSCO... 1004 records
+[438/493] TSLA... 1004 records
+[439/493] TSN... 1004 records
+[440/493] TT... 1004 records
+[441/493] TTD... 1004 records
+[442/493] TTWO... 1004 records
+[443/493] TXN... 1004 records
+[444/493] TXT... 1004 records
+[445/493] TYL... 1004 records
+[446/493] UAL... 1004 records
+[447/493] UBER... 1004 records
+[448/493] UDR... 1004 records
+[449/493] UHS... 1004 records
+[450/493] ULTA... 1004 records
+
+Saved 24,453 records | Elapsed: 2.7min | ETA: 0min
+
+[451/493] UNH... 1004 records
+[452/493] UNP... 1004 records
+[453/493] UPS... 1004 records
+[454/493] URI... 1004 records
+[455/493] USB... 1004 records
+[456/493] V... 1004 records
+[457/493] VICI... 1004 records
+[458/493] VLO... 1004 records
+[459/493] VLTO... 343 records
+[460/493] VMC... 1004 records
+[461/493] VRSK... 1004 records
+[462/493] VRSN... 1004 records
+[463/493] VRTX... 1004 records
+[464/493] VST... 1004 records
+[465/493] VTR... 1004 records
+[466/493] VTRS... 1004 records
+[467/493] VZ... 1004 records
+[468/493] WAB... 1004 records
+[469/493] WAT... 1004 records
+[470/493] WBA... 1004 records
+[471/493] WBD... 713 records
+[472/493] WDAY... 1004 records
+[473/493] WDC... 1004 records
+[474/493] WEC... 1004 records
+[475/493] WELL... 1004 records
+
+Saved 24,148 records | Elapsed: 2.8min | ETA: 0min
+
+[476/493] WFC... 1004 records
+[477/493] WM... 1004 records
+[478/493] WMB... 1004 records
+[479/493] WMT... 1004 records
+[480/493] WRB... 1004 records
+[481/493] WSM... 1004 records
+[482/493] WST... 1004 records
+[483/493] WTW... 776 records
+[484/493] WY... 1004 records
+[485/493] WYNN... 1004 records
+[486/493] XEL... 1004 records
+[487/493] XOM... 1004 records
+[488/493] XYL... 1004 records
+[489/493] XYZ... 17 records
+[490/493] YUM... 1004 records
+[491/493] ZBH... 1004 records
+[492/493] ZBRA... 1004 records
+[493/493] ZTS... 1004 records
+
+Saved final batch: 16,857 records
+
+============================================================
+BACKFILL COMPLETE
+============================================================
+Total records:  482,053
+Total tickers:  500
+Time taken:     2.9 minutes
+Failed:         0 tickers
