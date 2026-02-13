@@ -4,11 +4,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import create_engine, text
 import pandas as pd
 import os
+import requests
+from pathlib import Path
 from dotenv import load_dotenv
-from datetime import date
+from datetime import date, datetime
 from typing import Optional
 
-load_dotenv('../.env')
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+
+POLYGON_BASE = "https://api.polygon.io"
 
 app = FastAPI(
     title="IndexQube API",
@@ -24,9 +28,13 @@ app.add_middleware(
 )
 
 def get_engine():
+    user = os.getenv("RDS_USER", "postgres")
+    password = os.getenv("RDS_PASSWORD", "")
+    host = os.getenv("RDS_HOST", "localhost")
+    port = os.getenv("RDS_PORT", "5432")
+    db = os.getenv("RDS_DB", "indexqube")
     return create_engine(
-        f"postgresql://{os.getenv('RDS_USER')}:{os.getenv('RDS_PASSWORD')}"
-        f"@{os.getenv('RDS_HOST')}:{os.getenv('RDS_PORT')}/{os.getenv('RDS_DB')}"
+        f"postgresql://{user}:{password}@{host}:{port}/{db}"
     )
 
 # ─────────────────────────────────────────
@@ -343,6 +351,200 @@ def get_market_data(
             for _, row in data.iterrows()
         ]
     }
+
+
+# ─────────────────────────────────────────
+# LIVE MARKETS (Polygon / Massive API)
+# Uses Snapshot API for today's bar + last trade (fresher than prev-only)
+# ─────────────────────────────────────────
+def _fetch_snapshot(api_key: str, polygon_ticker: str) -> dict:
+    """
+    Fetch single-ticker snapshot: today's bar, last trade, prev day.
+    Returns dict with price, change_pct, volume, updated_at, source.
+    """
+    out = {"price": None, "change_pct": None, "volume": None, "updated_at": None, "source": None}
+    try:
+        r = requests.get(
+            f"{POLYGON_BASE}/v2/snapshot/locale/us/markets/stocks/tickers/{polygon_ticker}",
+            params={"apiKey": api_key},
+            timeout=5,
+        )
+        if not r.ok:
+            return out
+        data = r.json()
+        ticker_obj = data.get("ticker") or data.get("results")
+        if not ticker_obj:
+            return out
+
+        prev_day = ticker_obj.get("prevDay") or {}
+        day = ticker_obj.get("day") or {}
+        last_trade = ticker_obj.get("lastTrade") or {}
+        prev_close = float(prev_day.get("c", 0) or 0)
+
+        # Price: lastTrade > today's day.c > prev_day.c
+        price = None
+        if last_trade.get("p") is not None:
+            price = float(last_trade["p"])
+            out["source"] = "live"
+        elif day.get("c") is not None:
+            price = float(day["c"])
+            out["source"] = "day_bar"
+        elif prev_close > 0:
+            price = prev_close
+            out["source"] = "prev_close"
+
+        if price is not None:
+            out["price"] = round(price, 2)
+
+        # Change %
+        if ticker_obj.get("todaysChangePerc") is not None:
+            out["change_pct"] = round(float(ticker_obj["todaysChangePerc"]), 2)
+        elif prev_close and prev_close > 0 and price:
+            out["change_pct"] = round((price - prev_close) / prev_close * 100, 2)
+
+        # Volume: day.v (today's) or prev_day.v; lastTrade.s is single-trade size
+        v = day.get("v") or prev_day.get("v")
+        if v is not None:
+            out["volume"] = int(v)
+
+        ts = last_trade.get("t") or last_trade.get("sip_timestamp") or day.get("t")
+        if ts:
+            try:
+                out["updated_at"] = datetime.fromtimestamp(ts / 1e9).isoformat()
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return out
+
+
+@app.get("/live/markets")
+def get_live_markets():
+    """Live prices for S&P 500 (SPY) and NASDAQ-100 (QQQ) via Polygon Snapshot API."""
+    api_key = os.getenv("MASSIVE_API_KEY")
+    if not api_key:
+        raise HTTPException(
+            status_code=503,
+            detail="MASSIVE_API_KEY not configured",
+        )
+
+    benchmarks = [
+        {"ticker": "SPY", "name": "S&P 500", "index": "S&P 500"},
+        {"ticker": "QQQ", "name": "NASDAQ-100", "index": "NASDAQ"},
+    ]
+    result = []
+
+    for b in benchmarks:
+        ticker = b["ticker"]
+        item = {
+            "ticker": ticker,
+            "name": b["name"],
+            "index": b["index"],
+            "price": None,
+            "change_pct": None,
+            "volume": None,
+            "updated_at": None,
+            "source": None,
+        }
+        snap = _fetch_snapshot(api_key, ticker)
+        item.update(snap)
+
+        if item["price"] is None:
+            try:
+                engine = get_engine()
+                with engine.connect() as conn:
+                    row = conn.execute(
+                        text("""
+                            SELECT close, date FROM market_data_eod
+                            WHERE ticker = :ticker AND provider = 'massive'
+                            ORDER BY date DESC LIMIT 1
+                        """),
+                        {"ticker": ticker},
+                    ).fetchone()
+                if row:
+                    item["price"] = round(float(row[0]), 2)
+                    item["updated_at"] = str(row[1])
+                    item["source"] = "database"
+            except Exception:
+                pass
+
+        result.append(item)
+
+    return {"markets": result}
+
+
+TOP10_US_STOCKS = [
+    {"ticker": "AAPL", "name": "Apple"},
+    {"ticker": "MSFT", "name": "Microsoft"},
+    {"ticker": "GOOGL", "name": "Alphabet"},
+    {"ticker": "AMZN", "name": "Amazon"},
+    {"ticker": "NVDA", "name": "NVIDIA"},
+    {"ticker": "META", "name": "Meta"},
+    {"ticker": "TSLA", "name": "Tesla"},
+    {"ticker": "BRK.B", "name": "Berkshire"},
+    {"ticker": "UNH", "name": "UnitedHealth"},
+    {"ticker": "JPM", "name": "JPMorgan"},
+]
+
+
+@app.get("/live/markets/top10")
+def get_live_top10():
+    """Live prices for top 10 US stocks by market cap via Polygon Snapshot API."""
+    api_key = os.getenv("MASSIVE_API_KEY")
+    if not api_key:
+        raise HTTPException(
+            status_code=503,
+            detail="MASSIVE_API_KEY not configured",
+        )
+
+    # Polygon uses BRK-B for Berkshire Class B (hyphen in API path)
+    polygon_ticker_map = {"BRK.B": "BRK-B"}
+
+    result = []
+    for b in TOP10_US_STOCKS:
+        ticker = b["ticker"]
+        polygon_ticker = polygon_ticker_map.get(ticker, ticker)
+        item = {
+            "ticker": ticker,
+            "name": b["name"],
+            "price": None,
+            "change_pct": None,
+            "source": None,
+        }
+        snap = _fetch_snapshot(api_key, polygon_ticker)
+        item["price"] = snap.get("price")
+        item["change_pct"] = snap.get("change_pct")
+        item["source"] = snap.get("source")
+
+        # Berkshire fallback: try BRK.B if BRK-B failed
+        if item["price"] is None and ticker == "BRK.B":
+            snap_b = _fetch_snapshot(api_key, "BRK.B")
+            if snap_b.get("price") is not None:
+                item["price"] = snap_b["price"]
+                item["change_pct"] = snap_b.get("change_pct")
+                item["source"] = snap_b.get("source")
+
+        if item["price"] is None:
+            try:
+                engine = get_engine()
+                with engine.connect() as conn:
+                    row = conn.execute(
+                        text("""
+                            SELECT close FROM market_data_eod
+                            WHERE ticker = :ticker AND provider = 'massive'
+                            ORDER BY date DESC LIMIT 1
+                        """),
+                        {"ticker": ticker},
+                    ).fetchone()
+                if row:
+                    item["price"] = round(float(row[0]), 2)
+                    item["source"] = "database"
+            except Exception:
+                pass
+
+        result.append(item)
+
+    return {"stocks": result}
 
 
 #validation
