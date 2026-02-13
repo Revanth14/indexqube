@@ -1,0 +1,20 @@
+# Frontend (deployed separately)
+frontend/
+node_modules/
+.next/
+
+# Infrastructure / CI
+terraform/
+airflow/
+.github/
+
+# Local dev
+.venv/
+venv/
+__pycache__/
+.vscode/
+
+# Build artifacts
+*.tfstate
+*.tfstate.backup
+outputs.txt

@@ -28,6 +28,10 @@ crash.log
 .DS_Store
 Thumbs.db
 
+# Node / Frontend
+node_modules/
+.next/
+
 # Secrets
 *.pem
 *.key
