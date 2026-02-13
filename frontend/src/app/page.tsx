@@ -1,57 +1,57 @@
-<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>IndexQube - Index Calculation Infrastructure</title>
-    <link rel="stylesheet" href="styles.css" />
-  </head>
-  <body>
-    <div class="page">
-      <header class="topbar">
-        <a class="logo" href="#" aria-label="IndexQube home">
-          <span class="logo-mark">IQ</span>
+import Link from "next/link";
+
+export default function HomePage() {
+  return (
+    <div className="page">
+      <header className="topbar">
+        <Link className="logo" href="/" aria-label="IndexQube home">
+          <span className="logo-mark">IQ</span>
           IndexQube
-        </a>
-        <nav class="nav">
-          <a href="#platform">Platform</a>
-          <a href="#opportunity">Opportunity</a>
-          <a href="#roadmap">Roadmap</a>
-          <a href="#founder">Founder</a>
-          <a href="#contact">Contact</a>
+        </Link>
+        <nav className="nav">
+          <Link href="#platform">Platform</Link>
+          <Link href="#opportunity">Opportunity</Link>
+          <Link href="#roadmap">Roadmap</Link>
+          <Link href="/dashboard">Dashboard</Link>
+          <Link href="#founder">Founder</Link>
+          <Link href="#contact">Contact</Link>
         </nav>
       </header>
 
       <main>
-        <section class="hero" id="platform">
-          <div class="hero-copy">
-            <p class="eyebrow">IndexQube platform</p>
+        <section className="hero" id="platform">
+          <div className="hero-copy">
+            <p className="eyebrow">IndexQube platform</p>
             <h1>Index infrastructure that keeps every data source honest.</h1>
-            <p class="lead">
+            <p className="lead">
               IndexQube is a financial technology platform for factor-based,
               volatility control, and defined outcome index calculation. We
               validate multiple providers, automate quality controls, and give
               you audit-ready lineage from ingestion to publication.
             </p>
-            <div class="cta-row">
-              <a class="button primary" href="#contact">Request a demo</a>
-              <a class="button secondary" href="#solution">See how it works</a>
+            <div className="cta-row">
+              <Link className="button primary" href="#contact">
+                Request a demo
+              </Link>
+              <Link className="button secondary" href="#solution">
+                See how it works
+              </Link>
             </div>
-            <div class="hero-notes">
+            <div className="hero-notes">
               <span>Multi-provider validation</span>
               <span>Methodology versioning</span>
               <span>Provider migration workflows</span>
             </div>
           </div>
-          <div class="hero-panel">
-            <div class="terminal">
-              <div class="terminal-bar">
-                <span></span>
-                <span></span>
-                <span></span>
+          <div className="hero-panel">
+            <div className="terminal">
+              <div className="terminal-bar">
+                <span />
+                <span />
+                <span />
                 <p>indexqube run</p>
               </div>
-              <div class="terminal-body">
+              <div className="terminal-body">
                 <p>$ indexqube validate --index vol-control</p>
                 <p>Detecting providers... bloomberg, refinitiv</p>
                 <p>Running 38 quality checks...</p>
@@ -59,16 +59,16 @@
                 <p>Publishing index series... ready</p>
               </div>
             </div>
-            <div class="stat-grid">
-              <div class="stat">
+            <div className="stat-grid">
+              <div className="stat">
                 <strong>Real-time parity</strong>
                 <span>Monitor provider deltas before they hit production.</span>
               </div>
-              <div class="stat">
+              <div className="stat">
                 <strong>Audit trails</strong>
                 <span>Every calculation step is stored and replayable.</span>
               </div>
-              <div class="stat">
+              <div className="stat">
                 <strong>Always-on</strong>
                 <span>Swap providers without downtime or data loss.</span>
               </div>
@@ -76,21 +76,21 @@
           </div>
         </section>
 
-        <section class="split" id="opportunity">
-          <div class="split-card">
+        <section className="split" id="opportunity">
+          <div className="split-card">
             <h2>The opportunity</h2>
             <p>
               Index programs are expanding fast, but operational overhead is
               not. Teams need scale, transparency, and clean provider migrations
               without rebuilding core infrastructure.
             </p>
-            <div class="pill-grid">
+            <div className="pill-grid">
               <span>Index demand is growing</span>
               <span>Data quality expectations rising</span>
               <span>Provider swaps are inevitable</span>
             </div>
           </div>
-          <div class="split-card">
+          <div className="split-card">
             <h2>The problem</h2>
             <ul>
               <li>Weeks lost reconciling provider data</li>
@@ -101,15 +101,15 @@
           </div>
         </section>
 
-        <section class="section" id="solution">
-          <div class="section-head">
+        <section className="section" id="solution">
+          <div className="section-head">
             <h2>Our solution</h2>
             <p>
               One platform to design, validate, and publish custom indices with
               multi-provider confidence built in.
             </p>
           </div>
-          <div class="feature-grid">
+          <div className="feature-grid">
             <article>
               <h3>Index design studio</h3>
               <p>
@@ -134,96 +134,94 @@
           </div>
         </section>
 
-        <section class="section" id="capabilities">
-          <div class="section-head">
+        <section className="section" id="capabilities">
+          <div className="section-head">
             <h2>Enterprise-grade capabilities</h2>
             <p>
               Infrastructure that stays reliable through market stress, audits,
               and provider transitions.
             </p>
           </div>
-          <div class="cap-grid">
-            <div class="cap">
+          <div className="cap-grid">
+            <div className="cap">
               <h4>Multi-provider ingestion</h4>
-              <p>
-                Automated normalization for prices, corp actions, and metadata.
-              </p>
+              <p>Automated normalization for prices, corp actions, and metadata.</p>
             </div>
-            <div class="cap">
+            <div className="cap">
               <h4>Controlled methodology changes</h4>
               <p>Versioned releases with approval and impact reporting.</p>
             </div>
-            <div class="cap">
+            <div className="cap">
               <h4>Resilient publishing</h4>
               <p>Staged release pipelines with confidence scoring.</p>
             </div>
-            <div class="cap">
+            <div className="cap">
               <h4>Provider migration suite</h4>
               <p>Parallel runs, parity dashboards, and rollback plans.</p>
             </div>
-            <div class="cap">
+            <div className="cap">
               <h4>Audit-ready reporting</h4>
               <p>Lineage logs and evidence bundles for internal oversight.</p>
             </div>
-            <div class="cap">
+            <div className="cap">
               <h4>Risk-based QC</h4>
               <p>Thresholds, controls, and alerts tuned by index type.</p>
             </div>
           </div>
         </section>
 
-        <section class="section" id="roadmap">
-          <div class="section-head">
+        <section className="section" id="roadmap">
+          <div className="section-head">
             <h2>Roadmap</h2>
             <p>Where IndexQube is headed in 2026.</p>
           </div>
-          <div class="roadmap">
-            <div class="roadmap-item">
-              <p class="quarter">Q1 2026</p>
+          <div className="roadmap">
+            <div className="roadmap-item">
+              <p className="quarter">Q1 2026</p>
               <h3>Private beta</h3>
               <p>
                 Core index engine, QC rules, provider comparison dashboards.
               </p>
             </div>
-            <div class="roadmap-item">
-              <p class="quarter">Q2 2026</p>
+            <div className="roadmap-item">
+              <p className="quarter">Q2 2026</p>
               <h3>Program launch</h3>
               <p>
                 Workflow approvals, audit packs, and curated data pipelines.
               </p>
             </div>
-            <div class="roadmap-item">
-              <p class="quarter">Q3 2026</p>
+            <div className="roadmap-item">
+              <p className="quarter">Q3 2026</p>
               <h3>Enterprise rollout</h3>
               <p>Migration suite, SLA monitoring, expanded provider catalog.</p>
             </div>
-            <div class="roadmap-item">
-              <p class="quarter">Q4 2026</p>
+            <div className="roadmap-item">
+              <p className="quarter">Q4 2026</p>
               <h3>Scale</h3>
               <p>Regional redundancy, multi-cloud readiness, partner APIs.</p>
             </div>
           </div>
         </section>
 
-        <section class="section" id="founder">
-          <div class="founder">
-            <div class="founder-card">
-              <div class="avatar">R</div>
+        <section className="section" id="founder">
+          <div className="founder">
+            <div className="founder-card">
+              <div className="avatar">R</div>
               <div>
                 <h2>Hi, I am Revanth.</h2>
                 <p>
-                  I have spent years building index workflows and data
-                  pipelines. IndexQube is the infrastructure I wanted when I had
-                  to reconcile multiple providers under tight deadlines.
+                  I have spent years building index workflows and data pipelines.
+                  IndexQube is the infrastructure I wanted when I had to
+                  reconcile multiple providers under tight deadlines.
                 </p>
-                <div class="founder-tags">
+                <div className="founder-tags">
                   <span>Financial data systems</span>
                   <span>Index methodology design</span>
                   <span>Enterprise delivery</span>
                 </div>
               </div>
             </div>
-            <div class="founder-panel">
+            <div className="founder-panel">
               <h3>What we believe</h3>
               <ul>
                 <li>Data quality is an engineering discipline.</li>
@@ -234,27 +232,31 @@
           </div>
         </section>
 
-        <section class="cta" id="contact">
+        <section className="cta" id="contact">
           <div>
             <h2>Ready to design resilient indices?</h2>
             <p>Join the design partner program for 2026.</p>
           </div>
-          <div class="cta-row">
-            <a class="button primary" href="mailto:hello@indexqube.com"
-              >Request early access</a
+          <div className="cta-row">
+            <a className="button primary" href="mailto:hello@indexqube.com">
+              Request early access
+            </a>
+            <a
+              className="button secondary"
+              href="https://www.linkedin.com"
+              target="_blank"
+              rel="noopener noreferrer"
             >
-            <a class="button secondary" href="https://www.linkedin.com"
-              >LinkedIn</a
-            >
+              LinkedIn
+            </a>
           </div>
         </section>
       </main>
 
-      <footer class="footer">
+      <footer className="footer">
         <p>IndexQube. Financial index infrastructure built for resilience.</p>
         <p>Based in NYC. Serving global asset managers and index providers.</p>
       </footer>
     </div>
-    <script src="main.js" defer></script>
-  </body>
-</html>
+  );
+}
