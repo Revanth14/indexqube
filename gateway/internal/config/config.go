@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -27,8 +28,12 @@ type ServerConfig struct {
 	ReadTimeout       time.Duration
 	// WriteTimeout MUST be 0 for the streaming proxy. Setting any non-zero
 	// value caps the maximum stream duration and breaks long generations.
-	WriteTimeout time.Duration
-	IdleTimeout  time.Duration
+	WriteTimeout              time.Duration
+	IdleTimeout               time.Duration
+	CORSEnabled               bool
+	CORSAllowedOrigins        []string
+	CORSAllowChromeExtensions bool
+	CORSMaxAge                time.Duration
 }
 
 // TelemetryConfig drives observability initialization.
@@ -110,6 +115,14 @@ func Load() (*AppConfig, error) {
 			// Slowloris is mitigated by ReadHeaderTimeout + IdleTimeout instead.
 			WriteTimeout: getEnvAsDuration("SERVER_WRITE_TIMEOUT", 0),
 			IdleTimeout:  getEnvAsDuration("SERVER_IDLE_TIMEOUT", 120*time.Second),
+			CORSEnabled:  getEnvAsBool("CORS_ENABLED", true),
+			CORSAllowedOrigins: getEnvAsCSV("CORS_ALLOWED_ORIGINS", []string{
+				"http://localhost:3000",
+				"http://localhost:5173",
+				"http://localhost:8080",
+			}),
+			CORSAllowChromeExtensions: getEnvAsBool("CORS_ALLOW_CHROME_EXTENSIONS", getEnvWithDefault("APP_ENV", "development") != "production"),
+			CORSMaxAge:                getEnvAsDuration("CORS_MAX_AGE", 10*time.Minute),
 		},
 		Telemetry: TelemetryConfig{
 			ServiceName:    getEnvWithDefault("OTEL_SERVICE_NAME", "indexqube-gateway"),
@@ -229,4 +242,23 @@ func getEnvAsBool(key string, fallback bool) bool {
 	default:
 		return fallback
 	}
+}
+
+func getEnvAsCSV(key string, fallback []string) []string {
+	valStr := os.Getenv(key)
+	if valStr == "" {
+		return fallback
+	}
+	parts := strings.Split(valStr, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	if len(out) == 0 {
+		return fallback
+	}
+	return out
 }

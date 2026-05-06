@@ -125,6 +125,7 @@ func main() {
 // chain onto the public-facing port.
 func buildPublicServer(cfg *config.AppConfig, p *proxy.Proxy, tp *telemetry.Provider, logger *slog.Logger) *http.Server {
 	// Chain order (outermost first):
+	//   CORS           -- answer browser preflight and expose optimizer stats
 	//   otelhttp       -- create root span; extract W3C TraceContext from inbound headers
 	//   RouteResolver  -- stamp matched ServeMux pattern onto ctx so
 	//                     Logging and Metrics can label by bounded route
@@ -134,6 +135,12 @@ func buildPublicServer(cfg *config.AppConfig, p *proxy.Proxy, tp *telemetry.Prov
 	//   Metrics        -- HTTP counter + histogram + active-streams gauge
 	//   (innermost)    -- proxy mux dispatches to handler
 	handler := middleware.Chain(p.Mux(),
+		middleware.CORS(middleware.CORSConfig{
+			Enabled:               cfg.Server.CORSEnabled,
+			AllowedOrigins:        cfg.Server.CORSAllowedOrigins,
+			AllowChromeExtensions: cfg.Server.CORSAllowChromeExtensions,
+			MaxAge:                cfg.Server.CORSMaxAge,
+		}),
 		// otelhttp uses the globally-registered TracerProvider that
 		// telemetry.Init installed; no explicit binding needed.
 		func(next http.Handler) http.Handler { return otelhttp.NewHandler(next, "gateway") },

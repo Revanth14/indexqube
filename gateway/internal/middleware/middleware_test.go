@@ -242,6 +242,83 @@ func TestRouteResolver_StampsPattern(t *testing.T) {
 	}
 }
 
+func TestCORS_AllowsChromeExtensionPreflight(t *testing.T) {
+	t.Parallel()
+	called := false
+	h := CORS(CORSConfig{
+		Enabled:               true,
+		AllowChromeExtensions: true,
+		MaxAge:                10,
+	})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodOptions, "/v1/optimize", nil)
+	req.Header.Set("Origin", "chrome-extension://abcdef")
+	req.Header.Set("Access-Control-Request-Method", "POST")
+	h.ServeHTTP(rec, req)
+
+	if called {
+		t.Fatal("preflight should not call next handler")
+	}
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status=%d want 204", rec.Code)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "chrome-extension://abcdef" {
+		t.Fatalf("allow-origin=%q", got)
+	}
+	if got := rec.Header().Get("Access-Control-Expose-Headers"); !strings.Contains(got, "X-IQ-Reduction-Ratio") {
+		t.Fatalf("expose headers missing optimizer stats: %q", got)
+	}
+}
+
+func TestCORS_AllowsConfiguredOrigin(t *testing.T) {
+	t.Parallel()
+	h := CORS(CORSConfig{
+		Enabled:        true,
+		AllowedOrigins: []string{"http://localhost:5173"},
+	})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-IQ-Reduction-Ratio", "0.750000")
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/optimize", nil)
+	req.Header.Set("Origin", "http://localhost:5173")
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200", rec.Code)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "http://localhost:5173" {
+		t.Fatalf("allow-origin=%q", got)
+	}
+}
+
+func TestCORS_RejectsDisallowedPreflight(t *testing.T) {
+	t.Parallel()
+	h := CORS(CORSConfig{
+		Enabled:        true,
+		AllowedOrigins: []string{"http://localhost:5173"},
+	})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodOptions, "/v1/optimize", nil)
+	req.Header.Set("Origin", "https://evil.example")
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status=%d want 403", rec.Code)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Fatalf("unexpected allow-origin=%q", got)
+	}
+}
+
 // scrapeMetrics renders the Prometheus exposition for assertions.
 func scrapeMetrics(t *testing.T, tp *telemetry.Provider) string {
 	t.Helper()
