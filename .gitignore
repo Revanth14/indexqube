@@ -1,0 +1,33 @@
+# Binaries
+bin/
+dist/
+*.exe
+
+# Keys & Secrets
+.env
+*.pem
+credentials.json
+vendor/
+.env.*
+!.env.example
+
+# Local Lab
+.localstack/
+
+# OS specific
+.DS_Store
+Thumbs.db
+
+# Go
+*.test
+coverage.out
+
+
+# Local/editor
+.idea/
+.vscode/
+
+# Logs/build/cache
+*.log
+tmp/
+build/
