@@ -4,7 +4,7 @@ DIST_DIR ?= $(CURDIR)/dist
 GATEWAY_BIN ?= $(BIN_DIR)/indexqube-gateway
 EXTENSION_ZIP ?= $(DIST_DIR)/indexqube-extension.zip
 
-.PHONY: dev test bench extension-check build-gateway package-extension release-local check
+.PHONY: dev test bench alpha-check extension-check build-gateway package-extension release-local check
 
 dev:
 	cd gateway && GOCACHE=$(GOCACHE) go run ./cmd/gateway
@@ -14,6 +14,9 @@ test:
 
 bench:
 	cd gateway && GOCACHE=$(GOCACHE) go run ./cmd/iqbench
+
+alpha-check:
+	bash scripts/manual_alpha_check.sh
 
 extension-check:
 	node --check extension/content.js
