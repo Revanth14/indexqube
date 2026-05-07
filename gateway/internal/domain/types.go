@@ -78,6 +78,23 @@ type PruneStats struct {
 	DiffFallback   int            `json:"diff_fallback"`
 }
 
+// Diagnostics is a privacy-safe gateway health snapshot. It must never contain
+// raw prompt text, file paths, session keys, provider keys, or tenant hashes.
+type Diagnostics struct {
+	Status          string             `json:"status"`
+	PruningEnabled  bool               `json:"pruning_enabled"`
+	ContractVersion string             `json:"contract_version"`
+	History         HistoryDiagnostics `json:"history"`
+}
+
+// HistoryDiagnostics reports bounded in-memory pruning pressure without
+// exposing any tenant/session/file identifiers.
+type HistoryDiagnostics struct {
+	Tenants int   `json:"tenants"`
+	Entries int   `json:"entries"`
+	Bytes   int64 `json:"bytes"`
+}
+
 // TokenWriter is the streaming sink the proxy hands to the governor,
 // which in turn hands it to the dispatched adapter. Implementations are
 // NOT safe for concurrent use -- a single adapter goroutine owns it for

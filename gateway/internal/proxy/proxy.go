@@ -18,6 +18,7 @@ import (
 type Governor interface {
 	Stream(ctx context.Context, req *domain.InferenceRequest, tw domain.TokenWriter) error
 	Optimize(ctx context.Context, tenant string, messages []domain.Message, projectMemory string) ([]domain.Message, domain.PruneStats, error)
+	Diagnostics(ctx context.Context) (domain.Diagnostics, error)
 	Ready(ctx context.Context) error
 }
 
@@ -84,6 +85,7 @@ func (p *Proxy) Mux() *http.ServeMux {
 func (p *Proxy) registerRoutes() {
 	p.mux.HandleFunc("GET /healthz", p.handleHealth)
 	p.mux.HandleFunc("GET /readyz", p.handleReady)
+	p.mux.HandleFunc("GET /v1/diagnostics", p.handleDiagnostics)
 	p.mux.HandleFunc("POST /v1/chat/completions", p.handleChatCompletions)
 	p.mux.HandleFunc("POST /v1/optimize", p.handleOptimize)
 }

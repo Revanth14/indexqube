@@ -20,6 +20,7 @@ import (
 type fakeGovernor struct {
 	streamFunc   func(ctx context.Context, req *domain.InferenceRequest, tw domain.TokenWriter) error
 	optimizeFunc func(ctx context.Context, tenant string, messages []domain.Message, projectMemory string) ([]domain.Message, domain.PruneStats, error)
+	diagFunc     func(ctx context.Context) (domain.Diagnostics, error)
 	readyErr     error
 	gotReq       *domain.InferenceRequest
 	gotTenant    string
@@ -40,6 +41,13 @@ func (f *fakeGovernor) Stream(ctx context.Context, req *domain.InferenceRequest,
 		return f.streamFunc(ctx, req, tw)
 	}
 	return nil
+}
+
+func (f *fakeGovernor) Diagnostics(ctx context.Context) (domain.Diagnostics, error) {
+	if f.diagFunc != nil {
+		return f.diagFunc(ctx)
+	}
+	return domain.Diagnostics{Status: "ok"}, nil
 }
 
 func (f *fakeGovernor) Ready(ctx context.Context) error {
@@ -174,6 +182,80 @@ func TestReadyz_GovernorNotReady(t *testing.T) {
 	}
 	if env.Error.Code != "not_ready" {
 		t.Fatalf("code=%q, want not_ready", env.Error.Code)
+	}
+}
+
+func TestDiagnostics_PrivacySafeHistorySummary(t *testing.T) {
+	t.Parallel()
+	gov := govpkg.New(
+		govpkg.WithHistory(govpkg.NewMemoryHistory()),
+		govpkg.WithPruning(true, 8000),
+	)
+	srv := newTestServer(t, gov)
+
+	const sessionKey = "diagnostics-session-secret"
+	const path = "src/private.go"
+	const code = "super proprietary implementation"
+	_ = postOptimize(t, srv.URL, sessionKey, testFencedGo(path, code))
+
+	resp, err := http.Get(srv.URL + "/v1/diagnostics")
+	if err != nil {
+		t.Fatalf("GET /v1/diagnostics: %v", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read diagnostics: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, body)
+	}
+	var diag domain.Diagnostics
+	if err := json.Unmarshal(body, &diag); err != nil {
+		t.Fatalf("decode diagnostics: %v", err)
+	}
+	if diag.Status != "ok" {
+		t.Fatalf("status=%q want ok", diag.Status)
+	}
+	if !diag.PruningEnabled {
+		t.Fatal("pruning_enabled=false, want true")
+	}
+	if diag.ContractVersion != "v1" {
+		t.Fatalf("contract_version=%q want v1", diag.ContractVersion)
+	}
+	if diag.History.Tenants != 1 || diag.History.Entries != 1 || diag.History.Bytes <= 0 {
+		t.Fatalf("history=%+v want one bounded entry with bytes", diag.History)
+	}
+	bodyText := string(body)
+	for _, forbidden := range []string{sessionKey, path, code, "private.go", "proprietary"} {
+		if strings.Contains(bodyText, forbidden) {
+			t.Fatalf("diagnostics leaked %q in body: %s", forbidden, bodyText)
+		}
+	}
+}
+
+func TestDiagnostics_GovernorError(t *testing.T) {
+	t.Parallel()
+	srv := newTestServer(t, &fakeGovernor{
+		diagFunc: func(_ context.Context) (domain.Diagnostics, error) {
+			return domain.Diagnostics{}, errors.New("diagnostics unavailable")
+		},
+	})
+
+	resp, err := http.Get(srv.URL + "/v1/diagnostics")
+	if err != nil {
+		t.Fatalf("GET /v1/diagnostics: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status=%d want 500", resp.StatusCode)
+	}
+	var env errorEnvelope
+	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
+		t.Fatalf("decode error envelope: %v", err)
+	}
+	if env.Error.Code != "diagnostics_failed" {
+		t.Fatalf("code=%q want diagnostics_failed", env.Error.Code)
 	}
 }
 

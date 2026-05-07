@@ -156,6 +156,26 @@ func (g *Governor) Optimize(ctx context.Context, tenant string, msgs []domain.Me
 	return stMsgs, st, nil
 }
 
+// Diagnostics returns a privacy-safe local optimizer health snapshot.
+func (g *Governor) Diagnostics(ctx context.Context) (domain.Diagnostics, error) {
+	if err := ctx.Err(); err != nil {
+		return domain.Diagnostics{}, err
+	}
+	diag := domain.Diagnostics{
+		Status:         "ok",
+		PruningEnabled: g.pruneEnabled && g.history != nil,
+	}
+	if h, ok := g.history.(interface{ Stats() MemoryHistoryStats }); ok {
+		stats := h.Stats()
+		diag.History = domain.HistoryDiagnostics{
+			Tenants: stats.Tenants,
+			Entries: stats.Entries,
+			Bytes:   stats.Bytes,
+		}
+	}
+	return diag, nil
+}
+
 // Stream is the proxy.Governor entrypoint for Path B streaming.
 func (g *Governor) Stream(ctx context.Context, req *domain.InferenceRequest, tw domain.TokenWriter) error {
 	if req == nil {

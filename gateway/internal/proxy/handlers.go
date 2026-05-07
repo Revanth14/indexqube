@@ -40,6 +40,28 @@ func (p *Proxy) handleReady(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(`{"status":"ready"}`))
 }
 
+func (p *Proxy) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
+	diag, err := p.governor.Diagnostics(r.Context())
+	if err != nil {
+		p.writeError(w, r, errorPayload{
+			HTTPStatus: http.StatusInternalServerError,
+			Type:       "server_error",
+			Code:       "diagnostics_failed",
+			Message:    err.Error(),
+		})
+		return
+	}
+	if diag.Status == "" {
+		diag.Status = "ok"
+	}
+	diag.ContractVersion = optimizeContractVersion
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if err := json.NewEncoder(w).Encode(diag); err != nil {
+		p.logger.ErrorContext(r.Context(), "diagnostics encode failed", slog.Any("err", err))
+	}
+}
+
 func (p *Proxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	req, err := p.parseInferenceRequest(w, r)
 	if err != nil {
