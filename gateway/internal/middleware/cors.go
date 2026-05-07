@@ -29,13 +29,17 @@ var (
 	}
 	corsExposedHeaders = []string{
 		"X-Request-ID",
+		"X-IQ-Contract-Version",
+		"X-IQ-Mode",
 		"X-IQ-Blocks-Seen",
 		"X-IQ-Blocks-Pruned",
 		"X-IQ-Blocks-Skipped",
 		"X-IQ-Bytes-Before",
 		"X-IQ-Bytes-After",
+		"X-IQ-Bytes-Saved",
 		"X-IQ-Tokens-Before",
 		"X-IQ-Tokens-After",
+		"X-IQ-Tokens-Saved",
 		"X-IQ-Reduction-Ratio",
 		"X-IQ-Diff-Exact",
 		"X-IQ-Diff-Fallback",

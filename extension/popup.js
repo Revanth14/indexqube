@@ -387,6 +387,14 @@ function renderLastState(usage) {
 
 function stateLabel(outcome, skipReasons) {
   switch (outcome) {
+    case "diff":
+      return "Diff";
+    case "unchanged":
+      return "Unchanged";
+    case "warmup":
+      return "Warmup";
+    case "stateless":
+      return "Stateless";
     case "optimized":
       return "Optimized";
     case "skipped":

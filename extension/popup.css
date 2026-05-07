@@ -208,7 +208,9 @@ dd {
   padding: 3px 7px;
 }
 
-.pill[data-state="optimized"] {
+.pill[data-state="optimized"],
+.pill[data-state="diff"],
+.pill[data-state="unchanged"] {
   background: #dcfce7;
   color: #166534;
 }

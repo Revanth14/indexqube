@@ -485,12 +485,16 @@ func TestOptimize_JSONResponseIncludesStatsHeaders(t *testing.T) {
 		t.Fatalf("status=%d body=%s", resp.StatusCode, payload)
 	}
 	for _, h := range []string{
+		"X-IQ-Contract-Version",
+		"X-IQ-Mode",
 		"X-IQ-Blocks-Seen",
 		"X-IQ-Blocks-Pruned",
 		"X-IQ-Bytes-Before",
 		"X-IQ-Bytes-After",
+		"X-IQ-Bytes-Saved",
 		"X-IQ-Tokens-Before",
 		"X-IQ-Tokens-After",
+		"X-IQ-Tokens-Saved",
 		"X-IQ-Reduction-Ratio",
 		"X-IQ-Diff-Exact",
 	} {
@@ -503,6 +507,76 @@ func TestOptimize_JSONResponseIncludesStatsHeaders(t *testing.T) {
 	}
 	if got := resp.Header.Get("X-IQ-Diff-Exact"); got != "1" {
 		t.Fatalf("X-IQ-Diff-Exact=%q want 1", got)
+	}
+	var out optimizeResponseBody
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode optimize response: %v", err)
+	}
+	if out.Version != "v1" || out.Mode != "diff" {
+		t.Fatalf("version/mode=%q/%q want v1/diff", out.Version, out.Mode)
+	}
+	if out.BytesSaved <= 0 || out.EstimatedTokensSaved <= 0 {
+		t.Fatalf("expected direct savings fields, got bytes=%d tokens=%d stats=%+v", out.BytesSaved, out.EstimatedTokensSaved, out.Stats)
+	}
+}
+
+func TestOptimize_JSONContractModesAndSavings(t *testing.T) {
+	t.Parallel()
+	gov := govpkg.New(
+		govpkg.WithHistory(govpkg.NewMemoryHistory()),
+		govpkg.WithPruning(true, 8000),
+	)
+	srv := newTestServer(t, gov)
+
+	stateless := postOptimize(t, srv.URL, "", testFencedGo("src/contract.go", "hello"))
+	if stateless.Version != "v1" || stateless.Mode != "stateless" {
+		t.Fatalf("stateless version/mode=%q/%q want v1/stateless", stateless.Version, stateless.Mode)
+	}
+	if stateless.BytesSaved != 0 || stateless.EstimatedTokensSaved != 0 {
+		t.Fatalf("stateless savings=%d/%d want zero", stateless.BytesSaved, stateless.EstimatedTokensSaved)
+	}
+
+	warmup := postOptimize(t, srv.URL, "contract-session", testFencedGo("src/contract.go", "hello"))
+	if warmup.Mode != "warmup" {
+		t.Fatalf("warmup mode=%q want warmup; stats=%+v", warmup.Mode, warmup.Stats)
+	}
+
+	unchanged := postOptimize(t, srv.URL, "contract-session", testFencedGo("src/contract.go", "hello"))
+	if unchanged.Mode != "unchanged" {
+		t.Fatalf("unchanged mode=%q want unchanged; stats=%+v body=%s", unchanged.Mode, unchanged.Stats, unchanged.Text)
+	}
+	if unchanged.BytesSaved <= 0 || unchanged.EstimatedTokensSaved <= 0 {
+		t.Fatalf("unchanged direct savings should be positive, got bytes=%d tokens=%d", unchanged.BytesSaved, unchanged.EstimatedTokensSaved)
+	}
+
+	diff := postOptimize(t, srv.URL, "contract-session", testFencedGo("src/contract.go", "hello indexqube"))
+	if diff.Mode != "diff" {
+		t.Fatalf("diff mode=%q want diff; stats=%+v body=%s", diff.Mode, diff.Stats, diff.Text)
+	}
+	if diff.Stats.DiffExact != 1 {
+		t.Fatalf("diff_exact=%d want 1; stats=%+v", diff.Stats.DiffExact, diff.Stats)
+	}
+	if diff.BytesSaved <= 0 || diff.EstimatedTokensSaved <= 0 {
+		t.Fatalf("diff direct savings should be positive, got bytes=%d tokens=%d", diff.BytesSaved, diff.EstimatedTokensSaved)
+	}
+}
+
+func TestOptimize_JSONContractSkippedMode(t *testing.T) {
+	t.Parallel()
+	gov := govpkg.New(
+		govpkg.WithHistory(govpkg.NewMemoryHistory()),
+		govpkg.WithPruning(true, 8000),
+	)
+	srv := newTestServer(t, gov)
+
+	body := "```go src/tiny.go\nhello\nworld\n```"
+	_ = postOptimize(t, srv.URL, "contract-skipped", body)
+	second := postOptimize(t, srv.URL, "contract-skipped", body)
+	if second.Mode != "skipped" {
+		t.Fatalf("mode=%q want skipped; stats=%+v", second.Mode, second.Stats)
+	}
+	if second.Stats.SkipReasons["not_smaller"] != 1 {
+		t.Fatalf("skip reasons=%v want not_smaller=1", second.Stats.SkipReasons)
 	}
 }
 
@@ -566,6 +640,52 @@ func TestOptimize_TextPlainReturnsCompressedPayload(t *testing.T) {
 	}
 	if strings.Contains(resp.body, "```go src/x.go") {
 		t.Fatalf("raw full code fence should be replaced, got:\n%s", resp.body)
+	}
+}
+
+func TestOptimize_TextPlainAcceptJSONReturnsContract(t *testing.T) {
+	t.Parallel()
+	gov := govpkg.New(
+		govpkg.WithHistory(govpkg.NewMemoryHistory()),
+		govpkg.WithPruning(true, 8000),
+	)
+	srv := newTestServer(t, gov)
+
+	_ = postOptimizeText(t, srv.URL, "text-json-contract", "", testFencedGo("src/x.go", "hello"))
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/v1/optimize", strings.NewReader(testFencedGo("src/x.go", "hello indexqube")))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", "text/plain; charset=utf-8")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set(headerSessionKey, "text-json-contract")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST text /v1/optimize: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		payload, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status=%d body=%s", resp.StatusCode, payload)
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Fatalf("Content-Type=%q want application/json", ct)
+	}
+	var out optimizeResponseBody
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.Version != "v1" || out.Mode != "diff" {
+		t.Fatalf("version/mode=%q/%q want v1/diff", out.Version, out.Mode)
+	}
+	if out.Text == "" || !strings.Contains(out.Text, "```diff") {
+		t.Fatalf("expected text field with optimized diff, got:\n%s", out.Text)
+	}
+	if out.BytesSaved <= 0 || out.EstimatedTokensSaved <= 0 {
+		t.Fatalf("expected positive direct savings, got bytes=%d tokens=%d", out.BytesSaved, out.EstimatedTokensSaved)
+	}
+	if got := resp.Header.Get("X-IQ-Mode"); got != "diff" {
+		t.Fatalf("X-IQ-Mode=%q want diff", got)
 	}
 }
 

@@ -44,6 +44,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 async function optimizeText(text, settings) {
   const gatewayUrl = String(settings?.gatewayUrl || "http://localhost:8080").replace(/\/+$/, "");
   const headers = {
+    "Accept": "application/json",
     "Content-Type": "text/plain; charset=utf-8",
     "X-IQ-Session-Key": settings?.sessionKey || ""
   };
@@ -81,19 +82,7 @@ async function optimizeText(text, settings) {
     await recordUsageError({ message: body || `IndexQube returned ${response.status}`, statusCode: response.status });
     throw new Error(body || `IndexQube returned ${response.status}`);
   }
-  const result = {
-    text: body,
-    statusCode: response.status,
-    blocksSeen: Number(response.headers.get("X-IQ-Blocks-Seen") || "0"),
-    blocksPruned: Number(response.headers.get("X-IQ-Blocks-Pruned") || "0"),
-    blocksSkipped: Number(response.headers.get("X-IQ-Blocks-Skipped") || "0"),
-    skipReasons: response.headers.get("X-IQ-Skip-Reasons") || "",
-    bytesBefore: Number(response.headers.get("X-IQ-Bytes-Before") || "0"),
-    bytesAfter: Number(response.headers.get("X-IQ-Bytes-After") || "0"),
-    tokensBefore: Number(response.headers.get("X-IQ-Tokens-Before") || "0"),
-    tokensAfter: Number(response.headers.get("X-IQ-Tokens-After") || "0"),
-    ratio: Number(response.headers.get("X-IQ-Reduction-Ratio") || "0")
-  };
+  const result = parseOptimizeResult(body, response);
   await recordUsage(result);
   return result;
 }
@@ -113,8 +102,8 @@ function storageSet(values) {
 async function recordUsage(result) {
   const stored = await storageGet({ [USAGE_KEY]: DEFAULT_USAGE });
   const usage = normalizeUsage(stored[USAGE_KEY]);
-  const bytesSaved = Math.max(0, result.bytesBefore - result.bytesAfter);
-  const tokensSaved = Math.max(0, result.tokensBefore - result.tokensAfter);
+  const bytesSaved = Number(result.bytesSaved || 0);
+  const tokensSaved = Number(result.tokensSaved || 0);
   usage.requestsTotal += 1;
   usage.optimizedRequests += result.blocksPruned > 0 ? 1 : 0;
   usage.blocksSeenTotal += result.blocksSeen;
@@ -160,6 +149,17 @@ function normalizeUsage(raw) {
 }
 
 function classifyOutcome(result) {
+  switch (result.mode) {
+    case "diff":
+    case "unchanged":
+      return result.mode;
+    case "skipped":
+    case "stateless":
+    case "warmup":
+      return result.mode;
+    default:
+      break;
+  }
   if (result.blocksPruned > 0) {
     return "optimized";
   }
@@ -170,4 +170,99 @@ function classifyOutcome(result) {
     return "checked";
   }
   return "no_code";
+}
+
+function parseOptimizeResult(body, response) {
+  const headers = response.headers;
+  let payload = null;
+  try {
+    payload = JSON.parse(body);
+  } catch (_err) {
+    payload = null;
+  }
+  if (!payload || typeof payload !== "object") {
+    return resultFromHeaders(body, headers, response.status);
+  }
+
+  const stats = payload.stats || {};
+  const text = String(payload.text || messagesToText(payload.messages) || "");
+  const bytesBefore = numberValue(stats.bytes_before, headers.get("X-IQ-Bytes-Before"));
+  const bytesAfter = numberValue(stats.bytes_after, headers.get("X-IQ-Bytes-After"));
+  const tokensBefore = numberValue(stats.estimated_tokens_before, headers.get("X-IQ-Tokens-Before"));
+  const tokensAfter = numberValue(stats.estimated_tokens_after, headers.get("X-IQ-Tokens-After"));
+  return {
+    version: String(payload.version || headers.get("X-IQ-Contract-Version") || ""),
+    mode: String(payload.mode || headers.get("X-IQ-Mode") || ""),
+    text,
+    statusCode: response.status,
+    blocksSeen: numberValue(stats.blocks_seen, headers.get("X-IQ-Blocks-Seen")),
+    blocksPruned: numberValue(stats.blocks_pruned, headers.get("X-IQ-Blocks-Pruned")),
+    blocksSkipped: numberValue(stats.blocks_skipped, headers.get("X-IQ-Blocks-Skipped")),
+    skipReasons: formatSkipReasonMap(stats.skip_reasons) || headers.get("X-IQ-Skip-Reasons") || "",
+    bytesBefore,
+    bytesAfter,
+    bytesSaved: numberValue(payload.bytes_saved, stats.bytes_saved, headers.get("X-IQ-Bytes-Saved"), Math.max(0, bytesBefore - bytesAfter)),
+    tokensBefore,
+    tokensAfter,
+    tokensSaved: numberValue(payload.estimated_tokens_saved, stats.estimated_tokens_saved, headers.get("X-IQ-Tokens-Saved"), Math.max(0, tokensBefore - tokensAfter)),
+    ratio: numberValue(stats.reduction_ratio, headers.get("X-IQ-Reduction-Ratio"))
+  };
+}
+
+function resultFromHeaders(body, headers, statusCode) {
+  const bytesBefore = numberValue(headers.get("X-IQ-Bytes-Before"));
+  const bytesAfter = numberValue(headers.get("X-IQ-Bytes-After"));
+  const tokensBefore = numberValue(headers.get("X-IQ-Tokens-Before"));
+  const tokensAfter = numberValue(headers.get("X-IQ-Tokens-After"));
+  return {
+    version: headers.get("X-IQ-Contract-Version") || "",
+    mode: headers.get("X-IQ-Mode") || "",
+    text: body,
+    statusCode,
+    blocksSeen: numberValue(headers.get("X-IQ-Blocks-Seen")),
+    blocksPruned: numberValue(headers.get("X-IQ-Blocks-Pruned")),
+    blocksSkipped: numberValue(headers.get("X-IQ-Blocks-Skipped")),
+    skipReasons: headers.get("X-IQ-Skip-Reasons") || "",
+    bytesBefore,
+    bytesAfter,
+    bytesSaved: numberValue(headers.get("X-IQ-Bytes-Saved"), Math.max(0, bytesBefore - bytesAfter)),
+    tokensBefore,
+    tokensAfter,
+    tokensSaved: numberValue(headers.get("X-IQ-Tokens-Saved"), Math.max(0, tokensBefore - tokensAfter)),
+    ratio: numberValue(headers.get("X-IQ-Reduction-Ratio"))
+  };
+}
+
+function numberValue(...values) {
+  for (const value of values) {
+    if (value === undefined || value === null || value === "") {
+      continue;
+    }
+    const n = Number(value);
+    if (Number.isFinite(n)) {
+      return n;
+    }
+  }
+  return 0;
+}
+
+function messagesToText(messages) {
+  if (!Array.isArray(messages)) {
+    return "";
+  }
+  return messages
+    .map((message) => String(message?.content || "").trim())
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+function formatSkipReasonMap(reasons) {
+  if (!reasons || typeof reasons !== "object" || Array.isArray(reasons)) {
+    return "";
+  }
+  return Object.keys(reasons)
+    .filter((reason) => reason && Number(reasons[reason]) > 0)
+    .sort()
+    .map((reason) => `${reason}=${Number(reasons[reason])}`)
+    .join(",");
 }

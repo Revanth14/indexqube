@@ -69,8 +69,10 @@ type PruneStats struct {
 	SkipReasons    map[string]int `json:"skip_reasons,omitempty"`
 	BytesBefore    int            `json:"bytes_before"`
 	BytesAfter     int            `json:"bytes_after"`
+	BytesSaved     int            `json:"bytes_saved"`
 	TokensBefore   int            `json:"estimated_tokens_before"`
 	TokensAfter    int            `json:"estimated_tokens_after"`
+	TokensSaved    int            `json:"estimated_tokens_saved"`
 	ReductionRatio float64        `json:"reduction_ratio"`
 	DiffExact      int            `json:"diff_exact"`
 	DiffFallback   int            `json:"diff_fallback"`

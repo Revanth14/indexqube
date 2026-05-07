@@ -144,6 +144,8 @@ func addSkipReason(st *domain.PruneStats, reason string) {
 func finishPruneStats(st domain.PruneStats) domain.PruneStats {
 	st.TokensBefore = estimateTokens(st.BytesBefore)
 	st.TokensAfter = estimateTokens(st.BytesAfter)
+	st.BytesSaved = positiveInt(st.BytesBefore - st.BytesAfter)
+	st.TokensSaved = positiveInt(st.TokensBefore - st.TokensAfter)
 	if st.BytesBefore <= 0 {
 		st.ReductionRatio = 0
 		return st
@@ -154,6 +156,13 @@ func finishPruneStats(st domain.PruneStats) domain.PruneStats {
 	}
 	st.ReductionRatio = ratio
 	return st
+}
+
+func positiveInt(n int) int {
+	if n < 0 {
+		return 0
+	}
+	return n
 }
 
 func estimateTokens(bytes int) int {

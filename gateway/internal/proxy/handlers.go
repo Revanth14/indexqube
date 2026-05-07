@@ -15,6 +15,7 @@ import (
 )
 
 const defaultRawContextPath = "indexqube/raw_context.txt"
+const optimizeContractVersion = "v1"
 
 func (p *Proxy) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
@@ -73,8 +74,13 @@ type optimizeRequestBody struct {
 }
 
 type optimizeResponseBody struct {
-	Messages []domain.Message  `json:"messages"`
-	Stats    domain.PruneStats `json:"stats"`
+	Version              string            `json:"version"`
+	Mode                 string            `json:"mode"`
+	Messages             []domain.Message  `json:"messages"`
+	Text                 string            `json:"text,omitempty"`
+	Stats                domain.PruneStats `json:"stats"`
+	BytesSaved           int               `json:"bytes_saved"`
+	EstimatedTokensSaved int               `json:"estimated_tokens_saved"`
 }
 
 // handleOptimize exposes Path A (Chrome pre-processor): prune + memory
@@ -131,10 +137,11 @@ func (p *Proxy) handleOptimize(w http.ResponseWriter, r *http.Request) {
 		p.writeError(w, r, errorPayload{HTTPStatus: http.StatusInternalServerError, Type: "server_error", Message: err.Error()})
 		return
 	}
-	writeOptimizeStatsHeaders(w, stats)
+	bodyOut := newOptimizeResponse(msgs, stats, tenant != "")
+	writeOptimizeStatsHeaders(w, bodyOut)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(w).Encode(optimizeResponseBody{Messages: msgs, Stats: stats}); err != nil {
+	if err := json.NewEncoder(w).Encode(bodyOut); err != nil {
 		p.logger.ErrorContext(r.Context(), "optimize encode failed", slog.Any("err", err))
 	}
 }
@@ -180,10 +187,19 @@ func (p *Proxy) handleOptimizeText(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeOptimizeStatsHeaders(w, stats)
+	bodyOut := newOptimizeResponse(msgs, stats, tenant != "")
+	writeOptimizeStatsHeaders(w, bodyOut)
+	if wantsOptimizeJSON(r) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		if err := json.NewEncoder(w).Encode(bodyOut); err != nil {
+			p.logger.ErrorContext(r.Context(), "optimize text json encode failed", slog.Any("err", err))
+		}
+		return
+	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
-	if _, err := w.Write([]byte(renderOptimizedText(msgs))); err != nil {
+	if _, err := w.Write([]byte(bodyOut.Text)); err != nil {
 		p.logger.ErrorContext(r.Context(), "optimize text write failed", slog.Any("err", err))
 	}
 }
@@ -191,6 +207,38 @@ func (p *Proxy) handleOptimizeText(w http.ResponseWriter, r *http.Request) {
 func isRawOptimizeRequest(r *http.Request) bool {
 	ct := strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Type")))
 	return strings.HasPrefix(ct, "text/plain")
+}
+
+func wantsOptimizeJSON(r *http.Request) bool {
+	return strings.Contains(strings.ToLower(r.Header.Get("Accept")), "application/json")
+}
+
+func newOptimizeResponse(msgs []domain.Message, stats domain.PruneStats, hasSession bool) optimizeResponseBody {
+	return optimizeResponseBody{
+		Version:              optimizeContractVersion,
+		Mode:                 optimizeMode(stats, hasSession),
+		Messages:             msgs,
+		Text:                 renderOptimizedText(msgs),
+		Stats:                stats,
+		BytesSaved:           stats.BytesSaved,
+		EstimatedTokensSaved: stats.TokensSaved,
+	}
+}
+
+func optimizeMode(stats domain.PruneStats, hasSession bool) string {
+	if !hasSession {
+		return "stateless"
+	}
+	if stats.BlocksPruned > 0 {
+		if stats.DiffExact+stats.DiffFallback > 0 {
+			return "diff"
+		}
+		return "unchanged"
+	}
+	if stats.BlocksSkipped > 0 {
+		return "skipped"
+	}
+	return "warmup"
 }
 
 func messagesFromOptimizePrompt(prompt, contextText, contextPath, contextLang string) []domain.Message {
@@ -325,14 +373,19 @@ func looksLikeGo(s string) bool {
 		strings.Contains(s, "struct {")
 }
 
-func writeOptimizeStatsHeaders(w http.ResponseWriter, stats domain.PruneStats) {
+func writeOptimizeStatsHeaders(w http.ResponseWriter, body optimizeResponseBody) {
+	stats := body.Stats
+	w.Header().Set("X-IQ-Contract-Version", body.Version)
+	w.Header().Set("X-IQ-Mode", body.Mode)
 	w.Header().Set("X-IQ-Blocks-Seen", strconv.Itoa(stats.BlocksSeen))
 	w.Header().Set("X-IQ-Blocks-Pruned", strconv.Itoa(stats.BlocksPruned))
 	w.Header().Set("X-IQ-Blocks-Skipped", strconv.Itoa(stats.BlocksSkipped))
 	w.Header().Set("X-IQ-Bytes-Before", strconv.Itoa(stats.BytesBefore))
 	w.Header().Set("X-IQ-Bytes-After", strconv.Itoa(stats.BytesAfter))
+	w.Header().Set("X-IQ-Bytes-Saved", strconv.Itoa(stats.BytesSaved))
 	w.Header().Set("X-IQ-Tokens-Before", strconv.Itoa(stats.TokensBefore))
 	w.Header().Set("X-IQ-Tokens-After", strconv.Itoa(stats.TokensAfter))
+	w.Header().Set("X-IQ-Tokens-Saved", strconv.Itoa(stats.TokensSaved))
 	w.Header().Set("X-IQ-Reduction-Ratio", strconv.FormatFloat(stats.ReductionRatio, 'f', 6, 64))
 	w.Header().Set("X-IQ-Diff-Exact", strconv.Itoa(stats.DiffExact))
 	w.Header().Set("X-IQ-Diff-Fallback", strconv.Itoa(stats.DiffFallback))
