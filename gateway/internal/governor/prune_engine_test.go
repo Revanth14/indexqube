@@ -302,6 +302,41 @@ func TestLoadProjectMemory_MissingFileIsEmpty(t *testing.T) {
 	}
 }
 
+func TestLoadProjectMemory_Directory(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	// Create a hierarchy
+	if err := os.WriteFile(filepath.Join(dir, "01_root.md"), []byte("Root instructions."), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sub := filepath.Join(dir, "sub")
+	if err := os.Mkdir(sub, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "02_nested.md"), []byte("Sub instructions."), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	mem, err := LoadProjectMemory(dir)
+	if err != nil {
+		t.Fatalf("LoadProjectMemory: %v", err)
+	}
+
+	if !strings.Contains(mem, "## File: 01_root.md") {
+		t.Errorf("missing root file header:\n%s", mem)
+	}
+	if !strings.Contains(mem, "Root instructions.") {
+		t.Errorf("missing root content:\n%s", mem)
+	}
+	if !strings.Contains(mem, "## File: sub/02_nested.md") {
+		t.Errorf("missing sub file header:\n%s", mem)
+	}
+	if !strings.Contains(mem, "Sub instructions.") {
+		t.Errorf("missing sub content:\n%s", mem)
+	}
+}
+
 func TestGovernor_Optimize_MergesStaticAndRequestMemoryWithPrunedPrompt(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
