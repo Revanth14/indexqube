@@ -27,6 +27,10 @@
           <input id="sessionKey" type="text" spellcheck="false">
           <button id="resetSession" type="button" title="Reset session">Reset</button>
         </div>
+        <div class="inline meta-row">
+          <span id="sessionSummary">Session inactive</span>
+          <button id="resetBoth" type="button" title="Reset session and usage">Reset all</button>
+        </div>
       </label>
 
       <div class="grid">
@@ -76,7 +80,32 @@
             <dd id="usageErrors">0</dd>
           </div>
         </dl>
-        <p id="usageLast">No optimized requests yet</p>
+        <section class="last-result" aria-label="Last optimization result">
+          <div class="last-head">
+            <h3>Last request</h3>
+            <span id="lastState" class="pill">Idle</span>
+          </div>
+          <dl class="debug-grid">
+            <div>
+              <dt>Blocks seen</dt>
+              <dd id="lastBlocksSeen">0</dd>
+            </div>
+            <div>
+              <dt>Pruned</dt>
+              <dd id="lastBlocksPruned">0</dd>
+            </div>
+            <div>
+              <dt>Skipped</dt>
+              <dd id="lastBlocksSkipped">0</dd>
+            </div>
+            <div>
+              <dt>Tokens</dt>
+              <dd id="lastTokens">0 -> 0</dd>
+            </div>
+          </dl>
+          <p id="usageLast">No optimized requests yet</p>
+          <p id="lastSkipReasons"></p>
+        </section>
       </section>
 
       <footer>

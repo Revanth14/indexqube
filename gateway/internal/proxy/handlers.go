@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -335,6 +336,30 @@ func writeOptimizeStatsHeaders(w http.ResponseWriter, stats domain.PruneStats) {
 	w.Header().Set("X-IQ-Reduction-Ratio", strconv.FormatFloat(stats.ReductionRatio, 'f', 6, 64))
 	w.Header().Set("X-IQ-Diff-Exact", strconv.Itoa(stats.DiffExact))
 	w.Header().Set("X-IQ-Diff-Fallback", strconv.Itoa(stats.DiffFallback))
+	if skipReasons := formatSkipReasons(stats.SkipReasons); skipReasons != "" {
+		w.Header().Set("X-IQ-Skip-Reasons", skipReasons)
+	}
+}
+
+func formatSkipReasons(reasons map[string]int) string {
+	if len(reasons) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(reasons))
+	for reason, n := range reasons {
+		if reason != "" && n > 0 {
+			keys = append(keys, reason)
+		}
+	}
+	if len(keys) == 0 {
+		return ""
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, reason := range keys {
+		parts = append(parts, reason+"="+strconv.Itoa(reasons[reason]))
+	}
+	return strings.Join(parts, ",")
 }
 
 func renderOptimizedText(msgs []domain.Message) string {

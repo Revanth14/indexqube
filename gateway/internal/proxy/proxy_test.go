@@ -826,6 +826,28 @@ func TestOptimize_TextPlainLegacyDefaultContextDoesNotFenceNaturalLanguage(t *te
 	}
 }
 
+func TestOptimize_TextPlainNotSmallerExposesSkipReason(t *testing.T) {
+	t.Parallel()
+	gov := govpkg.New(
+		govpkg.WithHistory(govpkg.NewMemoryHistory()),
+		govpkg.WithPruning(true, 8000),
+	)
+	srv := newTestServer(t, gov)
+
+	body := "```go src/tiny.go\nhello\nworld\n```"
+	_ = postOptimizeText(t, srv.URL, "raw-not-smaller", "", body)
+	resp := postOptimizeText(t, srv.URL, "raw-not-smaller", "", body)
+	if got := resp.header.Get("X-IQ-Blocks-Skipped"); got != "1" {
+		t.Fatalf("X-IQ-Blocks-Skipped=%q want 1; body=%s", got, resp.body)
+	}
+	if got := resp.header.Get("X-IQ-Skip-Reasons"); got != "not_smaller=1" {
+		t.Fatalf("X-IQ-Skip-Reasons=%q want not_smaller=1; headers=%v", got, resp.header)
+	}
+	if resp.body != body {
+		t.Fatalf("not-smaller skip should leave body verbatim:\n%s", resp.body)
+	}
+}
+
 func TestOptimize_TextPlainInjectsProjectMemory(t *testing.T) {
 	t.Parallel()
 	gov := govpkg.New(

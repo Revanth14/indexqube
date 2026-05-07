@@ -42,6 +42,7 @@ The popup exposes:
 - Optional project memory.
 - Optional context path/lang for raw browser code snippets.
 - Local usage totals for optimized requests, estimated input tokens saved, bytes saved, pruned blocks, and errors.
+- Last-request debug details, including blocks seen/pruned/skipped, skip reasons, gateway status, and a reset-all control.
 
 ## Troubleshooting
 

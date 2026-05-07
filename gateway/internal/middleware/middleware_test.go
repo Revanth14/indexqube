@@ -272,6 +272,9 @@ func TestCORS_AllowsChromeExtensionPreflight(t *testing.T) {
 	if got := rec.Header().Get("Access-Control-Expose-Headers"); !strings.Contains(got, "X-IQ-Reduction-Ratio") {
 		t.Fatalf("expose headers missing optimizer stats: %q", got)
 	}
+	if got := rec.Header().Get("Access-Control-Expose-Headers"); !strings.Contains(got, "X-IQ-Skip-Reasons") {
+		t.Fatalf("expose headers missing skip reasons: %q", got)
+	}
 }
 
 func TestCORS_AllowsConfiguredOrigin(t *testing.T) {

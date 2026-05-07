@@ -16,9 +16,18 @@ const DEFAULT_USAGE = {
   tokensSavedTotal: 0,
   lastBytesBefore: 0,
   lastBytesAfter: 0,
+  lastBytesSaved: 0,
   lastTokensBefore: 0,
   lastTokensAfter: 0,
+  lastTokensSaved: 0,
+  lastBlocksSeen: 0,
+  lastBlocksPruned: 0,
+  lastBlocksSkipped: 0,
   lastReductionRatio: 0,
+  lastSkipReasons: "",
+  lastOutcome: "idle",
+  lastStatusCode: 0,
+  lastError: "",
   lastUpdatedAt: ""
 };
 
@@ -62,20 +71,23 @@ async function optimizeText(text, settings) {
       body: text
     });
   } catch (err) {
-    await recordUsageError();
-    throw new Error(`Gateway unavailable at ${gatewayUrl}: ${err.message}`);
+    const message = `Gateway unavailable at ${gatewayUrl}: ${err.message}`;
+    await recordUsageError({ message });
+    throw new Error(message);
   }
 
   const body = await response.text();
   if (!response.ok) {
-    await recordUsageError();
+    await recordUsageError({ message: body || `IndexQube returned ${response.status}`, statusCode: response.status });
     throw new Error(body || `IndexQube returned ${response.status}`);
   }
   const result = {
     text: body,
+    statusCode: response.status,
     blocksSeen: Number(response.headers.get("X-IQ-Blocks-Seen") || "0"),
     blocksPruned: Number(response.headers.get("X-IQ-Blocks-Pruned") || "0"),
     blocksSkipped: Number(response.headers.get("X-IQ-Blocks-Skipped") || "0"),
+    skipReasons: response.headers.get("X-IQ-Skip-Reasons") || "",
     bytesBefore: Number(response.headers.get("X-IQ-Bytes-Before") || "0"),
     bytesAfter: Number(response.headers.get("X-IQ-Bytes-After") || "0"),
     tokensBefore: Number(response.headers.get("X-IQ-Tokens-Before") || "0"),
@@ -116,21 +128,46 @@ async function recordUsage(result) {
   usage.tokensSavedTotal += tokensSaved;
   usage.lastBytesBefore = result.bytesBefore;
   usage.lastBytesAfter = result.bytesAfter;
+  usage.lastBytesSaved = bytesSaved;
   usage.lastTokensBefore = result.tokensBefore;
   usage.lastTokensAfter = result.tokensAfter;
+  usage.lastTokensSaved = tokensSaved;
+  usage.lastBlocksSeen = result.blocksSeen;
+  usage.lastBlocksPruned = result.blocksPruned;
+  usage.lastBlocksSkipped = result.blocksSkipped;
   usage.lastReductionRatio = result.ratio;
+  usage.lastSkipReasons = result.skipReasons;
+  usage.lastOutcome = classifyOutcome(result);
+  usage.lastStatusCode = result.statusCode;
+  usage.lastError = "";
   usage.lastUpdatedAt = new Date().toISOString();
   await storageSet({ [USAGE_KEY]: usage });
 }
 
-async function recordUsageError() {
+async function recordUsageError(detail = {}) {
   const stored = await storageGet({ [USAGE_KEY]: DEFAULT_USAGE });
   const usage = normalizeUsage(stored[USAGE_KEY]);
   usage.errorsTotal += 1;
+  usage.lastOutcome = "error";
+  usage.lastError = detail.message || "Gateway error";
+  usage.lastStatusCode = detail.statusCode || 0;
   usage.lastUpdatedAt = new Date().toISOString();
   await storageSet({ [USAGE_KEY]: usage });
 }
 
 function normalizeUsage(raw) {
   return Object.assign({}, DEFAULT_USAGE, raw || {});
+}
+
+function classifyOutcome(result) {
+  if (result.blocksPruned > 0) {
+    return "optimized";
+  }
+  if (result.blocksSkipped > 0) {
+    return "skipped";
+  }
+  if (result.blocksSeen > 0) {
+    return "checked";
+  }
+  return "no_code";
 }

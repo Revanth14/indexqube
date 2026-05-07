@@ -39,6 +39,7 @@ var (
 		"X-IQ-Reduction-Ratio",
 		"X-IQ-Diff-Exact",
 		"X-IQ-Diff-Fallback",
+		"X-IQ-Skip-Reasons",
 	}
 )
 
