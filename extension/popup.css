@@ -264,3 +264,43 @@ dd {
   color: #166534;
   font-weight: 600;
 }
+
+.diag-panel {
+  padding-top: 6px;
+  border-top: 1px solid #f1f5f9;
+}
+
+.diag-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px 8px;
+  margin: 0;
+}
+
+.diag-grid dt {
+  color: #94a3b8;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.diag-grid dd {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 700;
+  color: #334155;
+}
+
+#diagPruning[data-state="enabled"] {
+  color: #166534;
+}
+
+#diagPruning[data-state="disabled"] {
+  color: #94a3b8;
+}
+
+.diag-history {
+  margin: 4px 0 0;
+  color: #64748b;
+  font-size: 11px;
+}

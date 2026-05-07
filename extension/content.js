@@ -179,7 +179,7 @@
     const el = ensureStatus();
     el.dataset.visible = "true";
     el.dataset.kind = kind;
-    el.innerHTML = "";
+    el.replaceChildren();
     const strong = document.createElement("strong");
     strong.textContent = title;
     const body = document.createElement("div");
@@ -206,18 +206,20 @@
   }
 
   function findComposer(start) {
-    if (isEditable(start)) {
+    if (isEditable(start) && !isHidden(start) && !isDisabled(start)) {
       return start;
     }
     const active = document.activeElement;
-    if (isEditable(active)) {
+    if (isEditable(active) && !isHidden(active) && !isDisabled(active)) {
       return active;
     }
     const selectors = [
-      "textarea",
+      "div[contenteditable='true']",
+      "div[contenteditable='true'] p",
       "[contenteditable='true']",
       "[contenteditable=true]",
       ".ProseMirror",
+      "textarea",
       "[role='textbox']"
     ];
     const candidates = selectors.flatMap((selector) => Array.from(document.querySelectorAll(selector)));
@@ -262,9 +264,15 @@
       el.dispatchEvent(new Event("change", { bubbles: true }));
       return;
     }
+
     el.focus();
+    // For ProseMirror (Claude/ChatGPT), we often need to clear and then insert.
+    // execCommand is deprecated but still the most reliable way to update
+    // internal SPA states without breaking the undo buffer or React bindings.
     document.execCommand("selectAll", false, null);
+    document.execCommand("delete", false, null);
     document.execCommand("insertText", false, text);
+
     el.dispatchEvent(new InputEvent("input", {
       bubbles: true,
       inputType: "insertText",

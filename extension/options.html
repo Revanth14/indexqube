@@ -26,6 +26,31 @@
             <button id="checkGateway" type="button" title="Check gateway health">Check</button>
           </div>
         </label>
+        <div id="diagPanel" class="diag-panel" hidden>
+          <dl class="diag-grid">
+            <div>
+              <dt>Pruning</dt>
+              <dd id="diagPruning">—</dd>
+            </div>
+            <div>
+              <dt>Contract</dt>
+              <dd id="diagVersion">—</dd>
+            </div>
+            <div>
+              <dt>Tenants</dt>
+              <dd id="diagTenants">—</dd>
+            </div>
+            <div>
+              <dt>Entries</dt>
+              <dd id="diagEntries">—</dd>
+            </div>
+            <div>
+              <dt>History size</dt>
+              <dd id="diagBytes">—</dd>
+            </div>
+          </dl>
+        </div>
+        <p id="diagUnavailable" class="diag-unavailable" hidden>Gateway diagnostics unavailable</p>
       </section>
 
       <section>

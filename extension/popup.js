@@ -76,6 +76,10 @@ const fields = {
   lastTokens: document.getElementById("lastTokens"),
   lastSkipReasons: document.getElementById("lastSkipReasons"),
   copyReceipt: document.getElementById("copyReceipt"),
+  diagPanel: document.getElementById("diagPanel"),
+  diagPruning: document.getElementById("diagPruning"),
+  diagVersion: document.getElementById("diagVersion"),
+  diagHistory: document.getElementById("diagHistory"),
   status: document.getElementById("status")
 };
 
@@ -357,6 +361,7 @@ function renderUsage(raw) {
 async function checkGatewayHealth() {
   const gatewayUrl = normalizeGatewayURL(fields.gatewayUrl.value || DEFAULT_SETTINGS.gatewayUrl);
   renderGatewayState("checking", "Checking gateway...");
+  hideDiagnostics();
   const startedAt = performance.now();
   try {
     const response = await fetch(`${gatewayUrl}/healthz`, {
@@ -369,9 +374,49 @@ async function checkGatewayHealth() {
       return;
     }
     renderGatewayState("online", `Online at ${gatewayUrl} (${elapsed} ms)`);
+    void fetchDiagnostics(gatewayUrl);
   } catch (err) {
     renderGatewayState("offline", `Offline at ${gatewayUrl}`);
   }
+}
+
+async function fetchDiagnostics(gatewayUrl) {
+  try {
+    const response = await fetch(`${gatewayUrl}/v1/diagnostics`, {
+      method: "GET",
+      cache: "no-store"
+    });
+    if (!response.ok) {
+      return;
+    }
+    const diag = await response.json();
+    renderDiagnostics(diag);
+  } catch (_err) {
+    // Diagnostics are best-effort; silently hide on failure.
+  }
+}
+
+function renderDiagnostics(diag) {
+  if (!diag || diag.status !== "ok") {
+    hideDiagnostics();
+    return;
+  }
+  const pruning = diag.pruning_enabled ? "enabled" : "disabled";
+  fields.diagPruning.textContent = pruning;
+  fields.diagPruning.dataset.state = pruning;
+  fields.diagVersion.textContent = diag.contract_version || "—";
+  const h = diag.history || {};
+  const parts = [];
+  if (h.entries != null) parts.push(`${formatNumber(h.entries)} entries`);
+  if (h.tenants != null) parts.push(`${formatNumber(h.tenants)} tenants`);
+  if (h.bytes) parts.push(formatBytes(h.bytes));
+  fields.diagHistory.textContent = parts.length ? `History: ${parts.join(" · ")}` : "";
+  fields.diagPanel.hidden = false;
+}
+
+function hideDiagnostics() {
+  fields.diagPanel.hidden = true;
+  fields.diagHistory.textContent = "";
 }
 
 function renderGatewayState(state, text) {

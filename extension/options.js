@@ -57,6 +57,13 @@ const fields = {
   projectMemory: document.getElementById("projectMemory"),
   contextPath: document.getElementById("contextPath"),
   contextLang: document.getElementById("contextLang"),
+  diagPanel: document.getElementById("diagPanel"),
+  diagPruning: document.getElementById("diagPruning"),
+  diagVersion: document.getElementById("diagVersion"),
+  diagTenants: document.getElementById("diagTenants"),
+  diagEntries: document.getElementById("diagEntries"),
+  diagBytes: document.getElementById("diagBytes"),
+  diagUnavailable: document.getElementById("diagUnavailable"),
   save: document.getElementById("save"),
   status: document.getElementById("status"),
   usageRequests: document.getElementById("usageRequests"),
@@ -95,18 +102,60 @@ function normalizeGatewayURL(value) {
 async function checkGatewayHealth() {
   const gatewayUrl = normalizeGatewayURL(fields.gatewayUrl.value);
   renderGatewayState("checking", "Checking gateway...");
+  hideDiagnostics();
   const startedAt = performance.now();
   try {
     const response = await fetch(`${gatewayUrl}/healthz`, { method: "GET", cache: "no-store" });
     const elapsed = Math.max(1, Math.round(performance.now() - startedAt));
     if (!response.ok) {
       renderGatewayState("offline", `Gateway ${response.status} at ${gatewayUrl}`);
+      fields.diagUnavailable.hidden = false;
       return;
     }
     renderGatewayState("online", `Online at ${gatewayUrl} (${elapsed} ms)`);
+    void fetchDiagnostics(gatewayUrl);
   } catch (_err) {
     renderGatewayState("offline", `Offline at ${gatewayUrl}`);
+    fields.diagUnavailable.hidden = false;
   }
+}
+
+async function fetchDiagnostics(gatewayUrl) {
+  try {
+    const response = await fetch(`${gatewayUrl}/v1/diagnostics`, {
+      method: "GET",
+      cache: "no-store"
+    });
+    if (!response.ok) {
+      fields.diagUnavailable.hidden = false;
+      return;
+    }
+    const diag = await response.json();
+    renderDiagnostics(diag);
+  } catch (_err) {
+    fields.diagUnavailable.hidden = false;
+  }
+}
+
+function renderDiagnostics(diag) {
+  if (!diag || diag.status !== "ok") {
+    fields.diagUnavailable.hidden = false;
+    return;
+  }
+  const pruning = diag.pruning_enabled ? "enabled" : "disabled";
+  fields.diagPruning.textContent = pruning;
+  fields.diagPruning.dataset.state = pruning;
+  fields.diagVersion.textContent = diag.contract_version || "—";
+  const h = diag.history || {};
+  fields.diagTenants.textContent = formatNumber(h.tenants ?? 0);
+  fields.diagEntries.textContent = formatNumber(h.entries ?? 0);
+  fields.diagBytes.textContent = h.bytes ? formatBytes(h.bytes) : "0 B";
+  fields.diagPanel.hidden = false;
+}
+
+function hideDiagnostics() {
+  fields.diagPanel.hidden = true;
+  fields.diagUnavailable.hidden = true;
 }
 
 function renderGatewayState(state, text) {

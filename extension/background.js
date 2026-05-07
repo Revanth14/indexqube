@@ -42,7 +42,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 });
 
 async function optimizeText(text, settings) {
-  const gatewayUrl = String(settings?.gatewayUrl || "http://localhost:8080").replace(/\/+$/, "");
+  const gatewayUrl = normalizeGatewayUrl(settings?.gatewayUrl);
   const headers = {
     "Accept": "application/json",
     "Content-Type": "text/plain; charset=utf-8",
@@ -72,18 +72,20 @@ async function optimizeText(text, settings) {
       body: text
     });
   } catch (err) {
-    const message = `Gateway unavailable at ${gatewayUrl}: ${err.message}`;
-    await recordUsageError({ message });
+    const detail = err && err.message ? err.message : String(err);
+    const message = `Gateway unavailable at ${gatewayUrl}: ${detail}`;
+    await safeRecordUsageError({ message });
     throw new Error(message);
   }
 
   const body = await response.text();
   if (!response.ok) {
-    await recordUsageError({ message: body || `IndexQube returned ${response.status}`, statusCode: response.status });
-    throw new Error(body || `IndexQube returned ${response.status}`);
+    const message = body || `IndexQube returned ${response.status}`;
+    await safeRecordUsageError({ message, statusCode: response.status });
+    throw new Error(message);
   }
   const result = parseOptimizeResult(body, response);
-  await recordUsage(result);
+  await safeRecordUsage(result);
   return result;
 }
 
@@ -91,12 +93,60 @@ function cleanOptional(value) {
   return String(value || "").trim();
 }
 
+function normalizeGatewayUrl(value) {
+  const raw = String(value || "http://localhost:8080").trim().replace(/\/+$/, "");
+
+  try {
+    const url = new URL(raw);
+    if (!["http:", "https:"].includes(url.protocol)) {
+      throw new Error("Gateway URL must start with http:// or https://");
+    }
+    return url.toString().replace(/\/+$/, "");
+  } catch (_err) {
+    throw new Error("Invalid gateway URL. Use a full URL like http://localhost:8080");
+  }
+}
+
 function storageGet(defaults) {
-  return new Promise((resolve) => chrome.storage.local.get(defaults, resolve));
+  return new Promise((resolve, reject) => {
+    chrome.storage.local.get(defaults, (items) => {
+      const error = chrome.runtime.lastError;
+      if (error) {
+        reject(new Error(error.message));
+        return;
+      }
+      resolve(items);
+    });
+  });
 }
 
 function storageSet(values) {
-  return new Promise((resolve) => chrome.storage.local.set(values, resolve));
+  return new Promise((resolve, reject) => {
+    chrome.storage.local.set(values, () => {
+      const error = chrome.runtime.lastError;
+      if (error) {
+        reject(new Error(error.message));
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
+async function safeRecordUsage(result) {
+  try {
+    await recordUsage(result);
+  } catch (err) {
+    console.warn("IndexQube usage recording failed:", err);
+  }
+}
+
+async function safeRecordUsageError(detail = {}) {
+  try {
+    await recordUsageError(detail);
+  } catch (err) {
+    console.warn("IndexQube usage error recording failed:", err);
+  }
 }
 
 async function recordUsage(result) {
@@ -145,7 +195,15 @@ async function recordUsageError(detail = {}) {
 }
 
 function normalizeUsage(raw) {
-  return Object.assign({}, DEFAULT_USAGE, raw || {});
+  const usage = Object.assign({}, DEFAULT_USAGE, raw || {});
+
+  for (const key of Object.keys(DEFAULT_USAGE)) {
+    if (typeof DEFAULT_USAGE[key] === "number") {
+      usage[key] = numberValue(usage[key]);
+    }
+  }
+
+  return usage;
 }
 
 function classifyOutcome(result) {
@@ -185,7 +243,7 @@ function parseOptimizeResult(body, response) {
   }
 
   const stats = payload.stats || {};
-  const text = String(payload.text || messagesToText(payload.messages) || "");
+  const text = String(payload.text !== undefined && payload.text !== null ? payload.text : messagesToText(payload.messages) || "");
   const bytesBefore = numberValue(stats.bytes_before, headers.get("X-IQ-Bytes-Before"));
   const bytesAfter = numberValue(stats.bytes_after, headers.get("X-IQ-Bytes-After"));
   const tokensBefore = numberValue(stats.estimated_tokens_before, headers.get("X-IQ-Tokens-Before"));
@@ -235,7 +293,10 @@ function resultFromHeaders(body, headers, statusCode) {
 
 function numberValue(...values) {
   for (const value of values) {
-    if (value === undefined || value === null || value === "") {
+    if (value === undefined || value === null) {
+      continue;
+    }
+    if (typeof value === "string" && value.trim() === "") {
       continue;
     }
     const n = Number(value);
