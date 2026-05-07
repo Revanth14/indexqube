@@ -663,6 +663,102 @@ func TestOptimize_TextPlainMixedPromptUsesFileHint(t *testing.T) {
 	}
 }
 
+func TestOptimize_TextPlainMultiFilePromptPrunesEachFile(t *testing.T) {
+	t.Parallel()
+	gov := govpkg.New(
+		govpkg.WithHistory(govpkg.NewMemoryHistory()),
+		govpkg.WithPruning(true, 8000),
+	)
+	srv := newTestServer(t, gov)
+
+	body1 := strings.Join([]string{
+		"Find the bug across these files.",
+		"",
+		"src/a.go",
+		testGoInner("file a"),
+		"",
+		"src/b.go",
+		testGoInner("file b"),
+		"",
+		"What should change?",
+	}, "\n")
+	body2 := strings.Join([]string{
+		"Find the bug across these files.",
+		"",
+		"src/a.go",
+		testGoInner("file a changed"),
+		"",
+		"src/b.go",
+		testGoInner("file b changed"),
+		"",
+		"What should change?",
+	}, "\n")
+
+	first := postOptimizeText(t, srv.URL, "raw-multi-file", "", body1)
+	if got := first.header.Get("X-IQ-Blocks-Seen"); got != "2" {
+		t.Fatalf("first X-IQ-Blocks-Seen=%q want 2; body=%s", got, first.body)
+	}
+	for _, want := range []string{
+		"Find the bug across these files.",
+		"```go src/a.go\nfunc calculate",
+		"```go src/b.go\nfunc calculate",
+		"What should change?",
+	} {
+		if !strings.Contains(first.body, want) {
+			t.Fatalf("first response missing %q:\n%s", want, first.body)
+		}
+	}
+	if strings.Contains(first.body, "\nsrc/a.go\nfunc calculate") || strings.Contains(first.body, "\nsrc/b.go\nfunc calculate") {
+		t.Fatalf("file path hints should become fence headers:\n%s", first.body)
+	}
+
+	second := postOptimizeText(t, srv.URL, "raw-multi-file", "", body2)
+	if got := second.header.Get("X-IQ-Blocks-Pruned"); got != "2" {
+		t.Fatalf("second X-IQ-Blocks-Pruned=%q want 2; body=%s", got, second.body)
+	}
+	if !strings.Contains(second.body, "+++ b/src/a.go") || !strings.Contains(second.body, "+ \tprintln(\"file a changed\")") {
+		t.Fatalf("missing src/a.go diff:\n%s", second.body)
+	}
+	if !strings.Contains(second.body, "+++ b/src/b.go") || !strings.Contains(second.body, "+ \tprintln(\"file b changed\")") {
+		t.Fatalf("missing src/b.go diff:\n%s", second.body)
+	}
+	if !strings.Contains(second.body, "Find the bug across these files.") || !strings.Contains(second.body, "What should change?") {
+		t.Fatalf("plain prompt text should remain outside code:\n%s", second.body)
+	}
+	if strings.Contains(second.body, "```go src/a.go") || strings.Contains(second.body, "```go src/b.go") {
+		t.Fatalf("raw code fences should be replaced by diffs:\n%s", second.body)
+	}
+}
+
+func TestOptimize_TextPlainMultiFilePromptSupportsMarkdownHeadings(t *testing.T) {
+	t.Parallel()
+	gov := govpkg.New(
+		govpkg.WithHistory(govpkg.NewMemoryHistory()),
+		govpkg.WithPruning(true, 8000),
+	)
+	srv := newTestServer(t, gov)
+
+	body := strings.Join([]string{
+		"Review these.",
+		"",
+		"### gateway/internal/proxy/handlers.go",
+		testGoInner("handlers"),
+		"",
+		"### gateway/internal/proxy/browser_prompt.go",
+		testGoInner("parser"),
+	}, "\n")
+	resp := postOptimizeText(t, srv.URL, "raw-multi-file-headings", "", body)
+	if got := resp.header.Get("X-IQ-Blocks-Seen"); got != "2" {
+		t.Fatalf("X-IQ-Blocks-Seen=%q want 2; body=%s", got, resp.body)
+	}
+	if !strings.Contains(resp.body, "```go gateway/internal/proxy/handlers.go") {
+		t.Fatalf("expected handlers heading path as fence header:\n%s", resp.body)
+	}
+	if !strings.Contains(resp.body, "```go gateway/internal/proxy/browser_prompt.go") {
+		t.Fatalf("expected parser heading path as fence header:\n%s", resp.body)
+	}
+}
+
 func TestOptimize_TextPlainCodeThenQuestionKeepsQuestionOutsideCode(t *testing.T) {
 	t.Parallel()
 	gov := govpkg.New(

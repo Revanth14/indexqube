@@ -24,7 +24,7 @@ This is the first browser-path proof for IndexQube. It intercepts sends on ChatG
 
 After changing extension files, click **Reload** on the extension card in `chrome://extensions`, then refresh ChatGPT/Claude.
 
-Natural-language prompts are submitted unchanged and skip the gateway unless project memory or explicit context settings are enabled. When a browser prompt mixes a question with pasted raw code, the gateway keeps the question as plain text and fences only the code region before pruning.
+Natural-language prompts are submitted unchanged and skip the gateway unless project memory or explicit context settings are enabled. When a browser prompt mixes a question with pasted raw code, the gateway keeps the question as plain text and fences each detected code region before pruning. Multi-file prompts with path hints such as `src/main.go` or `### gateway/internal/proxy/handlers.go` are tracked independently.
 
 ## Test Flow
 

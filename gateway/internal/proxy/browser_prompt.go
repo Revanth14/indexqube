@@ -11,34 +11,48 @@ type browserCodeRegion struct {
 
 func normalizeBrowserPromptCode(content string) (string, bool) {
 	lines := strings.Split(content, "\n")
-	region, ok := findBrowserCodeRegion(lines)
-	if !ok {
-		return "", false
-	}
-
-	before := strings.TrimSpace(strings.Join(lines[:region.prefixEnd], "\n"))
-	code := strings.TrimSpace(strings.Join(lines[region.codeStart:region.codeEnd], "\n"))
-	after := strings.TrimSpace(strings.Join(lines[region.codeEnd:], "\n"))
-	if code == "" {
-		return "", false
-	}
-	if before == "" && after == "" && region.path == "" {
-		return "", false
-	}
-
-	parts := make([]string, 0, 3)
-	if before != "" {
-		parts = append(parts, before)
-	}
-	parts = append(parts, ensureFencedContext(code, region.path, ""))
-	if after != "" {
-		parts = append(parts, after)
-	}
-	return strings.Join(parts, "\n\n"), true
+	return normalizeBrowserPromptSegments(lines)
 }
 
 func findBrowserCodeRegion(lines []string) (browserCodeRegion, bool) {
-	for i := 0; i < len(lines); i++ {
+	return findNextBrowserCodeRegion(lines, 0)
+}
+
+func normalizeBrowserPromptSegments(lines []string) (string, bool) {
+	parts := make([]string, 0, 8)
+	textStart := 0
+	scan := 0
+	found := false
+	for scan < len(lines) {
+		region, ok := findNextBrowserCodeRegion(lines, scan)
+		if !ok {
+			break
+		}
+		found = true
+		appendBrowserTextPart(&parts, lines[textStart:region.prefixEnd])
+		code := strings.TrimSpace(strings.Join(lines[region.codeStart:region.codeEnd], "\n"))
+		if code != "" {
+			parts = append(parts, ensureFencedContext(code, region.path, ""))
+		}
+		textStart = region.codeEnd
+		scan = region.codeEnd
+	}
+	if !found {
+		return "", false
+	}
+	appendBrowserTextPart(&parts, lines[textStart:])
+	return strings.Join(parts, "\n\n"), true
+}
+
+func appendBrowserTextPart(parts *[]string, lines []string) {
+	text := strings.TrimSpace(strings.Join(lines, "\n"))
+	if text != "" {
+		*parts = append(*parts, text)
+	}
+}
+
+func findNextBrowserCodeRegion(lines []string, start int) (browserCodeRegion, bool) {
+	for i := start; i < len(lines); i++ {
 		if path := parseBrowserPathHint(lines[i]); path != "" {
 			next := nextNonBlankLine(lines, i+1)
 			if next >= 0 && lineLooksLikeCodeStart(lines[next]) {
@@ -63,6 +77,9 @@ func findBrowserCodeRegion(lines []string) (browserCodeRegion, bool) {
 
 func findBrowserCodeEnd(lines []string, start int) int {
 	for i := start + 1; i < len(lines); i++ {
+		if isNextBrowserFileStart(lines, i) {
+			return trimTrailingBlankLines(lines, start, i)
+		}
 		if !isBlankLine(lines[i]) {
 			continue
 		}
@@ -75,6 +92,34 @@ func findBrowserCodeEnd(lines []string, start int) int {
 		}
 	}
 	return len(lines)
+}
+
+func isNextBrowserFileStart(lines []string, idx int) bool {
+	if parseBrowserPathHint(lines[idx]) == "" {
+		return false
+	}
+	next := nextNonBlankLine(lines, idx+1)
+	if next < 0 || !lineLooksLikeCodeStart(lines[next]) {
+		return false
+	}
+	prev := previousNonBlankLine(lines, idx-1)
+	return prev < 0 || isBlankLine(lines[idx-1]) || lineLooksLikeCodeBoundary(lines[prev])
+}
+
+func previousNonBlankLine(lines []string, start int) int {
+	for i := start; i >= 0; i-- {
+		if !isBlankLine(lines[i]) {
+			return i
+		}
+	}
+	return -1
+}
+
+func trimTrailingBlankLines(lines []string, start, end int) int {
+	for end > start && isBlankLine(lines[end-1]) {
+		end--
+	}
+	return end
 }
 
 func nextNonBlankLine(lines []string, start int) int {
@@ -141,6 +186,19 @@ func lineLooksLikeCodeContinuation(line string) bool {
 		strings.Contains(t, "=>")
 }
 
+func lineLooksLikeCodeBoundary(line string) bool {
+	t := strings.TrimSpace(line)
+	return t == "}" ||
+		t == "};" ||
+		t == ")" ||
+		t == ")," ||
+		t == "]" ||
+		t == "]," ||
+		strings.HasPrefix(t, "}") ||
+		strings.HasSuffix(t, "}") ||
+		strings.HasSuffix(t, "};")
+}
+
 func lineLooksNaturalLanguage(line string) bool {
 	t := strings.TrimSpace(line)
 	if t == "" {
@@ -167,9 +225,11 @@ func parseBrowserPathHint(line string) string {
 	if t == "" {
 		return ""
 	}
+	t = strings.TrimSpace(strings.TrimLeft(t, "#"))
 	t = strings.TrimSpace(strings.TrimPrefix(t, "//"))
-	t = strings.TrimSpace(strings.TrimPrefix(t, "#"))
 	t = strings.TrimSpace(strings.TrimPrefix(t, "--"))
+	t = strings.TrimSpace(strings.TrimPrefix(t, "-"))
+	t = strings.TrimSpace(strings.TrimPrefix(t, "*"))
 
 	lower := strings.ToLower(t)
 	for _, prefix := range []string{"file:", "filename:", "path:", "source:"} {
