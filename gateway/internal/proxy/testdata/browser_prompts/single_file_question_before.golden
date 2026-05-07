@@ -1,0 +1,11 @@
+Can you review this bug?
+
+```go src/main.go
+package main
+
+func main() {
+	println("hello")
+}
+```
+
+What is wrong here?

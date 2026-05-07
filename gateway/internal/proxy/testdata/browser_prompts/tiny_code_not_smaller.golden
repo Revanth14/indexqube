@@ -1,0 +1,5 @@
+```go src/tiny.go
+func x() {
+	return 1
+}
+```

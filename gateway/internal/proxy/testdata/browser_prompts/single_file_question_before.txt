@@ -1,0 +1,10 @@
+Can you review this bug?
+
+src/main.go
+package main
+
+func main() {
+	println("hello")
+}
+
+What is wrong here?

@@ -1,0 +1,17 @@
+Find the bug across these files.
+
+src/a.go
+package main
+
+func a() {
+	println("a")
+}
+
+src/b.go
+package main
+
+func b() {
+	println("b")
+}
+
+What should change?

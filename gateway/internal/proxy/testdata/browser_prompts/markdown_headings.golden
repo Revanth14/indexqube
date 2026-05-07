@@ -1,0 +1,17 @@
+Review these parser files.
+
+```go gateway/internal/proxy/handlers.go
+package proxy
+
+func handle() {
+	println("handlers")
+}
+```
+
+```go gateway/internal/proxy/browser_prompt.go
+package proxy
+
+func parse() {
+	println("parser")
+}
+```
