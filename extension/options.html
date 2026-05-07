@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>IndexQube Settings</title>
+    <link rel="stylesheet" href="options.css">
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>IndexQube Settings</h1>
+        <label class="switch">
+          <input id="enabled" type="checkbox">
+          <span>Enabled</span>
+        </label>
+      </header>
+
+      <section>
+        <h2>Gateway</h2>
+        <label>
+          Gateway URL
+          <input id="gatewayUrl" type="url" spellcheck="false" placeholder="http://localhost:8080">
+          <div class="inline meta-row gateway-row">
+            <span id="gatewaySummary">Not checked</span>
+            <button id="checkGateway" type="button" title="Check gateway health">Check</button>
+          </div>
+        </label>
+      </section>
+
+      <section>
+        <h2>Context defaults</h2>
+        <div class="grid">
+          <label>
+            Context path
+            <input id="contextPath" type="text" spellcheck="false" placeholder="e.g. src/file.go">
+          </label>
+          <label>
+            Lang
+            <input id="contextLang" type="text" spellcheck="false" placeholder="e.g. go">
+          </label>
+        </div>
+        <label>
+          Project memory
+          <textarea id="projectMemory" rows="6" spellcheck="false" placeholder="Optional rules sent as X-IQ-Project-Memory with every request"></textarea>
+        </label>
+      </section>
+
+      <section>
+        <h2>Session</h2>
+        <label>
+          Global session key
+          <div class="inline">
+            <input id="sessionKey" type="text" spellcheck="false">
+            <button id="resetSession" type="button" title="Reset current global session">Reset</button>
+          </div>
+          <span id="sessionSummary" class="meta-note"></span>
+        </label>
+        <div class="action-row">
+          <button id="resetAllSessions" type="button" class="ghost danger" title="Forget locally stored conversation session keys">Forget local sessions</button>
+          <span class="action-note">Clears local session keys; gateway memory expires by TTL or eviction.</span>
+        </div>
+      </section>
+
+      <section class="usage" aria-label="Usage">
+        <div class="usage-head">
+          <h2>Usage</h2>
+          <button id="resetUsage" type="button" class="ghost" title="Reset usage stats">Reset</button>
+        </div>
+        <dl>
+          <div>
+            <dt>Requests</dt>
+            <dd id="usageRequests">0</dd>
+          </div>
+          <div>
+            <dt>Optimized</dt>
+            <dd id="usageOptimized">0</dd>
+          </div>
+          <div>
+            <dt>Tokens saved</dt>
+            <dd id="usageTokensSaved">0</dd>
+          </div>
+          <div>
+            <dt>Bytes saved</dt>
+            <dd id="usageBytesSaved">0 B</dd>
+          </div>
+          <div>
+            <dt>Blocks pruned</dt>
+            <dd id="usageBlocksPruned">0</dd>
+          </div>
+          <div>
+            <dt>Errors</dt>
+            <dd id="usageErrors">0</dd>
+          </div>
+        </dl>
+        <section class="last-result" aria-label="Last optimization result">
+          <div class="last-head">
+            <h3>Last request</h3>
+            <span id="lastState" class="pill">Idle</span>
+          </div>
+          <dl class="debug-grid">
+            <div>
+              <dt>Blocks seen</dt>
+              <dd id="lastBlocksSeen">0</dd>
+            </div>
+            <div>
+              <dt>Pruned</dt>
+              <dd id="lastBlocksPruned">0</dd>
+            </div>
+            <div>
+              <dt>Skipped</dt>
+              <dd id="lastBlocksSkipped">0</dd>
+            </div>
+            <div>
+              <dt>Tokens</dt>
+              <dd id="lastTokens">0 -> 0</dd>
+            </div>
+          </dl>
+          <p id="usageLast">No optimized requests yet</p>
+          <p id="lastSkipReasons"></p>
+        </section>
+      </section>
+
+      <p class="privacy-note">
+        <strong>Privacy:</strong> Raw code is sent only to your configured gateway. The gateway may keep bounded in-memory code history for diffing, but IndexQube does not persist prompt content.
+      </p>
+
+      <footer>
+        <button id="save" type="button">Save</button>
+        <span id="status" role="status" aria-live="polite"></span>
+      </footer>
+    </main>
+    <script src="options.js"></script>
+  </body>
+</html>
