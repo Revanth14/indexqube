@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>IndexQube</title>
+    <link rel="stylesheet" href="popup.css">
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>IndexQube</h1>
+        <label class="switch">
+          <input id="enabled" type="checkbox">
+          <span>Enabled</span>
+        </label>
+      </header>
+
+      <label>
+        Gateway URL
+        <input id="gatewayUrl" type="url" spellcheck="false" placeholder="http://localhost:8080">
+      </label>
+
+      <label>
+        Session key
+        <div class="inline">
+          <input id="sessionKey" type="text" spellcheck="false">
+          <button id="resetSession" type="button" title="Reset session">Reset</button>
+        </div>
+      </label>
+
+      <div class="grid">
+        <label>
+          Context path
+          <input id="contextPath" type="text" spellcheck="false" placeholder="optional, e.g. src/file.go">
+        </label>
+        <label>
+          Lang
+          <input id="contextLang" type="text" spellcheck="false" placeholder="optional, e.g. go">
+        </label>
+      </div>
+
+      <label>
+        Project memory
+        <textarea id="projectMemory" rows="5" spellcheck="false" placeholder="Optional rules sent as X-IQ-Project-Memory"></textarea>
+      </label>
+
+      <footer>
+        <button id="save" type="button">Save</button>
+        <span id="status" role="status" aria-live="polite"></span>
+      </footer>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>

@@ -617,6 +617,30 @@ func TestOptimize_TextPlainNaturalLanguageStaysPlain(t *testing.T) {
 	}
 }
 
+func TestOptimize_TextPlainLegacyDefaultContextDoesNotFenceNaturalLanguage(t *testing.T) {
+	t.Parallel()
+	gov := govpkg.New(
+		govpkg.WithHistory(govpkg.NewMemoryHistory()),
+		govpkg.WithPruning(true, 8000),
+	)
+	srv := newTestServer(t, gov)
+
+	resp := postOptimizeTextWithHeaders(t, srv.URL, map[string]string{
+		headerSessionKey:  "raw-legacy-defaults",
+		headerContextPath: "browser-prompt.txt",
+		headerContextLang: "txt",
+	}, "what is the issue in the code i gave you?")
+	if resp.status != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.status, resp.body)
+	}
+	if resp.header.Get("X-IQ-Blocks-Seen") != "0" {
+		t.Fatalf("expected no code blocks, headers=%v body=%s", resp.header, resp.body)
+	}
+	if strings.Contains(resp.body, "```") || strings.Contains(resp.body, "browser-prompt.txt") {
+		t.Fatalf("legacy default context should not fence natural language:\n%s", resp.body)
+	}
+}
+
 func TestOptimize_TextPlainInjectsProjectMemory(t *testing.T) {
 	t.Parallel()
 	gov := govpkg.New(

@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "IndexQube Context Optimizer",
+  "description": "Compress repeated code context before sending prompts to ChatGPT or Claude.",
+  "version": "0.1.0",
+  "permissions": ["storage"],
+  "host_permissions": [
+    "http://localhost:8080/*",
+    "http://127.0.0.1:8080/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "IndexQube",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://chatgpt.com/*",
+        "https://chat.openai.com/*",
+        "https://claude.ai/*"
+      ],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    }
+  ]
+}

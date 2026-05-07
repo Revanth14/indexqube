@@ -215,10 +215,19 @@ func normalizeRawOptimizeText(content, contextPath, contextLang string) string {
 	if content == "" || containsFence(content) {
 		return content
 	}
-	if strings.TrimSpace(contextPath) != "" || strings.TrimSpace(contextLang) != "" || looksLikeCodeText(content) {
+	contextPath = strings.TrimSpace(contextPath)
+	contextLang = strings.TrimSpace(contextLang)
+	if isLegacyBrowserPromptContext(contextPath, contextLang) && !looksLikeCodeText(content) {
+		return content
+	}
+	if contextPath != "" || contextLang != "" || looksLikeCodeText(content) {
 		return ensureFencedContext(content, contextPath, contextLang)
 	}
 	return content
+}
+
+func isLegacyBrowserPromptContext(contextPath, contextLang string) bool {
+	return contextPath == "browser-prompt.txt" && (contextLang == "" || contextLang == "txt")
 }
 
 func ensureFencedContext(content, contextPath, contextLang string) string {
