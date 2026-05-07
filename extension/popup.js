@@ -75,8 +75,11 @@ const fields = {
   lastBlocksSkipped: document.getElementById("lastBlocksSkipped"),
   lastTokens: document.getElementById("lastTokens"),
   lastSkipReasons: document.getElementById("lastSkipReasons"),
+  copyReceipt: document.getElementById("copyReceipt"),
   status: document.getElementById("status")
 };
+
+let lastRenderedUsage = null;
 
 let activeSessionScope = globalSessionScope();
 
@@ -320,6 +323,8 @@ function showStatus(text) {
 
 function renderUsage(raw) {
   const usage = normalizeUsage(raw);
+  lastRenderedUsage = usage;
+  fields.copyReceipt.disabled = !usage.lastUpdatedAt || usage.lastOutcome === "idle";
   fields.usageRequests.textContent = formatNumber(usage.requestsTotal);
   fields.usageOptimized.textContent = formatNumber(usage.optimizedRequests);
   fields.usageTokensSaved.textContent = formatNumber(usage.tokensSavedTotal);
@@ -504,6 +509,33 @@ fields.resetBoth.addEventListener("click", async () => {
   renderSessionSummary(sessionKey);
   renderUsage(usage);
   showStatus("Session and usage reset");
+});
+
+function buildReceipt(usage) {
+  const mode = usage.lastOutcome || "unknown";
+  const tokensSaved = Number(usage.lastTokensSaved || 0);
+  const bytesBefore = Number(usage.lastBytesBefore || 0);
+  const bytesAfter = Number(usage.lastBytesAfter || 0);
+  const seen = Number(usage.lastBlocksSeen || 0);
+  const pruned = Number(usage.lastBlocksPruned || 0);
+  const skipped = Number(usage.lastBlocksSkipped || 0);
+  return [
+    `IndexQube saved ${new Intl.NumberFormat().format(tokensSaved)} estimated input tokens.`,
+    `Mode: ${mode}`,
+    `Bytes: ${new Intl.NumberFormat().format(bytesBefore)} -> ${new Intl.NumberFormat().format(bytesAfter)}`,
+    `Blocks: ${seen} seen, ${pruned} pruned, ${skipped} skipped`,
+  ].join("\n");
+}
+
+fields.copyReceipt.addEventListener("click", async () => {
+  if (!lastRenderedUsage || !lastRenderedUsage.lastUpdatedAt) return;
+  const text = buildReceipt(lastRenderedUsage);
+  try {
+    await navigator.clipboard.writeText(text);
+    showStatus("Copied");
+  } catch (_err) {
+    showStatus("Copy failed");
+  }
 });
 
 chrome.storage.onChanged.addListener((changes, area) => {

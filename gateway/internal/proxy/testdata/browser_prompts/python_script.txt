@@ -1,0 +1,12 @@
+scripts/process.py
+import json
+import sys
+
+def process_items(items):
+    return [item for item in items if item.get("active")]
+
+if __name__ == "__main__":
+    data = json.load(sys.stdin)
+    print(json.dumps(process_items(data)))
+
+This crashes on empty input. How do I fix it?

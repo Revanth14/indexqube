@@ -1,0 +1,40 @@
+Here is what I'm seeing:
+
+- The config loader crashes on startup
+- Error occurs in parseIntEnv
+- Only happens in production
+
+```go internal/config/loader.go
+package config
+
+import (
+	"os"
+	"strconv"
+)
+
+type Config struct {
+	Port int
+	Host string
+}
+
+func Load() *Config {
+	return &Config{
+		Port: parseIntEnv("PORT", 8080),
+		Host: os.Getenv("HOST"),
+	}
+}
+
+func parseIntEnv(key string, fallback int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return fallback
+	}
+	return n
+}
+```
+
+Does Load() look thread-safe to you?

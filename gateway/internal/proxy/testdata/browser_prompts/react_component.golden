@@ -1,0 +1,19 @@
+Why is the email not rendering?
+
+```tsx components/UserCard.tsx
+import React from 'react';
+
+interface UserCardProps {
+  name: string;
+  email: string;
+}
+
+export function UserCard({ name, email }: UserCardProps) {
+  return (
+    <div className="card">
+      <h2>{name}</h2>
+      <p>{email}</p>
+    </div>
+  );
+}
+```

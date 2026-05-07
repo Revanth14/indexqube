@@ -40,6 +40,36 @@ func TestBrowserPromptFixtures_NormalizeRawText(t *testing.T) {
 			name:  "tiny_code_not_smaller",
 			paths: []string{"src/tiny.go"},
 		},
+		{
+			name:      "react_component",
+			paths:     []string{"components/UserCard.tsx"},
+			wantPlain: []string{"Why is the email not rendering?"},
+		},
+		{
+			name:      "nextjs_api_route",
+			paths:     []string{"pages/api/users.ts"},
+			wantPlain: []string{"Getting 404 on POST requests to this route. What am I missing?"},
+		},
+		{
+			name:      "python_script",
+			paths:     []string{"scripts/process.py"},
+			wantPlain: []string{"This crashes on empty input. How do I fix it?"},
+		},
+		{
+			name:      "large_go_file",
+			paths:     []string{"internal/gateway/server.go"},
+			wantPlain: []string{"Can you review this service implementation?"},
+		},
+		{
+			name:      "markdown_heavy_with_code",
+			paths:     []string{"internal/config/loader.go"},
+			wantPlain: []string{"Here is what I'm seeing:", "Does Load() look thread-safe to you?"},
+		},
+		{
+			name:      "multi_file_frontend",
+			paths:     []string{"src/components/Parent.tsx", "src/components/Child.tsx"},
+			wantPlain: []string{"I have two components that share state.", "Why is the parent not re-rendering when count changes?"},
+		},
 	}
 
 	for _, tc := range tests {

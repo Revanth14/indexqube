@@ -1,0 +1,31 @@
+I have two components that share state.
+
+```tsx src/components/Parent.tsx
+import React, { useState } from 'react';
+import { Child } from './Child';
+
+export function Parent() {
+  const [count, setCount] = useState(0);
+  return <Child count={count} onIncrement={() => setCount(count + 1)} />;
+}
+```
+
+Why is the parent not re-rendering when count changes?
+
+```tsx src/components/Child.tsx
+import React from 'react';
+
+interface ChildProps {
+  count: number;
+  onIncrement: () => void;
+}
+
+export function Child({ count, onIncrement }: ChildProps) {
+  return (
+    <div>
+      <p>{count}</p>
+      <button onClick={onIncrement}>+</button>
+    </div>
+  );
+}
+```
