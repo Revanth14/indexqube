@@ -5,6 +5,8 @@
 // Anything HTTP-, provider-, or storage-specific does NOT belong here.
 package domain
 
+import "context"
+
 // Provider is the upstream LLM provider tag carried on each request.
 // The governor uses it to dispatch to a registered adapter.
 type Provider string
@@ -59,6 +61,14 @@ type InferenceRequest struct {
 	// (e.g. Chrome extension flow). Otherwise tenant defaults to a hash of
 	// the upstream API key. From header X-IQ-Session-Key.
 	SessionKey string `json:"-"`
+
+	// AzureEndpoint is the full resource URL (e.g. https://res.openai.azure.com).
+	// From header X-IQ-Azure-Endpoint.
+	AzureEndpoint string `json:"-"`
+
+	// AWSRegion is the target region for Bedrock (e.g. us-east-1).
+	// From header X-IQ-AWS-Region.
+	AWSRegion string `json:"-"`
 }
 
 // PruneStats summarizes one pruning pass for logs and /v1/optimize JSON.
@@ -114,4 +124,9 @@ type TokenWriter interface {
 	// implicitly; this is for callers writing raw payloads via the
 	// underlying writer.
 	Flush() error
+}
+
+// Embedder is the contract for generating semantic embeddings of text.
+type Embedder interface {
+	Embed(ctx context.Context, text string) ([]float32, error)
 }

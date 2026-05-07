@@ -17,6 +17,8 @@ const (
 	headerSessionKey    = "X-IQ-Session-Key"
 	headerContextPath   = "X-IQ-Context-Path"
 	headerContextLang   = "X-IQ-Context-Lang"
+	headerAzureEndpoint = "X-IQ-Azure-Endpoint"
+	headerAWSRegion     = "X-IQ-AWS-Region"
 )
 
 var (
@@ -60,6 +62,8 @@ func (p *Proxy) parseInferenceRequest(w http.ResponseWriter, r *http.Request) (*
 	req.Credential = cred
 	req.ProjectMemory = r.Header.Get(headerProjectMemory)
 	req.SessionKey = r.Header.Get(headerSessionKey)
+	req.AzureEndpoint = r.Header.Get(headerAzureEndpoint)
+	req.AWSRegion = r.Header.Get(headerAWSRegion)
 	return &req, nil
 }
 

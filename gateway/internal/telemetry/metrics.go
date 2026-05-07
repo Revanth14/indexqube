@@ -59,6 +59,14 @@ type Metrics struct {
 	// OptimizerReduction captures byte reduction ratios from 0.0 to 1.0.
 	// Labels: source = "optimize" | "stream".
 	OptimizerReduction *prometheus.HistogramVec
+
+	// FailoverRequests counts successful failover attempts.
+	// Labels: from (failed provider), to (secondary provider).
+	FailoverRequests *prometheus.CounterVec
+
+	// EstimatedCostSavedUSD tracks cumulative dollars saved via pruning and caching.
+	// Labels: provider, model.
+	EstimatedCostSavedUSD *prometheus.CounterVec
 }
 
 func newMetrics(reg prometheus.Registerer) *Metrics {
@@ -158,6 +166,20 @@ func newMetrics(reg prometheus.Registerer) *Metrics {
 			Help:      "Observed byte reduction ratio for optimization passes.",
 			Buckets:   []float64{0, 0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 0.99, 1},
 		}, []string{"source"}),
+
+		FailoverRequests: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "iq",
+			Subsystem: "governor",
+			Name:      "failover_requests_total",
+			Help:      "Total successful failover attempts by from/to providers.",
+		}, []string{"from", "to"}),
+
+		EstimatedCostSavedUSD: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "iq",
+			Subsystem: "finops",
+			Name:      "cost_saved_usd",
+			Help:      "Cumulative estimated cost saved in USD via context pruning and caching.",
+		}, []string{"provider", "model"}),
 	}
 
 	reg.MustRegister(
@@ -174,6 +196,8 @@ func newMetrics(reg prometheus.Registerer) *Metrics {
 		m.OptimizerDiffs,
 		m.OptimizerSkips,
 		m.OptimizerReduction,
+		m.FailoverRequests,
+		m.EstimatedCostSavedUSD,
 	)
 
 	// Pre-initialize label combinations the gateway will emit at runtime.
