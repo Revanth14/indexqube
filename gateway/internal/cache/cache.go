@@ -73,7 +73,9 @@ func (e *Entry) Replay(tw domain.TokenWriter) error {
 // as misses and continues to dispatch to the adapter.
 type Cache interface {
 	Get(ctx context.Context, key Key) (*Entry, bool, error)
+	GetSemantic(ctx context.Context, tenantID string, embedding []float32, threshold float64) (*Entry, bool, error)
 	Put(ctx context.Context, key Key, entry *Entry) error
+	PutSemantic(ctx context.Context, tenantID string, key Key, entry *Entry, embedding []float32) error
 }
 
 // Stats is the introspectable state of a single cache layer.

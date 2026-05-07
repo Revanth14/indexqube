@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/Revanth14/indexqube/gateway/internal/cache"
 	"github.com/Revanth14/indexqube/gateway/internal/domain"
@@ -45,10 +46,23 @@ type Governor struct {
 	pruneEnabled  bool
 	pruneMaxLines int
 	projectMemory string
+
+	semanticEnabled   bool
+	semanticThreshold float64
+	embedder          func(ctx context.Context, apiKey, text string) ([]float32, error)
 }
 
 // Option configures a Governor at construction time.
 type Option func(*Governor)
+
+// WithSemanticCaching enables pgvector-based similarity caching.
+func WithSemanticCaching(enabled bool, threshold float64, embedder func(context.Context, string, string) ([]float32, error)) Option {
+	return func(g *Governor) {
+		g.semanticEnabled = enabled
+		g.semanticThreshold = threshold
+		g.embedder = embedder
+	}
+}
 
 // WithAdapter registers an Adapter under a provider tag.
 func WithAdapter(p domain.Provider, a Adapter) Option {
@@ -143,16 +157,16 @@ func (g *Governor) Optimize(ctx context.Context, tenant string, msgs []domain.Me
 	out = InjectProjectMemory(out, MergeProjectMemory(g.projectMemory, projectMemory))
 	if tenant == "" {
 		st := finishPruneStats(domain.PruneStats{})
-		g.recordOptimization(ctx, "optimize", st)
+		g.recordOptimization(ctx, "optimize", st, "", "")
 		return out, st, nil
 	}
 	if !g.pruneEnabled || g.history == nil {
 		st := finishPruneStats(domain.PruneStats{})
-		g.recordOptimization(ctx, "optimize", st)
+		g.recordOptimization(ctx, "optimize", st, "", "")
 		return out, st, nil
 	}
 	stMsgs, st := PruneMessages(ctx, g.history, tenant, out, g.effectivePruneMaxLines(), g.logger)
-	g.recordOptimization(ctx, "optimize", st)
+	g.recordOptimization(ctx, "optimize", st, "", "")
 	return stMsgs, st, nil
 }
 
@@ -189,67 +203,153 @@ func (g *Governor) Stream(ctx context.Context, req *domain.InferenceRequest, tw 
 	if g.pruneEnabled && g.history != nil {
 		var st domain.PruneStats
 		work.Messages, st = PruneMessages(ctx, g.history, tenant, work.Messages, g.effectivePruneMaxLines(), g.logger)
-		g.recordOptimization(ctx, "stream", st)
+		g.recordOptimization(ctx, "stream", st, string(work.Credential.Provider), work.Model)
 	} else {
-		g.recordOptimization(ctx, "stream", finishPruneStats(domain.PruneStats{}))
+		g.recordOptimization(ctx, "stream", finishPruneStats(domain.PruneStats{}), string(work.Credential.Provider), work.Model)
 	}
 
-	a, ok := g.adapters[work.Credential.Provider]
-	if !ok {
-		return fmt.Errorf("governor: no adapter registered for provider %q", work.Credential.Provider)
+	// 1. Cache lookup
+	var cacheKey cache.Key
+	if g.cache != nil {
+		if key, err := cache.DeriveKey(work); err != nil {
+			g.recordLookup("error")
+			g.logger.WarnContext(ctx, "cache key derivation failed; bypassing cache", slog.Any("err", err))
+		} else {
+			cacheKey = key
+			if entry, hit, err := g.cache.Get(ctx, cacheKey); err != nil {
+				g.recordLookup("error")
+				g.logger.WarnContext(ctx, "cache get failed; falling back to upstream", slog.Any("err", err))
+			} else if hit {
+				g.recordLookup("hit")
+				g.logger.DebugContext(ctx, "cache hit",
+					slog.String("provider", string(work.Credential.Provider)),
+					slog.String("model", work.Model),
+				)
+				return entry.Replay(tw)
+			} else {
+				g.recordLookup("miss")
+			}
+
+			// 1b. Semantic Cache Lookup (L2)
+			if g.semanticEnabled && g.embedder != nil && work.Credential.Provider == domain.ProviderOpenAI {
+				// Only embed the user's last message for context search.
+				// This is a common pattern for semantic caching.
+				lastMsg := getLastUserMessage(work.Messages)
+				if lastMsg != "" {
+					embedding, err := g.embedder(ctx, work.Credential.APIKey, lastMsg)
+					if err == nil {
+						if entry, hit, err := g.cache.GetSemantic(ctx, tenant, embedding, g.semanticThreshold); err == nil && hit {
+							g.logger.InfoContext(ctx, "semantic cache hit",
+								slog.String("provider", string(work.Credential.Provider)),
+								slog.String("model", work.Model),
+							)
+							// Optional: update L1 cache with this result for next time.
+							_ = g.cache.Put(ctx, cacheKey, entry)
+							return entry.Replay(tw)
+						}
+					} else {
+						g.logger.WarnContext(ctx, "embedding generation failed", slog.Any("err", err))
+					}
+				}
+			}
+		}
 	}
 
-	if g.cache == nil {
-		g.logger.DebugContext(ctx, "dispatching to adapter (cache disabled)",
-			slog.String("provider", string(work.Credential.Provider)),
-			slog.String("model", work.Model),
-		)
-		return a.Dispatch(ctx, work, tw)
-	}
-
-	key, err := cache.DeriveKey(work)
+	// 2. Dispatch with failover
+	entry, err := g.dispatchWithFailover(ctx, work, tw)
 	if err != nil {
-		g.recordLookup("error")
-		g.logger.WarnContext(ctx, "cache key derivation failed; bypassing cache", slog.Any("err", err))
-		return a.Dispatch(ctx, work, tw)
-	}
-
-	if entry, hit, err := g.cache.Get(ctx, key); err != nil {
-		g.recordLookup("error")
-		g.logger.WarnContext(ctx, "cache get failed; falling back to upstream", slog.Any("err", err))
-	} else if hit {
-		g.recordLookup("hit")
-		g.logger.DebugContext(ctx, "cache hit",
-			slog.String("provider", string(work.Credential.Provider)),
-			slog.String("model", work.Model),
-		)
-		return entry.Replay(tw)
-	} else {
-		g.recordLookup("miss")
-	}
-
-	tee := cache.NewTee(tw, g.maxEntryBytes)
-	if err := a.Dispatch(ctx, work, tee); err != nil {
 		return err
 	}
 
-	entry, ok := tee.Entry(work.Credential.Provider, work.Model)
-	if !ok {
-		g.recordWrite("skipped")
-		return nil
+	// 3. Persist to cache
+	if entry != nil && g.cache != nil {
+		key, kerr := cache.DeriveKey(work)
+		if kerr == nil {
+			var embedding []float32
+			if g.semanticEnabled && g.embedder != nil && work.Credential.Provider == domain.ProviderOpenAI {
+				lastMsg := getLastUserMessage(work.Messages)
+				if lastMsg != "" {
+					embedding, _ = g.embedder(ctx, work.Credential.APIKey, lastMsg)
+				}
+			}
+
+			var perr error
+			if len(embedding) > 0 {
+				perr = g.cache.PutSemantic(ctx, tenant, key, entry, embedding)
+			} else {
+				perr = g.cache.Put(ctx, key, entry)
+			}
+			if perr != nil {
+				if errors.Is(perr, cache.ErrEntryTooLarge) {
+					g.recordWrite("too_large")
+				} else {
+					g.recordWrite("error")
+					g.logger.WarnContext(ctx, "cache put failed", slog.Any("err", perr))
+				}
+			} else {
+				g.recordWrite("ok")
+			}
+		}
 	}
 
-	if err := g.cache.Put(ctx, key, entry); err != nil {
-		if errors.Is(err, cache.ErrEntryTooLarge) {
-			g.recordWrite("too_large")
-		} else {
-			g.recordWrite("error")
-			g.logger.WarnContext(ctx, "cache put failed", slog.Any("err", err))
-		}
-		return nil
-	}
-	g.recordWrite("ok")
 	return nil
+}
+
+func (g *Governor) dispatchWithFailover(ctx context.Context, work *domain.InferenceRequest, tw domain.TokenWriter) (*cache.Entry, error) {
+	a, ok := g.adapters[work.Credential.Provider]
+	if !ok {
+		return nil, fmt.Errorf("governor: no adapter registered for provider %q", work.Credential.Provider)
+	}
+
+	// Use a Tee if caching is enabled to capture the response.
+	// If failover happens, we skip caching for the fallback response in v1
+	// to avoid key mismatch / complexity.
+	var sink domain.TokenWriter = tw
+	var tee *cache.Tee
+	if g.cache != nil {
+		tee = cache.NewTee(tw, g.maxEntryBytes)
+		sink = tee
+	}
+
+	err := a.Dispatch(ctx, work, sink)
+	if err != nil && isRetryable(err) {
+		if fallback, ok := g.getFallbackProvider(work.Credential.Provider); ok {
+			if fa, fok := g.adapters[fallback]; fok {
+				g.logger.InfoContext(ctx, "primary provider failed; failing over",
+					slog.String("from", string(work.Credential.Provider)),
+					slog.String("to", string(fallback)),
+					slog.Any("err", err),
+				)
+				if g.metrics != nil {
+					g.metrics.FailoverRequests.WithLabelValues(string(work.Credential.Provider), string(fallback)).Inc()
+				}
+				work.Credential.Provider = fallback
+				// Failover bypasses the tee/cache for now.
+				return nil, fa.Dispatch(ctx, work, tw)
+			}
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	// 3. Extract entry if we used a tee.
+	if tee != nil {
+		if entry, ok := tee.Entry(work.Credential.Provider, work.Model); ok {
+			return entry, nil
+		}
+	}
+
+	return nil, nil
+}
+
+func getLastUserMessage(msgs []domain.Message) string {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if strings.ToLower(msgs[i].Role) == "user" {
+			return msgs[i].Content
+		}
+	}
+	return ""
 }
 
 func (g *Governor) recordLookup(result string) {
@@ -266,7 +366,33 @@ func (g *Governor) recordWrite(result string) {
 	g.metrics.CacheWrites.WithLabelValues(result).Inc()
 }
 
-func (g *Governor) recordOptimization(ctx context.Context, source string, st domain.PruneStats) {
+func (g *Governor) getFallbackProvider(p domain.Provider) (domain.Provider, bool) {
+	// Static failover map for v1.
+	// Anthropic -> Bedrock (Claude 3.5 failover)
+	// OpenAI -> Azure (GPT failover)
+	switch p {
+	case domain.ProviderAnthropic:
+		return domain.ProviderBedrock, true
+	case domain.ProviderOpenAI:
+		return domain.ProviderAzure, true
+	default:
+		return "", false
+	}
+}
+
+func isRetryable(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	// Detect 429 (Rate Limit) and 503 (Service Unavailable)
+	return strings.Contains(msg, "429") ||
+		strings.Contains(msg, "503") ||
+		strings.Contains(msg, "overloaded") ||
+		strings.Contains(msg, "rate limit")
+}
+
+func (g *Governor) recordOptimization(ctx context.Context, source string, st domain.PruneStats, provider, model string) {
 	if g.metrics != nil {
 		g.metrics.OptimizerRequests.WithLabelValues(source).Inc()
 		g.metrics.OptimizerBytes.WithLabelValues(source, "before").Add(float64(st.BytesBefore))
@@ -282,6 +408,12 @@ func (g *Governor) recordOptimization(ctx context.Context, source string, st dom
 			g.metrics.OptimizerSkips.WithLabelValues(source, reason).Add(float64(n))
 		}
 		g.metrics.OptimizerReduction.WithLabelValues(source).Observe(st.ReductionRatio)
+
+		tokensSaved := st.TokensBefore - st.TokensAfter
+		if tokensSaved > 0 {
+			usd := telemetry.EstimateCostSaved(provider, model, tokensSaved)
+			g.metrics.EstimatedCostSavedUSD.WithLabelValues(provider, model).Add(usd)
+		}
 	}
 	g.logger.InfoContext(ctx, "optimization summary",
 		slog.String("source", source),

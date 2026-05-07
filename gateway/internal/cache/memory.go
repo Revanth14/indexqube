@@ -77,6 +77,10 @@ func (c *MemoryCache) Get(_ context.Context, key Key) (*Entry, bool, error) {
 	return item.entry, true, nil
 }
 
+func (c *MemoryCache) GetSemantic(_ context.Context, _ string, _ []float32, _ float64) (*Entry, bool, error) {
+	return nil, false, nil
+}
+
 // Put inserts or refreshes an entry. Triggers eviction if over budget.
 func (c *MemoryCache) Put(_ context.Context, key Key, entry *Entry) error {
 	if c.maxBytes <= 0 {
@@ -110,6 +114,10 @@ func (c *MemoryCache) Put(_ context.Context, key Key, entry *Entry) error {
 	c.bytes += size
 	c.evictUntilUnderBudget()
 	return nil
+}
+
+func (c *MemoryCache) PutSemantic(ctx context.Context, _ string, key Key, entry *Entry, _ []float32) error {
+	return c.Put(ctx, key, entry)
 }
 
 // Stats returns the current observed state.

@@ -79,10 +79,12 @@ type GovernorConfig struct {
 // deployments should size MaxBytes to a meaningful fraction of the
 // container's memory budget.
 type CacheConfig struct {
-	Enabled       bool
-	MaxBytes      int64
-	TTL           time.Duration
-	MaxEntryBytes int64 // largest single response we'll cache; bigger -> tee abandons
+	Enabled           bool
+	MaxBytes          int64
+	TTL               time.Duration
+	MaxEntryBytes     int64 // largest single response we'll cache; bigger -> tee abandons
+	SemanticEnabled   bool
+	SemanticThreshold float64
 }
 
 type AWSConfig struct {
@@ -146,10 +148,12 @@ func Load() (*AppConfig, error) {
 			HistoryTTL:               getEnvAsDuration("GOVERNOR_HISTORY_TTL", 2*time.Hour),
 		},
 		Cache: CacheConfig{
-			Enabled:       getEnvAsBool("CACHE_ENABLED", true),
-			MaxBytes:      int64(getEnvAsInt("CACHE_MAX_BYTES", 256<<20)), // 256 MiB
-			TTL:           getEnvAsDuration("CACHE_TTL", 24*time.Hour),
-			MaxEntryBytes: int64(getEnvAsInt("CACHE_MAX_ENTRY_BYTES", 4<<20)), // 4 MiB
+			Enabled:           getEnvAsBool("CACHE_ENABLED", true),
+			MaxBytes:          int64(getEnvAsInt("CACHE_MAX_BYTES", 256<<20)), // 256 MiB
+			TTL:               getEnvAsDuration("CACHE_TTL", 24*time.Hour),
+			MaxEntryBytes:     int64(getEnvAsInt("CACHE_MAX_ENTRY_BYTES", 4<<20)), // 4 MiB
+			SemanticEnabled:   getEnvAsBool("CACHE_SEMANTIC_ENABLED", false),
+			SemanticThreshold: getEnvAsFloat64("CACHE_SEMANTIC_THRESHOLD", 0.95),
 		},
 		AWS: AWSConfig{
 			Region:          getEnvWithDefault("AWS_REGION", "us-east-1"),

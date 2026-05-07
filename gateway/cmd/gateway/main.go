@@ -16,9 +16,13 @@ import (
 	"github.com/Revanth14/indexqube/gateway/internal/governor"
 	"github.com/Revanth14/indexqube/gateway/internal/middleware"
 	"github.com/Revanth14/indexqube/gateway/internal/provider/anthropic"
+	"github.com/Revanth14/indexqube/gateway/internal/provider/azure"
+	"github.com/Revanth14/indexqube/gateway/internal/provider/bedrock"
 	"github.com/Revanth14/indexqube/gateway/internal/provider/openai"
 	"github.com/Revanth14/indexqube/gateway/internal/proxy"
+	"github.com/Revanth14/indexqube/gateway/internal/storage/supabase"
 	"github.com/Revanth14/indexqube/gateway/internal/telemetry"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
@@ -57,13 +61,14 @@ func main() {
 	// the response cache; the proxy handles HTTP framing and SSE.
 	anthropicAdapter := anthropic.New(anthropic.WithLogger(logger))
 	openaiAdapter := openai.New(openai.WithLogger(logger))
+	azureAdapter := azure.New(azure.WithLogger(logger))
+	bedrockAdapter := bedrock.New(
+		bedrock.WithLogger(logger),
+		bedrock.WithRegion(cfg.AWS.Region),
+	)
 
-	projectMemory, err := governor.LoadProjectMemory(cfg.Governor.ProjectMemoryPath)
-	if err != nil {
-		logger.Error("project memory load failed", slog.Any("err", err))
-		os.Exit(1)
-	}
-
+	// Pruning history stays volatile in v1. Persisting raw code snapshots would
+	// violate the Path A privacy model; Supabase is used only for response cache.
 	hist := governor.NewMemoryHistoryWithConfig(governor.MemoryHistoryConfig{
 		MaxTenants:        cfg.Governor.HistoryMaxTenants,
 		MaxFilesPerTenant: cfg.Governor.HistoryMaxFilesPerTenant,
@@ -71,37 +76,51 @@ func main() {
 		MaxBytes:          cfg.Governor.HistoryMaxBytes,
 		TTL:               cfg.Governor.HistoryTTL,
 	})
+	var c cache.Cache
+	if cfg.Cache.Enabled && cfg.Supabase.DBURL != "" {
+		pool, err := pgxpool.New(context.Background(), cfg.Supabase.DBURL)
+		if err != nil {
+			logger.Error("supabase pool failed", slog.Any("err", err))
+			os.Exit(1)
+		}
+		defer pool.Close()
+		c = supabase.NewCache(pool, cfg.Cache.MaxEntryBytes)
+		logger.Info("using supabase response cache with volatile pruning history")
+	} else {
+		if cfg.Cache.Enabled {
+			c = cache.NewMemoryCache(cache.MemoryConfig{
+				MaxBytes: cfg.Cache.MaxBytes,
+				TTL:      cfg.Cache.TTL,
+			})
+		}
+		logger.Info("using volatile in-memory storage")
+	}
+
+	projectMemory, err := governor.LoadProjectMemory(cfg.Governor.ProjectMemoryPath)
+	if err != nil {
+		logger.Error("project memory load failed", slog.Any("err", err))
+		os.Exit(1)
+	}
+
 	govOpts := []governor.Option{
 		governor.WithAdapter(domain.ProviderAnthropic, anthropicAdapter),
 		governor.WithAdapter(domain.ProviderOpenAI, openaiAdapter),
+		governor.WithAdapter(domain.ProviderAzure, azureAdapter),
+		governor.WithAdapter(domain.ProviderBedrock, bedrockAdapter),
 		governor.WithLogger(logger),
 		governor.WithMetrics(tp.Metrics),
 		governor.WithHistory(hist),
 		governor.WithPruning(cfg.Governor.PruneEnabled, cfg.Governor.PruneMaxLines),
 		governor.WithProjectMemory(projectMemory),
 	}
-	logger.Info("pruning engine",
-		slog.Bool("enabled", cfg.Governor.PruneEnabled),
-		slog.Int("max_lines_per_diff", cfg.Governor.PruneMaxLines),
-	)
-	logger.Info("project memory",
-		slog.String("path", cfg.Governor.ProjectMemoryPath),
-		slog.Bool("loaded", projectMemory != ""),
-	)
-
-	if cfg.Cache.Enabled {
-		c := cache.NewMemoryCache(cache.MemoryConfig{
-			MaxBytes: cfg.Cache.MaxBytes,
-			TTL:      cfg.Cache.TTL,
-		})
+	if c != nil {
 		govOpts = append(govOpts, governor.WithCache(c, cfg.Cache.MaxEntryBytes))
-		logger.Info("response cache enabled",
-			slog.Int64("max_bytes", cfg.Cache.MaxBytes),
-			slog.Duration("ttl", cfg.Cache.TTL),
-			slog.Int64("max_entry_bytes", cfg.Cache.MaxEntryBytes),
+	}
+	if c != nil && cfg.Cache.SemanticEnabled {
+		govOpts = append(govOpts, governor.WithSemanticCaching(true, cfg.Cache.SemanticThreshold, openaiAdapter.Embed))
+		logger.Info("semantic cache enabled",
+			slog.Float64("threshold", cfg.Cache.SemanticThreshold),
 		)
-	} else {
-		logger.Info("response cache disabled")
 	}
 
 	gov := governor.New(govOpts...)

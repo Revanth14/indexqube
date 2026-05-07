@@ -2,6 +2,7 @@
 bin/
 dist/
 *.exe
+gateway/gateway
 
 # Keys & Secrets
 .env
@@ -10,6 +11,9 @@ credentials.json
 vendor/
 .env.*
 !.env.example
+node_modules/
+vscode-extension/node_modules/
+vscode-extension/dist/
 
 # Local Lab
 .localstack/
