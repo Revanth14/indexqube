@@ -221,6 +221,11 @@ func normalizeRawOptimizeText(content, contextPath, contextLang string) string {
 		return content
 	}
 	if contextPath != "" || contextLang != "" || looksLikeCodeText(content) {
+		if contextPath == "" && contextLang == "" {
+			if normalized, ok := normalizeBrowserPromptCode(content); ok {
+				return normalized
+			}
+		}
 		return ensureFencedContext(content, contextPath, contextLang)
 	}
 	return content

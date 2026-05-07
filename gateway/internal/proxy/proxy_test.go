@@ -597,6 +597,95 @@ func TestOptimize_TextPlainAutoWrapsRawCode(t *testing.T) {
 	}
 }
 
+func TestOptimize_TextPlainMixedPromptWrapsOnlyCode(t *testing.T) {
+	t.Parallel()
+	gov := govpkg.New(
+		govpkg.WithHistory(govpkg.NewMemoryHistory()),
+		govpkg.WithPruning(true, 8000),
+	)
+	srv := newTestServer(t, gov)
+
+	body1 := "what is wrong here?\n\nfunc calculate() {\n return 1 + 1\n }"
+	body2 := "what is wrong here?\n\nfunc calculate() {\n return 1 + 2\n }"
+	first := postOptimizeText(t, srv.URL, "raw-mixed-prompt", "", body1)
+	if first.status != http.StatusOK {
+		t.Fatalf("status=%d body=%s", first.status, first.body)
+	}
+	if got := first.header.Get("X-IQ-Blocks-Seen"); got != "1" {
+		t.Fatalf("first X-IQ-Blocks-Seen=%q want 1; body=%s", got, first.body)
+	}
+	if !strings.HasPrefix(first.body, "what is wrong here?\n\n```go "+defaultRawContextPath) {
+		t.Fatalf("question should stay outside fenced code:\n%s", first.body)
+	}
+
+	second := postOptimizeText(t, srv.URL, "raw-mixed-prompt", "", body2)
+	if got := second.header.Get("X-IQ-Blocks-Pruned"); got != "1" {
+		t.Fatalf("second X-IQ-Blocks-Pruned=%q want 1; body=%s", got, second.body)
+	}
+	if !strings.Contains(second.body, "what is wrong here?") {
+		t.Fatalf("question missing from optimized payload:\n%s", second.body)
+	}
+	if !strings.Contains(second.body, "```diff") || !strings.Contains(second.body, "+  return 1 + 2") {
+		t.Fatalf("expected compact diff for mixed prompt:\n%s", second.body)
+	}
+	if strings.Contains(second.body, "```go "+defaultRawContextPath) {
+		t.Fatalf("raw code fence should be replaced by diff on second request:\n%s", second.body)
+	}
+}
+
+func TestOptimize_TextPlainMixedPromptUsesFileHint(t *testing.T) {
+	t.Parallel()
+	gov := govpkg.New(
+		govpkg.WithHistory(govpkg.NewMemoryHistory()),
+		govpkg.WithPruning(true, 8000),
+	)
+	srv := newTestServer(t, gov)
+
+	body1 := "review this\n\nsrc/calc.go\nfunc calculate() {\n return 1 + 1\n }"
+	body2 := "review this\n\nsrc/calc.go\nfunc calculate() {\n return 1 + 2\n }"
+	first := postOptimizeText(t, srv.URL, "raw-mixed-file-hint", "", body1)
+	if got := first.header.Get("X-IQ-Blocks-Seen"); got != "1" {
+		t.Fatalf("first X-IQ-Blocks-Seen=%q want 1; body=%s", got, first.body)
+	}
+	if !strings.Contains(first.body, "```go src/calc.go\nfunc calculate") {
+		t.Fatalf("expected file hint to become fenced path:\n%s", first.body)
+	}
+	if strings.Contains(first.body, "\nsrc/calc.go\nfunc calculate") {
+		t.Fatalf("path hint should not remain as plain prompt text:\n%s", first.body)
+	}
+
+	second := postOptimizeText(t, srv.URL, "raw-mixed-file-hint", "", body2)
+	if got := second.header.Get("X-IQ-Blocks-Pruned"); got != "1" {
+		t.Fatalf("second X-IQ-Blocks-Pruned=%q want 1; body=%s", got, second.body)
+	}
+	if !strings.Contains(second.body, "+++ b/src/calc.go") {
+		t.Fatalf("expected diff to use file hint path:\n%s", second.body)
+	}
+}
+
+func TestOptimize_TextPlainCodeThenQuestionKeepsQuestionOutsideCode(t *testing.T) {
+	t.Parallel()
+	gov := govpkg.New(
+		govpkg.WithHistory(govpkg.NewMemoryHistory()),
+		govpkg.WithPruning(true, 8000),
+	)
+	srv := newTestServer(t, gov)
+
+	resp := postOptimizeText(t, srv.URL, "raw-code-then-question", "", "func calculate() {\n return 1 + 1\n }\n\nwhat is wrong here?")
+	if resp.status != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.status, resp.body)
+	}
+	if got := resp.header.Get("X-IQ-Blocks-Seen"); got != "1" {
+		t.Fatalf("X-IQ-Blocks-Seen=%q want 1; body=%s", got, resp.body)
+	}
+	if !strings.HasPrefix(resp.body, "```go "+defaultRawContextPath) {
+		t.Fatalf("expected code to be fenced first:\n%s", resp.body)
+	}
+	if !strings.HasSuffix(strings.TrimSpace(resp.body), "what is wrong here?") {
+		t.Fatalf("suffix question should stay outside fenced code:\n%s", resp.body)
+	}
+}
+
 func TestOptimize_TextPlainNaturalLanguageStaysPlain(t *testing.T) {
 	t.Parallel()
 	gov := govpkg.New(
