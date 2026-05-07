@@ -51,6 +51,8 @@ const DEFAULT_USAGE = {
 const fields = {
   enabled: document.getElementById("enabled"),
   gatewayUrl: document.getElementById("gatewayUrl"),
+  gatewaySummary: document.getElementById("gatewaySummary"),
+  checkGateway: document.getElementById("checkGateway"),
   sessionKey: document.getElementById("sessionKey"),
   projectMemory: document.getElementById("projectMemory"),
   contextPath: document.getElementById("contextPath"),
@@ -273,6 +275,7 @@ async function load() {
 
   const stored = await storageGet({ [USAGE_KEY]: DEFAULT_USAGE });
   renderUsage(stored[USAGE_KEY]);
+  void checkGatewayHealth();
 }
 
 async function save() {
@@ -304,6 +307,7 @@ async function save() {
   fields.sessionKey.value = sessionKey;
   renderSessionSummary(sessionKey);
   showStatus("Saved");
+  void checkGatewayHealth();
 }
 
 function showStatus(text) {
@@ -338,11 +342,40 @@ function renderUsage(raw) {
   if (usage.lastOutcome === "error") {
     fields.usageLast.textContent = `${gateway}: ${usage.lastError || "request failed"}`;
   } else {
-    fields.usageLast.textContent = `${gateway} · saved ${formatNumber(usage.lastTokensSaved)} estimated tokens · ${savedPct}% reduction`;
+    fields.usageLast.textContent = `${stateLabel(usage.lastOutcome, "")} · saved ${formatNumber(usage.lastTokensSaved)} estimated tokens / ${formatBytes(usage.lastBytesSaved)} · ${savedPct}% · ${gateway}`;
   }
   fields.lastSkipReasons.textContent = usage.lastSkipReasons
     ? `Skipped: ${formatSkipReasons(usage.lastSkipReasons)}`
     : "";
+}
+
+async function checkGatewayHealth() {
+  const gatewayUrl = normalizeGatewayURL(fields.gatewayUrl.value || DEFAULT_SETTINGS.gatewayUrl);
+  renderGatewayState("checking", "Checking gateway...");
+  const startedAt = performance.now();
+  try {
+    const response = await fetch(`${gatewayUrl}/healthz`, {
+      method: "GET",
+      cache: "no-store"
+    });
+    const elapsed = Math.max(1, Math.round(performance.now() - startedAt));
+    if (!response.ok) {
+      renderGatewayState("offline", `Gateway ${response.status} at ${gatewayUrl}`);
+      return;
+    }
+    renderGatewayState("online", `Online at ${gatewayUrl} (${elapsed} ms)`);
+  } catch (err) {
+    renderGatewayState("offline", `Offline at ${gatewayUrl}`);
+  }
+}
+
+function renderGatewayState(state, text) {
+  fields.gatewaySummary.dataset.state = state;
+  fields.gatewaySummary.textContent = text;
+}
+
+function normalizeGatewayURL(value) {
+  return String(value || DEFAULT_SETTINGS.gatewayUrl).trim().replace(/\/+$/, "") || DEFAULT_SETTINGS.gatewayUrl;
 }
 
 function normalizeUsage(raw) {
@@ -430,6 +463,8 @@ function freshUsage() {
 }
 
 fields.save.addEventListener("click", () => void save());
+fields.checkGateway.addEventListener("click", () => void checkGatewayHealth());
+fields.gatewayUrl.addEventListener("change", () => void checkGatewayHealth());
 fields.resetSession.addEventListener("click", () => {
   fields.sessionKey.value = createSessionKey();
   void save().then(() => showStatus("Session reset"));

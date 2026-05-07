@@ -116,11 +116,39 @@ button#resetBoth {
   padding: 6px 8px;
 }
 
+button#checkGateway {
+  border-color: #cbd5e1;
+  background: #fff;
+  color: #0f172a;
+  padding: 6px 8px;
+}
+
 .meta-row {
   justify-content: space-between;
   color: #475569;
   font-size: 12px;
   font-weight: 600;
+}
+
+.gateway-row {
+  align-items: center;
+}
+
+#gatewaySummary {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+#gatewaySummary[data-state="online"] {
+  color: #166534;
+}
+
+#gatewaySummary[data-state="checking"] {
+  color: #0369a1;
+}
+
+#gatewaySummary[data-state="offline"] {
+  color: #991b1b;
 }
 
 .usage {
