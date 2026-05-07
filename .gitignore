@@ -28,6 +28,7 @@ coverage.out
 .vscode/
 
 # Logs/build/cache
+.cache/
 *.log
 tmp/
 build/
