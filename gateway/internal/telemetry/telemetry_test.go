@@ -54,6 +54,8 @@ func TestPrometheusHandler_ExposesGatewayMetrics(t *testing.T) {
 	p.Metrics.OptimizerRequests.WithLabelValues("optimize").Inc()
 	p.Metrics.OptimizerBytes.WithLabelValues("optimize", "before").Add(100)
 	p.Metrics.OptimizerBytes.WithLabelValues("optimize", "after").Add(25)
+	p.Metrics.OptimizerTokens.WithLabelValues("optimize", "before").Add(25)
+	p.Metrics.OptimizerTokens.WithLabelValues("optimize", "after").Add(7)
 	p.Metrics.OptimizerBlocks.WithLabelValues("optimize", "seen").Add(1)
 	p.Metrics.OptimizerBlocks.WithLabelValues("optimize", "pruned").Add(1)
 	p.Metrics.OptimizerDiffs.WithLabelValues("optimize", "exact").Add(1)
@@ -75,6 +77,7 @@ func TestPrometheusHandler_ExposesGatewayMetrics(t *testing.T) {
 		"iq_stream_active",
 		"iq_optimizer_requests_total",
 		`iq_optimizer_bytes_total{source="optimize",stage="before"} 100`,
+		`iq_optimizer_tokens_total{source="optimize",stage="after"} 7`,
 		`iq_optimizer_blocks_total{result="pruned",source="optimize"} 1`,
 		`iq_optimizer_diffs_total{mode="exact",source="optimize"} 1`,
 		"iq_optimizer_reduction_ratio",

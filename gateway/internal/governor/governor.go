@@ -251,6 +251,8 @@ func (g *Governor) recordOptimization(ctx context.Context, source string, st dom
 		g.metrics.OptimizerRequests.WithLabelValues(source).Inc()
 		g.metrics.OptimizerBytes.WithLabelValues(source, "before").Add(float64(st.BytesBefore))
 		g.metrics.OptimizerBytes.WithLabelValues(source, "after").Add(float64(st.BytesAfter))
+		g.metrics.OptimizerTokens.WithLabelValues(source, "before").Add(float64(st.TokensBefore))
+		g.metrics.OptimizerTokens.WithLabelValues(source, "after").Add(float64(st.TokensAfter))
 		g.metrics.OptimizerBlocks.WithLabelValues(source, "seen").Add(float64(st.BlocksSeen))
 		g.metrics.OptimizerBlocks.WithLabelValues(source, "pruned").Add(float64(st.BlocksPruned))
 		g.metrics.OptimizerBlocks.WithLabelValues(source, "skipped").Add(float64(st.BlocksSkipped))

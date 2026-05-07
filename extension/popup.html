@@ -45,6 +45,40 @@
         <textarea id="projectMemory" rows="5" spellcheck="false" placeholder="Optional rules sent as X-IQ-Project-Memory"></textarea>
       </label>
 
+      <section class="usage" aria-label="Usage">
+        <div class="usage-head">
+          <h2>Usage</h2>
+          <button id="resetUsage" type="button" title="Reset usage stats">Reset</button>
+        </div>
+        <dl>
+          <div>
+            <dt>Requests</dt>
+            <dd id="usageRequests">0</dd>
+          </div>
+          <div>
+            <dt>Optimized</dt>
+            <dd id="usageOptimized">0</dd>
+          </div>
+          <div>
+            <dt>Tokens saved</dt>
+            <dd id="usageTokensSaved">0</dd>
+          </div>
+          <div>
+            <dt>Bytes saved</dt>
+            <dd id="usageBytesSaved">0</dd>
+          </div>
+          <div>
+            <dt>Blocks pruned</dt>
+            <dd id="usageBlocksPruned">0</dd>
+          </div>
+          <div>
+            <dt>Errors</dt>
+            <dd id="usageErrors">0</dd>
+          </div>
+        </dl>
+        <p id="usageLast">No optimized requests yet</p>
+      </section>
+
       <footer>
         <button id="save" type="button">Save</button>
         <span id="status" role="status" aria-live="polite"></span>

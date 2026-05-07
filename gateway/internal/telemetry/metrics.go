@@ -40,6 +40,10 @@ type Metrics struct {
 	// Labels: source = "optimize" | "stream", stage = "before" | "after".
 	OptimizerBytes *prometheus.CounterVec
 
+	// OptimizerTokens counts estimated tokens seen before/after optimization.
+	// Labels: source = "optimize" | "stream", stage = "before" | "after".
+	OptimizerTokens *prometheus.CounterVec
+
 	// OptimizerBlocks counts code-block outcomes.
 	// Labels: source = "optimize" | "stream", result = "seen" | "pruned" | "skipped".
 	OptimizerBlocks *prometheus.CounterVec
@@ -119,6 +123,13 @@ func newMetrics(reg prometheus.Registerer) *Metrics {
 			Help:      "Total exact bytes before and after optimization.",
 		}, []string{"source", "stage"}),
 
+		OptimizerTokens: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "iq",
+			Subsystem: "optimizer",
+			Name:      "tokens_total",
+			Help:      "Total estimated tokens before and after optimization.",
+		}, []string{"source", "stage"}),
+
 		OptimizerBlocks: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: "iq",
 			Subsystem: "optimizer",
@@ -158,6 +169,7 @@ func newMetrics(reg prometheus.Registerer) *Metrics {
 		m.CacheWrites,
 		m.OptimizerRequests,
 		m.OptimizerBytes,
+		m.OptimizerTokens,
 		m.OptimizerBlocks,
 		m.OptimizerDiffs,
 		m.OptimizerSkips,
@@ -178,6 +190,7 @@ func newMetrics(reg prometheus.Registerer) *Metrics {
 		m.OptimizerRequests.WithLabelValues(source).Add(0)
 		for _, stage := range []string{"before", "after"} {
 			m.OptimizerBytes.WithLabelValues(source, stage).Add(0)
+			m.OptimizerTokens.WithLabelValues(source, stage).Add(0)
 		}
 		for _, result := range []string{"seen", "pruned", "skipped"} {
 			m.OptimizerBlocks.WithLabelValues(source, result).Add(0)
@@ -185,7 +198,7 @@ func newMetrics(reg prometheus.Registerer) *Metrics {
 		for _, mode := range []string{"exact", "fallback"} {
 			m.OptimizerDiffs.WithLabelValues(source, mode).Add(0)
 		}
-		for _, reason := range []string{"too_many_lines", "empty", "unknown"} {
+		for _, reason := range []string{"too_many_lines", "empty", "not_smaller", "unknown"} {
 			m.OptimizerSkips.WithLabelValues(source, reason).Add(0)
 		}
 		m.OptimizerReduction.WithLabelValues(source)

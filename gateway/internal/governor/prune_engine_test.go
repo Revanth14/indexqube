@@ -100,7 +100,7 @@ func TestPruneMessages_SecondRoundIdentical(t *testing.T) {
 	ctx := context.Background()
 	h := NewMemoryHistory()
 	tenant := "t1"
-	body := "```go src/x.go\nhello\nworld\n```"
+	body := "```go src/x.go\n" + strings.Join(makeNumberedLines(80), "\n") + "\n```"
 	msgs := []domain.Message{{Role: "user", Content: body}}
 	out1, st1 := PruneMessages(ctx, h, tenant, msgs, 8000, nil)
 	if st1.BlocksSeen != 1 || st1.BlocksPruned != 0 {
@@ -128,8 +128,12 @@ func TestPruneMessages_SecondRoundChangeBecomesDiff(t *testing.T) {
 	h := NewMemoryHistory()
 	tenant := "t1"
 
-	body1 := "```go src/x.go\nhello\nworld\n```"
-	body2 := "```go src/x.go\nhello\nWORLD\n```"
+	oldLines := makeNumberedLines(80)
+	newLines := append([]string(nil), oldLines...)
+	newLines[40] = "line 0041 changed"
+
+	body1 := "```go src/x.go\n" + strings.Join(oldLines, "\n") + "\n```"
+	body2 := "```go src/x.go\n" + strings.Join(newLines, "\n") + "\n```"
 
 	msg1 := []domain.Message{{Role: "user", Content: body1}}
 	out1, _ := PruneMessages(ctx, h, tenant, msg1, 8000, nil)
@@ -141,10 +145,28 @@ func TestPruneMessages_SecondRoundChangeBecomesDiff(t *testing.T) {
 	if !strings.Contains(out2[0].Content, "```diff") {
 		t.Fatalf("expected diff fence, got:\n%s", out2[0].Content)
 	}
-	if !strings.Contains(out2[0].Content, "- world") || !strings.Contains(out2[0].Content, "+ WORLD") {
+	if !strings.Contains(out2[0].Content, "- line 0041 original") || !strings.Contains(out2[0].Content, "+ line 0041 changed") {
 		t.Fatalf("diff missing change lines:\n%s", out2[0].Content)
 	}
 	_ = out1
+}
+
+func TestPruneMessages_SkipsReplacementWhenDiffIsNotSmaller(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	h := NewMemoryHistory()
+	tenant := "t1"
+
+	body1 := "```go src/x.go\nhello\nworld\n```"
+	body2 := "```go src/x.go\nhello\nWORLD\n```"
+	_, _ = PruneMessages(ctx, h, tenant, []domain.Message{{Role: "user", Content: body1}}, 8000, nil)
+	out, st := PruneMessages(ctx, h, tenant, []domain.Message{{Role: "user", Content: body2}}, 8000, nil)
+	if st.BlocksPruned != 0 || st.BlocksSkipped != 1 || st.SkipReasons["not_smaller"] != 1 {
+		t.Fatalf("expected not_smaller skip, stats=%+v", st)
+	}
+	if out[0].Content != body2 {
+		t.Fatalf("not-smaller replacement should leave prompt verbatim, got:\n%s", out[0].Content)
+	}
 }
 
 func TestPruneMessages_ChangedLargeFileUsesCompactHunk(t *testing.T) {
@@ -289,8 +311,11 @@ func TestGovernor_Optimize_MergesStaticAndRequestMemoryWithPrunedPrompt(t *testi
 		WithProjectMemory("Always answer with repository-specific context."),
 	)
 	tenant := "t1"
-	body1 := "```go src/x.go\npackage main\n\nfunc main() {\n\tprintln(\"hello\")\n}\n```"
-	body2 := "```go src/x.go\npackage main\n\nfunc main() {\n\tprintln(\"hello indexqube\")\n}\n```"
+	oldLines := makeNumberedLines(80)
+	newLines := append([]string(nil), oldLines...)
+	newLines[40] = "\tprintln(\"hello indexqube\")"
+	body1 := "```go src/x.go\n" + strings.Join(oldLines, "\n") + "\n```"
+	body2 := "```go src/x.go\n" + strings.Join(newLines, "\n") + "\n```"
 
 	if _, _, err := g.Optimize(ctx, tenant, []domain.Message{{Role: "user", Content: body1}}, "Use short replies."); err != nil {
 		t.Fatal(err)

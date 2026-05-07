@@ -331,7 +331,7 @@ func TestOptimize_WithoutSessionKeyIsStateless(t *testing.T) {
 	)
 	srv := newTestServer(t, gov)
 
-	body := "```go src/x.go\nhello\nworld\n```"
+	body := testFencedGo("src/x.go", "hello")
 	first := postOptimize(t, srv.URL, "", body)
 	second := postOptimize(t, srv.URL, "", body)
 	if first.Stats.BlocksPruned != 0 || second.Stats.BlocksPruned != 0 {
@@ -350,7 +350,7 @@ func TestOptimize_SameSessionPrunesSecondRequest(t *testing.T) {
 	)
 	srv := newTestServer(t, gov)
 
-	body := "```go src/x.go\nhello\nworld\n```"
+	body := testFencedGo("src/x.go", "hello")
 	_ = postOptimize(t, srv.URL, "session-a", body)
 	second := postOptimize(t, srv.URL, "session-a", body)
 	if second.Stats.BlocksPruned != 1 {
@@ -427,7 +427,7 @@ func TestOptimize_JSONPromptContextAutoWrapsAndPrunes(t *testing.T) {
 		"session_id":   "json-auto-wrap",
 		"prompt":       "Can you fix the bug?",
 		"context_path": "src/calc.go",
-		"context_text": "func calculate() {\n return 1 + 1\n }",
+		"context_text": testGoInner("hello"),
 	})
 	if first.Stats.BlocksSeen != 1 || first.Stats.BlocksPruned != 0 {
 		t.Fatalf("first stats=%+v", first.Stats)
@@ -437,7 +437,7 @@ func TestOptimize_JSONPromptContextAutoWrapsAndPrunes(t *testing.T) {
 		"session_id":   "json-auto-wrap",
 		"prompt":       "Can you fix the bug?",
 		"context_path": "src/calc.go",
-		"context_text": "func calculate() {\n return 1 + 2\n }",
+		"context_text": testGoInner("hello indexqube"),
 	})
 	if second.Stats.BlocksSeen != 1 || second.Stats.BlocksPruned != 1 {
 		t.Fatalf("second stats=%+v", second.Stats)
@@ -465,12 +465,12 @@ func TestOptimize_JSONResponseIncludesStatsHeaders(t *testing.T) {
 	_ = postOptimizePromptContext(t, srv.URL, map[string]string{
 		"session_id":   "json-stats-headers",
 		"context_path": "src/calc.go",
-		"context_text": "func calculate() {\n return 1 + 1\n }",
+		"context_text": testGoInner("hello"),
 	})
 	body, err := json.Marshal(map[string]string{
 		"session_id":   "json-stats-headers",
 		"context_path": "src/calc.go",
-		"context_text": "func calculate() {\n return 1 + 2\n }",
+		"context_text": testGoInner("hello indexqube"),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -516,11 +516,11 @@ func TestOptimize_JSONContextTextUsesDefaultSyntheticPath(t *testing.T) {
 
 	_ = postOptimizePromptContext(t, srv.URL, map[string]string{
 		"session_id":   "json-default-path",
-		"context_text": "func calculate() {\n return 1 + 1\n }",
+		"context_text": testGoInner("hello"),
 	})
 	second := postOptimizePromptContext(t, srv.URL, map[string]string{
 		"session_id":   "json-default-path",
-		"context_text": "func calculate() {\n return 1 + 2\n }",
+		"context_text": testGoInner("hello indexqube"),
 	})
 	if second.Stats.BlocksPruned != 1 {
 		t.Fatalf("stats=%+v", second.Stats)
@@ -538,8 +538,8 @@ func TestOptimize_TextPlainReturnsCompressedPayload(t *testing.T) {
 	)
 	srv := newTestServer(t, gov)
 
-	body1 := "```go src/x.go\npackage main\n\nfunc main() {\n\tprintln(\"hello\")\n}\n```"
-	body2 := "```go src/x.go\npackage main\n\nfunc main() {\n\tprintln(\"hello indexqube\")\n}\n```"
+	body1 := testFencedGo("src/x.go", "hello")
+	body2 := testFencedGo("src/x.go", "hello indexqube")
 	_ = postOptimizeText(t, srv.URL, "session-a", "", body1)
 	resp := postOptimizeText(t, srv.URL, "session-a", "", body2)
 
@@ -580,11 +580,11 @@ func TestOptimize_TextPlainAutoWrapsRawCode(t *testing.T) {
 	_ = postOptimizeTextWithHeaders(t, srv.URL, map[string]string{
 		headerSessionKey:  "raw-auto-wrap",
 		headerContextPath: "src/raw.go",
-	}, "func calculate() {\n return 1 + 1\n }")
+	}, testGoInner("hello"))
 	resp := postOptimizeTextWithHeaders(t, srv.URL, map[string]string{
 		headerSessionKey:  "raw-auto-wrap",
 		headerContextPath: "src/raw.go",
-	}, "func calculate() {\n return 1 + 2\n }")
+	}, testGoInner("hello indexqube"))
 
 	if resp.status != http.StatusOK {
 		t.Fatalf("status=%d body=%s", resp.status, resp.body)
@@ -605,8 +605,8 @@ func TestOptimize_TextPlainMixedPromptWrapsOnlyCode(t *testing.T) {
 	)
 	srv := newTestServer(t, gov)
 
-	body1 := "what is wrong here?\n\nfunc calculate() {\n return 1 + 1\n }"
-	body2 := "what is wrong here?\n\nfunc calculate() {\n return 1 + 2\n }"
+	body1 := "what is wrong here?\n\n" + testGoInner("hello")
+	body2 := "what is wrong here?\n\n" + testGoInner("hello indexqube")
 	first := postOptimizeText(t, srv.URL, "raw-mixed-prompt", "", body1)
 	if first.status != http.StatusOK {
 		t.Fatalf("status=%d body=%s", first.status, first.body)
@@ -625,7 +625,7 @@ func TestOptimize_TextPlainMixedPromptWrapsOnlyCode(t *testing.T) {
 	if !strings.Contains(second.body, "what is wrong here?") {
 		t.Fatalf("question missing from optimized payload:\n%s", second.body)
 	}
-	if !strings.Contains(second.body, "```diff") || !strings.Contains(second.body, "+  return 1 + 2") {
+	if !strings.Contains(second.body, "```diff") || !strings.Contains(second.body, "+ \tprintln(\"hello indexqube\")") {
 		t.Fatalf("expected compact diff for mixed prompt:\n%s", second.body)
 	}
 	if strings.Contains(second.body, "```go "+defaultRawContextPath) {
@@ -641,8 +641,8 @@ func TestOptimize_TextPlainMixedPromptUsesFileHint(t *testing.T) {
 	)
 	srv := newTestServer(t, gov)
 
-	body1 := "review this\n\nsrc/calc.go\nfunc calculate() {\n return 1 + 1\n }"
-	body2 := "review this\n\nsrc/calc.go\nfunc calculate() {\n return 1 + 2\n }"
+	body1 := "review this\n\nsrc/calc.go\n" + testGoInner("hello")
+	body2 := "review this\n\nsrc/calc.go\n" + testGoInner("hello indexqube")
 	first := postOptimizeText(t, srv.URL, "raw-mixed-file-hint", "", body1)
 	if got := first.header.Get("X-IQ-Blocks-Seen"); got != "1" {
 		t.Fatalf("first X-IQ-Blocks-Seen=%q want 1; body=%s", got, first.body)
@@ -853,6 +853,24 @@ func postOptimizeTextWithHeaders(t *testing.T, baseURL string, headers map[strin
 		t.Fatalf("read response: %v", err)
 	}
 	return optimizeTextResponse{status: resp.StatusCode, header: resp.Header.Clone(), body: string(body)}
+}
+
+func testFencedGo(path, message string) string {
+	return "```go " + path + "\n" + testGoInner(message) + "\n```"
+}
+
+func testGoInner(message string) string {
+	lines := []string{
+		"func calculate() {",
+	}
+	for i := 0; i < 80; i++ {
+		lines = append(lines, "\tprintln(\"stable line\")")
+	}
+	lines = append(lines,
+		"\tprintln(\""+message+"\")",
+		"}",
+	)
+	return strings.Join(lines, "\n")
 }
 
 func TestParseInferenceRequest_BodyTooLarge(t *testing.T) {

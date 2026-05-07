@@ -69,6 +69,10 @@ func pruneContent(ctx context.Context, hist History, tenant, content string, max
 		}
 		if prev.Hash == currentHash {
 			short := fmt.Sprintf("[IndexQube] No changes since last turn for `%s`.\n", b.Path)
+			if !replacementSavesBytes(b.RawOuter, short) {
+				addSkipReason(&st, "not_smaller")
+				continue
+			}
 			out = out[:b.Start] + short + out[b.End:]
 			st.BlocksPruned++
 			continue
@@ -92,10 +96,18 @@ func pruneContent(ctx context.Context, hist History, tenant, content string, max
 			b.Path,
 			diff.Diff,
 		)
+		if !replacementSavesBytes(b.RawOuter, replacement) {
+			addSkipReason(&st, "not_smaller")
+			continue
+		}
 		out = out[:b.Start] + replacement + out[b.End:]
 		st.BlocksPruned++
 	}
 	return out, st
+}
+
+func replacementSavesBytes(original, replacement string) bool {
+	return len(replacement) < len(original)
 }
 
 func cloneMessages(m []domain.Message) []domain.Message {

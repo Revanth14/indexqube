@@ -41,6 +41,7 @@ The popup exposes:
 - Session key.
 - Optional project memory.
 - Optional context path/lang for raw browser code snippets.
+- Local usage totals for optimized requests, estimated input tokens saved, bytes saved, pruned blocks, and errors.
 
 ## Troubleshooting
 
