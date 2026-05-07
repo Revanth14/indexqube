@@ -4,6 +4,14 @@ const DEFAULT_SETTINGS = {
   enabled: true,
   gatewayUrl: "http://localhost:8080",
   sessionKey: "",
+  sessionKeys: {},
+  currentSessionScope: "",
+  currentSessionLabel: "",
+  currentSessionScoped: false,
+  currentSessionKey: "",
+  pendingSessionKey: "",
+  pendingSessionHost: "",
+  pendingSessionCreatedAt: 0,
   projectMemory: "",
   contextPath: "",
   contextLang: ""
@@ -68,6 +76,8 @@ const fields = {
   status: document.getElementById("status")
 };
 
+let activeSessionScope = globalSessionScope();
+
 function storageGet(defaults) {
   return new Promise((resolve) => chrome.storage.local.get(defaults, resolve));
 }
@@ -82,6 +92,164 @@ function createSessionKey() {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+async function getActiveSessionScope(settings) {
+  const tab = await queryActiveTab();
+  if (tab?.url) {
+    return deriveSessionScope(tab.url);
+  }
+  if (settings.currentSessionScope) {
+    const key = String(settings.currentSessionScope);
+    return {
+      key,
+      label: settings.currentSessionLabel || key,
+      scoped: Boolean(settings.currentSessionScoped),
+      pending: key.endsWith("/pending"),
+      host: key.endsWith("/pending") ? key.slice(0, -"/pending".length) : "global"
+    };
+  }
+  return globalSessionScope();
+}
+
+function queryActiveTab() {
+  return new Promise((resolve) => {
+    if (!chrome.tabs?.query) {
+      resolve(null);
+      return;
+    }
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      const err = chrome.runtime.lastError;
+      if (err) {
+        resolve(null);
+        return;
+      }
+      resolve(tabs?.[0] || null);
+    });
+  });
+}
+
+async function ensureSessionForScope(scope, settings) {
+  if (scope.pending) {
+    const sessionKey = reusablePendingSession(settings, scope.host) || createSessionKey();
+    await storageSet({
+      pendingSessionKey: sessionKey,
+      pendingSessionHost: scope.host,
+      pendingSessionCreatedAt: settings.pendingSessionKey === sessionKey
+        ? settings.pendingSessionCreatedAt
+        : Date.now(),
+      ...currentSessionValues(scope, sessionKey)
+    });
+    return sessionKey;
+  }
+
+  if (!scope.scoped) {
+    const sessionKey = settings.sessionKey || createSessionKey();
+    if (!settings.sessionKey) {
+      await storageSet({ sessionKey });
+    }
+    await storageSet(currentSessionValues(scope, sessionKey));
+    return sessionKey;
+  }
+  const sessionKeys = normalizeSessionKeys(settings.sessionKeys);
+  if (!sessionKeys[scope.key]) {
+    const pendingKey = reusablePendingSession(settings, scope.host);
+    sessionKeys[scope.key] = pendingKey || createSessionKey();
+    const values = { sessionKeys };
+    if (pendingKey || settings.pendingSessionHost === scope.host) {
+      values.pendingSessionKey = "";
+      values.pendingSessionHost = "";
+      values.pendingSessionCreatedAt = 0;
+    }
+    await storageSet(values);
+  }
+  await storageSet(currentSessionValues(scope, sessionKeys[scope.key]));
+  return sessionKeys[scope.key];
+}
+
+function currentSessionValues(scope, sessionKey) {
+  return {
+    currentSessionScope: scope.key,
+    currentSessionLabel: scope.label,
+    currentSessionScoped: scope.scoped,
+    currentSessionKey: sessionKey
+  };
+}
+
+function normalizeSessionKeys(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+function reusablePendingSession(settings, host) {
+  const createdAt = Number(settings.pendingSessionCreatedAt || 0);
+  const ageMs = Date.now() - createdAt;
+  if (
+    settings.pendingSessionKey &&
+    settings.pendingSessionHost === host &&
+    ageMs >= 0 &&
+    ageMs < 10 * 60 * 1000
+  ) {
+    return settings.pendingSessionKey;
+  }
+  return "";
+}
+
+function deriveSessionScope(rawUrl) {
+  let url;
+  try {
+    url = new URL(rawUrl);
+  } catch (_err) {
+    return globalSessionScope();
+  }
+  const host = url.hostname.replace(/^www\./, "");
+  const parts = url.pathname.split("/").filter(Boolean);
+  if (host === "chatgpt.com" || host === "chat.openai.com") {
+    const id = segmentAfter(parts, "c");
+    if (id) {
+      return {
+        key: `chatgpt.com/c/${id}`,
+        label: `ChatGPT ${shortScopeID(id)}`,
+        scoped: true,
+        pending: false,
+        host
+      };
+    }
+    return pendingSessionScope(host, "New ChatGPT chat");
+  }
+  if (host === "claude.ai") {
+    const id = segmentAfter(parts, "chat");
+    if (id) {
+      return {
+        key: `claude.ai/chat/${id}`,
+        label: `Claude ${shortScopeID(id)}`,
+        scoped: true,
+        pending: false,
+        host
+      };
+    }
+    return pendingSessionScope(host, "New Claude chat");
+  }
+  return globalSessionScope(host);
+}
+
+function segmentAfter(parts, marker) {
+  const idx = parts.indexOf(marker);
+  if (idx < 0 || idx + 1 >= parts.length) {
+    return "";
+  }
+  return parts[idx + 1] || "";
+}
+
+function shortScopeID(id) {
+  return id.length <= 10 ? id : `${id.slice(0, 4)}...${id.slice(-4)}`;
+}
+
+function pendingSessionScope(host, label) {
+  return { key: `${host}/pending`, label, scoped: false, pending: true, host };
+}
+
+function globalSessionScope(host = "global") {
+  return { key: "global", label: "Global fallback", scoped: false, pending: false, host };
+}
+
 async function load() {
   const settings = await storageGet(DEFAULT_SETTINGS);
   if (!settings.sessionKey) {
@@ -93,13 +261,15 @@ async function load() {
     settings.contextLang = "";
     await storageSet({ contextPath: "", contextLang: "" });
   }
+  activeSessionScope = await getActiveSessionScope(settings);
+  const sessionKey = await ensureSessionForScope(activeSessionScope, settings);
   fields.enabled.checked = Boolean(settings.enabled);
   fields.gatewayUrl.value = settings.gatewayUrl || DEFAULT_SETTINGS.gatewayUrl;
-  fields.sessionKey.value = settings.sessionKey;
+  fields.sessionKey.value = sessionKey;
   fields.projectMemory.value = settings.projectMemory || "";
   fields.contextPath.value = settings.contextPath || "";
   fields.contextLang.value = settings.contextLang || "";
-  renderSessionSummary(settings.sessionKey);
+  renderSessionSummary(sessionKey);
 
   const stored = await storageGet({ [USAGE_KEY]: DEFAULT_USAGE });
   renderUsage(stored[USAGE_KEY]);
@@ -107,14 +277,30 @@ async function load() {
 
 async function save() {
   const sessionKey = fields.sessionKey.value.trim() || createSessionKey();
-  await storageSet({
+  const values = {
     enabled: fields.enabled.checked,
     gatewayUrl: fields.gatewayUrl.value.trim() || DEFAULT_SETTINGS.gatewayUrl,
-    sessionKey,
     projectMemory: fields.projectMemory.value,
     contextPath: fields.contextPath.value.trim(),
     contextLang: fields.contextLang.value.trim()
-  });
+  };
+  if (activeSessionScope.scoped) {
+    const stored = await storageGet({ sessionKeys: {} });
+    const sessionKeys = normalizeSessionKeys(stored.sessionKeys);
+    sessionKeys[activeSessionScope.key] = sessionKey;
+    values.sessionKeys = sessionKeys;
+  } else if (activeSessionScope.pending) {
+    values.pendingSessionKey = sessionKey;
+    values.pendingSessionHost = activeSessionScope.host;
+    values.pendingSessionCreatedAt = Date.now();
+  } else {
+    values.sessionKey = sessionKey;
+  }
+  values.currentSessionScope = activeSessionScope.key;
+  values.currentSessionLabel = activeSessionScope.label;
+  values.currentSessionScoped = activeSessionScope.scoped;
+  values.currentSessionKey = sessionKey;
+  await storageSet(values);
   fields.sessionKey.value = sessionKey;
   renderSessionSummary(sessionKey);
   showStatus("Saved");
@@ -179,9 +365,11 @@ function formatBytes(value) {
 }
 
 function renderSessionSummary(sessionKey) {
-  fields.sessionSummary.textContent = sessionKey
-    ? `Session ${shortSessionKey(sessionKey)}`
-    : "Session inactive";
+  if (!sessionKey) {
+    fields.sessionSummary.textContent = "Session inactive";
+    return;
+  }
+  fields.sessionSummary.textContent = `${activeSessionScope.label} · ${shortSessionKey(sessionKey)}`;
 }
 
 function shortSessionKey(sessionKey) {
@@ -248,8 +436,28 @@ fields.resetUsage.addEventListener("click", async () => {
 fields.resetBoth.addEventListener("click", async () => {
   const sessionKey = createSessionKey();
   const usage = freshUsage();
+  const values = {
+    [USAGE_KEY]: usage,
+    ...currentSessionValues(activeSessionScope, sessionKey)
+  };
+  if (activeSessionScope.scoped) {
+    values.sessionKeys = { [activeSessionScope.key]: sessionKey };
+    values.pendingSessionKey = "";
+    values.pendingSessionHost = "";
+    values.pendingSessionCreatedAt = 0;
+  } else if (activeSessionScope.pending) {
+    values.pendingSessionKey = sessionKey;
+    values.pendingSessionHost = activeSessionScope.host;
+    values.pendingSessionCreatedAt = Date.now();
+  } else {
+    values.sessionKeys = {};
+    values.sessionKey = sessionKey;
+    values.pendingSessionKey = "";
+    values.pendingSessionHost = "";
+    values.pendingSessionCreatedAt = 0;
+  }
   fields.sessionKey.value = sessionKey;
-  await storageSet({ sessionKey, [USAGE_KEY]: usage });
+  await storageSet(values);
   renderSessionSummary(sessionKey);
   renderUsage(usage);
   showStatus("Session and usage reset");
@@ -263,7 +471,18 @@ chrome.storage.onChanged.addListener((changes, area) => {
     renderUsage(changes[USAGE_KEY].newValue);
   }
   if (changes.sessionKey) {
-    fields.sessionKey.value = changes.sessionKey.newValue || "";
+    if (!activeSessionScope.scoped && !activeSessionScope.pending) {
+      fields.sessionKey.value = changes.sessionKey.newValue || "";
+      renderSessionSummary(fields.sessionKey.value);
+    }
+  }
+  if (changes.sessionKeys && activeSessionScope.scoped) {
+    const sessionKeys = normalizeSessionKeys(changes.sessionKeys.newValue);
+    fields.sessionKey.value = sessionKeys[activeSessionScope.key] || "";
+    renderSessionSummary(fields.sessionKey.value);
+  }
+  if (changes.pendingSessionKey && activeSessionScope.pending) {
+    fields.sessionKey.value = changes.pendingSessionKey.newValue || "";
     renderSessionSummary(fields.sessionKey.value);
   }
 });

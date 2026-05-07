@@ -5,6 +5,13 @@
     enabled: true,
     gatewayUrl: "http://localhost:8080",
     sessionKey: "",
+    sessionKeys: {},
+    currentSessionScope: "",
+    currentSessionLabel: "",
+    currentSessionScoped: false,
+    pendingSessionKey: "",
+    pendingSessionHost: "",
+    pendingSessionCreatedAt: 0,
     projectMemory: "",
     contextPath: "",
     contextLang: ""
@@ -36,6 +43,41 @@
       settings.contextLang = "";
       await storageSet({ contextPath: "", contextLang: "" });
     }
+    const scope = deriveSessionScope(window.location.href);
+    settings.sessionKeys = normalizeSessionKeys(settings.sessionKeys);
+    if (scope.scoped) {
+      if (!settings.sessionKeys[scope.key]) {
+        settings.sessionKeys[scope.key] = reusablePendingSession(settings, scope.host) || createSessionKey();
+        await storageSet({
+          sessionKeys: settings.sessionKeys,
+          pendingSessionKey: "",
+          pendingSessionHost: "",
+          pendingSessionCreatedAt: 0
+        });
+      }
+      settings.sessionKey = settings.sessionKeys[scope.key];
+    } else if (scope.pending) {
+      if (!reusablePendingSession(settings, scope.host)) {
+        settings.pendingSessionKey = createSessionKey();
+        settings.pendingSessionHost = scope.host;
+        settings.pendingSessionCreatedAt = Date.now();
+        await storageSet({
+          pendingSessionKey: settings.pendingSessionKey,
+          pendingSessionHost: settings.pendingSessionHost,
+          pendingSessionCreatedAt: settings.pendingSessionCreatedAt
+        });
+      }
+      settings.sessionKey = settings.pendingSessionKey;
+    }
+    await storageSet({
+      currentSessionScope: scope.key,
+      currentSessionLabel: scope.label,
+      currentSessionScoped: scope.scoped,
+      currentSessionKey: settings.sessionKey
+    });
+    settings.sessionScope = scope.key;
+    settings.sessionLabel = scope.label;
+    settings.sessionScoped = scope.scoped;
     settings.gatewayUrl = String(settings.gatewayUrl || DEFAULT_SETTINGS.gatewayUrl).replace(/\/+$/, "");
     return settings;
   }
@@ -44,6 +86,80 @@
     const bytes = new Uint8Array(16);
     crypto.getRandomValues(bytes);
     return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+  }
+
+  function normalizeSessionKeys(value) {
+    return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  }
+
+  function reusablePendingSession(settings, host) {
+    const createdAt = Number(settings.pendingSessionCreatedAt || 0);
+    const ageMs = Date.now() - createdAt;
+    if (
+      settings.pendingSessionKey &&
+      settings.pendingSessionHost === host &&
+      ageMs >= 0 &&
+      ageMs < 10 * 60 * 1000
+    ) {
+      return settings.pendingSessionKey;
+    }
+    return "";
+  }
+
+  function deriveSessionScope(rawUrl) {
+    let url;
+    try {
+      url = new URL(rawUrl);
+    } catch (_err) {
+      return globalSessionScope();
+    }
+    const host = url.hostname.replace(/^www\./, "");
+    const parts = url.pathname.split("/").filter(Boolean);
+    if (host === "chatgpt.com" || host === "chat.openai.com") {
+      const id = segmentAfter(parts, "c");
+      if (id) {
+        return {
+          key: `chatgpt.com/c/${id}`,
+          label: `ChatGPT ${shortScopeID(id)}`,
+          scoped: true,
+          host
+        };
+      }
+      return pendingSessionScope(host, "New ChatGPT chat");
+    }
+    if (host === "claude.ai") {
+      const id = segmentAfter(parts, "chat");
+      if (id) {
+        return {
+          key: `claude.ai/chat/${id}`,
+          label: `Claude ${shortScopeID(id)}`,
+          scoped: true,
+          host
+        };
+      }
+      return pendingSessionScope(host, "New Claude chat");
+    }
+    return globalSessionScope(host);
+  }
+
+  function segmentAfter(parts, marker) {
+    const idx = parts.indexOf(marker);
+    if (idx < 0 || idx + 1 >= parts.length) {
+      return "";
+    }
+    return parts[idx + 1] || "";
+  }
+
+  function shortScopeID(id) {
+    return id.length <= 10 ? id : `${id.slice(0, 4)}...${id.slice(-4)}`;
+  }
+
+  function pendingSessionScope(host, label) {
+    return { key: `${host}/pending`, label, scoped: false, pending: true, host };
+  }
+
+  function globalSessionScope(host = "global") {
+    return { key: "global", label: "Global fallback", scoped: false, pending: false, host };
   }
 
   function ensureStatus() {

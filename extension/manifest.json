@@ -3,7 +3,7 @@
   "name": "IndexQube Context Optimizer",
   "description": "Compress repeated code context before sending prompts to ChatGPT or Claude.",
   "version": "0.1.0",
-  "permissions": ["storage"],
+  "permissions": ["storage", "activeTab"],
   "host_permissions": [
     "http://localhost:8080/*",
     "http://127.0.0.1:8080/*"
