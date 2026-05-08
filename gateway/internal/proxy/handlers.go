@@ -465,23 +465,32 @@ func (p *Proxy) streamThroughGovernor(w http.ResponseWriter, r *http.Request, re
 
 	if err := p.governor.Stream(r.Context(), req, sw); err != nil {
 		// Client hung up -- socket is gone, don't try to write to it.
-		if errors.Is(err, context.Canceled) {
+		// Two paths lead here:
+		//   A) The adapter detected ctx.Err() and returned context.Canceled.
+		//   B) A write to the client socket failed (broken pipe / connection
+		//      reset). By the time we land here the Go HTTP server has already
+		//      cancelled r.Context(), so r.Context().Err() is non-nil.
+		if errors.Is(err, context.Canceled) || r.Context().Err() != nil {
 			p.logger.InfoContext(r.Context(), "client disconnected mid-stream")
+			if p.metrics != nil {
+				p.metrics.StreamCancellations.Inc()
+			}
 			return
 		}
 
 		// Best-effort error frame. If this write also fails, the client is
 		// already gone; we log and return.
-		errBytes, mErr := json.Marshal(errorEnvelope{Error: errorPayload{
-			Type:    "upstream_error",
-			Message: err.Error(),
-		}})
+		safePayload := upstreamErrorPayload(err)
+		errBytes, mErr := json.Marshal(errorEnvelope{Error: safePayload})
 		if mErr == nil {
 			if wErr := sw.WriteEvent("error", errBytes); wErr != nil {
 				p.logger.WarnContext(r.Context(), "failed to emit sse error frame", slog.Any("err", wErr))
 			}
 		}
-		p.logger.ErrorContext(r.Context(), "governor stream failed", slog.Any("err", err))
+		p.logger.ErrorContext(r.Context(), "governor stream failed",
+			slog.String("error_code", safePayload.Code),
+			slog.String("err", safeLogError(err)),
+		)
 		return
 	}
 
@@ -524,6 +533,7 @@ func mapParseError(err error) errorPayload {
 }
 
 func (p *Proxy) writeError(w http.ResponseWriter, r *http.Request, payload errorPayload) {
+	payload = safeErrorPayload(payload)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(payload.HTTPStatus)
 	if err := json.NewEncoder(w).Encode(errorEnvelope{Error: payload}); err != nil {

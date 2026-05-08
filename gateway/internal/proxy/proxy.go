@@ -12,6 +12,7 @@ import (
 	"net/http"
 
 	"github.com/Revanth14/indexqube/gateway/internal/domain"
+	"github.com/Revanth14/indexqube/gateway/internal/telemetry"
 )
 
 // Governor is the upstream contract the proxy depends on.
@@ -28,6 +29,7 @@ type Proxy struct {
 	logger         *slog.Logger
 	mux            *http.ServeMux
 	maxRequestSize int64
+	metrics        *telemetry.Metrics
 }
 
 // Option configures a Proxy at construction time.
@@ -47,6 +49,15 @@ func WithMaxRequestSize(size int64) Option {
 	return func(p *Proxy) {
 		if size > 0 {
 			p.maxRequestSize = size
+		}
+	}
+}
+
+// WithMetrics wires Prometheus metrics into the proxy for per-request instrumentation.
+func WithMetrics(m *telemetry.Metrics) Option {
+	return func(p *Proxy) {
+		if m != nil {
+			p.metrics = m
 		}
 	}
 }

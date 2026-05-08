@@ -127,6 +127,7 @@ func main() {
 	p := proxy.New(gov,
 		proxy.WithLogger(logger),
 		proxy.WithMaxRequestSize(cfg.Governor.MaxRequestSize),
+		proxy.WithMetrics(tp.Metrics),
 	)
 
 	publicServer := buildPublicServer(cfg, p, tp, logger)

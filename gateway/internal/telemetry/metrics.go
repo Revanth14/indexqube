@@ -67,6 +67,11 @@ type Metrics struct {
 	// EstimatedCostSavedUSD tracks cumulative dollars saved via pruning and caching.
 	// Labels: provider, model.
 	EstimatedCostSavedUSD *prometheus.CounterVec
+
+	// StreamCancellations counts requests where the client disconnected before
+	// the stream completed. Helps distinguish client-side drops from gateway
+	// errors in dashboards and SLO calculations.
+	StreamCancellations prometheus.Counter
 }
 
 func newMetrics(reg prometheus.Registerer) *Metrics {
@@ -180,6 +185,13 @@ func newMetrics(reg prometheus.Registerer) *Metrics {
 			Name:      "cost_saved_usd",
 			Help:      "Cumulative estimated cost saved in USD via context pruning and caching.",
 		}, []string{"provider", "model"}),
+
+		StreamCancellations: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "iq",
+			Subsystem: "stream",
+			Name:      "cancellations_total",
+			Help:      "Total streaming requests cancelled by the client before completion.",
+		}),
 	}
 
 	reg.MustRegister(
@@ -198,6 +210,7 @@ func newMetrics(reg prometheus.Registerer) *Metrics {
 		m.OptimizerReduction,
 		m.FailoverRequests,
 		m.EstimatedCostSavedUSD,
+		m.StreamCancellations,
 	)
 
 	// Pre-initialize label combinations the gateway will emit at runtime.

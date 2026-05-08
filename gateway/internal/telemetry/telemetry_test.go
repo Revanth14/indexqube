@@ -60,6 +60,7 @@ func TestPrometheusHandler_ExposesGatewayMetrics(t *testing.T) {
 	p.Metrics.OptimizerBlocks.WithLabelValues("optimize", "pruned").Add(1)
 	p.Metrics.OptimizerDiffs.WithLabelValues("optimize", "exact").Add(1)
 	p.Metrics.OptimizerReduction.WithLabelValues("optimize").Observe(0.75)
+	p.Metrics.StreamCancellations.Inc()
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
@@ -81,6 +82,7 @@ func TestPrometheusHandler_ExposesGatewayMetrics(t *testing.T) {
 		`iq_optimizer_blocks_total{result="pruned",source="optimize"} 1`,
 		`iq_optimizer_diffs_total{mode="exact",source="optimize"} 1`,
 		"iq_optimizer_reduction_ratio",
+		"iq_stream_cancellations_total 1",
 		"go_goroutines",             // from Go collector
 		"process_cpu_seconds_total", // from process collector
 	}
@@ -133,6 +135,30 @@ func TestTracingHandler_InjectsTraceIDsInsideSpan(t *testing.T) {
 	}
 	if _, ok := outSpan["trace_id"]; ok {
 		t.Error("second log line should NOT have trace_id (no active span)")
+	}
+}
+
+func TestTracingHandler_RedactsSensitiveAttrs(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	base := slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})
+	logger := slog.New(&tracingHandler{inner: base})
+
+	logger.InfoContext(context.Background(), "secret check",
+		slog.String("X-IQ-Provider-Key", "sk-provider1234567890"),
+		slog.String("err", "Authorization: Bearer sk-bearer1234567890"),
+		slog.Group("headers", slog.String("api-key", "sk-nested1234567890")),
+	)
+
+	line := buf.String()
+	for _, leak := range []string{"sk-provider1234567890", "sk-bearer1234567890", "sk-nested1234567890"} {
+		if strings.Contains(line, leak) {
+			t.Fatalf("log leaked %q: %s", leak, line)
+		}
+	}
+	if !strings.Contains(line, "[redacted]") {
+		t.Fatalf("redaction marker missing: %s", line)
 	}
 }
 

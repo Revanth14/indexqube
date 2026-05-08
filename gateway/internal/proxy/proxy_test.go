@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -402,6 +403,176 @@ func TestChatCompletions_GovernorErrorEmitsErrorEvent(t *testing.T) {
 	}
 	if !sawError {
 		t.Error("expected an SSE `event: error` frame on governor failure")
+	}
+}
+
+func TestClassifyUpstreamError(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		err      error
+		wantCode string
+	}{
+		{"nil", nil, "provider_error"},
+		{"cancelled", fmt.Errorf("operation: %w", context.Canceled), "request_cancelled"},
+		{"401 status", fmt.Errorf("openai api error: status=401 body=unauthorized"), "provider_key_invalid"},
+		{"403 status", fmt.Errorf("openai api error: status=403 body=forbidden"), "provider_key_invalid"},
+		{"invalid key text", fmt.Errorf("anthropic api error: status=400 body=invalid api key"), "provider_key_invalid"},
+		{"429 rate limit", fmt.Errorf("openai api error: status=429 body=rate limit exceeded"), "provider_rate_limited"},
+		{"402 quota", fmt.Errorf("openai api error: status=402 body=insufficient_quota"), "provider_balance_exhausted"},
+		{"quota text", fmt.Errorf("provider error: quota exceeded"), "provider_balance_exhausted"},
+		{"timeout", fmt.Errorf("openai api error: status=408 body=request timeout"), "provider_timeout"},
+		{"deadline exceeded", fmt.Errorf("context deadline exceeded"), "provider_timeout"},
+		{"504 gateway timeout", fmt.Errorf("openai api error: status=504 body=gateway timeout"), "provider_timeout"},
+		{"503 unavailable", fmt.Errorf("openai api error: status=503 body=service unavailable"), "provider_unavailable"},
+		{"overloaded text", fmt.Errorf("anthropic api error: status=529 body=overloaded"), "provider_unavailable"},
+		{"context_length 400", fmt.Errorf("openai api error: status=400 body=context_length_exceeded"), "gateway_context_too_large"},
+		{"context length text 400", fmt.Errorf("openai api error: status=400 body=maximum context length is 4096"), "gateway_context_too_large"},
+		{"request too large 400", fmt.Errorf("anthropic api error: status=400 body=request too large"), "gateway_context_too_large"},
+		{"token limit 400", fmt.Errorf("openai api error: status=400 body=token limit exceeded"), "gateway_context_too_large"},
+		{"400 not context", fmt.Errorf("openai api error: status=400 body=invalid model"), "provider_error"},
+		{"generic error", fmt.Errorf("some unknown failure"), "provider_error"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			code, _ := classifyUpstreamError(tc.err)
+			if code != tc.wantCode {
+				t.Errorf("classifyUpstreamError(%v) code=%q, want %q", tc.err, code, tc.wantCode)
+			}
+		})
+	}
+}
+
+func TestChatCompletions_SanitizesGovernorErrorEvent(t *testing.T) {
+	t.Parallel()
+
+	secret := "sk-proj-secret1234567890"
+	gov := &fakeGovernor{
+		streamFunc: func(_ context.Context, _ *domain.InferenceRequest, _ domain.TokenWriter) error {
+			return errors.New(`openai api error: status=401 body={"error":{"message":"bad key ` + secret + `"}}`)
+		},
+	}
+	srv := newTestServer(t, gov)
+
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/chat/completions", bytes.NewReader(validBody(t)))
+	req.Header.Set(headerProvider, "openai")
+	req.Header.Set(headerKey, secret)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	got := string(body)
+	if strings.Contains(got, secret) || strings.Contains(got, "body=") || strings.Contains(got, "bad key") {
+		t.Fatalf("sse error leaked provider detail: %s", got)
+	}
+	if !strings.Contains(got, `"code":"provider_key_invalid"`) {
+		t.Fatalf("missing classified provider error: %s", got)
+	}
+}
+
+// cancellingWriter is an http.ResponseWriter whose Write always fails once
+// cancelled. Used to simulate a client disconnecting mid-stream (Path B:
+// broken pipe / connection reset, where the error is a network error rather
+// than context.Canceled).
+type cancellingWriter struct {
+	httptest.ResponseRecorder
+	ctx    context.Context
+	cancel context.CancelFunc
+}
+
+func (cw *cancellingWriter) Write(b []byte) (int, error) {
+	if err := cw.ctx.Err(); err != nil {
+		return 0, fmt.Errorf("write tcp: broken pipe")
+	}
+	return cw.ResponseRecorder.Write(b)
+}
+
+func (cw *cancellingWriter) Unwrap() http.ResponseWriter {
+	return &cw.ResponseRecorder
+}
+
+func TestChatCompletions_ClientDisconnectViaCancelledContext(t *testing.T) {
+	t.Parallel()
+
+	gov := &fakeGovernor{
+		streamFunc: func(_ context.Context, _ *domain.InferenceRequest, tw domain.TokenWriter) error {
+			_ = tw.WriteData([]byte(`{"delta":"partial"}`))
+			return context.Canceled
+		},
+	}
+	srv := newTestServer(t, gov)
+
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/chat/completions", bytes.NewReader(validBody(t)))
+	req.Header.Set(headerProvider, "anthropic")
+	req.Header.Set(headerKey, "sk-ant-xyz")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	got := string(body)
+
+	if strings.Contains(got, "event: error") {
+		t.Errorf("gateway must not emit SSE error frame on client disconnect; body=%q", got)
+	}
+	if strings.Contains(got, "[DONE]") {
+		t.Errorf("gateway must not emit [DONE] sentinel on client disconnect; body=%q", got)
+	}
+	if !strings.Contains(got, `"delta":"partial"`) {
+		t.Errorf("partial frame before disconnect must be present; body=%q", got)
+	}
+}
+
+func TestChatCompletions_ClientDisconnectViaWriteError(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	gov := &fakeGovernor{
+		streamFunc: func(_ context.Context, _ *domain.InferenceRequest, tw domain.TokenWriter) error {
+			cancel() // signal the cancellingWriter to start failing
+			// This write will fail because the writer's context is now cancelled.
+			return tw.WriteData([]byte(`{"delta":"after-disconnect"}`))
+		},
+	}
+
+	p := New(gov)
+	rec := &cancellingWriter{
+		ResponseRecorder: *httptest.NewRecorder(),
+		ctx:              ctx,
+		cancel:           cancel,
+	}
+
+	body, _ := json.Marshal(domain.InferenceRequest{
+		Model:    "claude-3-5-sonnet",
+		Messages: []domain.Message{{Role: "user", Content: "hello"}},
+		Stream:   true,
+	})
+	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	r.Header.Set(headerProvider, "anthropic")
+	r.Header.Set(headerKey, "sk-ant-xyz")
+	r.Header.Set("Content-Type", "application/json")
+
+	// Use a cancelled context to simulate the HTTP server detecting the disconnect.
+	cancelledCtx, cancelReq := context.WithCancel(context.Background())
+	cancelReq()
+	r = r.WithContext(cancelledCtx)
+
+	p.handleChatCompletions(rec, r)
+
+	got := rec.Body.String()
+	if strings.Contains(got, "event: error") {
+		t.Errorf("gateway must not emit SSE error frame on write-error disconnect; body=%q", got)
 	}
 }
 
