@@ -201,15 +201,16 @@ func (g *Governor) Stream(ctx context.Context, req *domain.InferenceRequest, tw 
 	tenant := domain.ResolveTenantKey(work.SessionKey, work.Credential.APIKey)
 	work.ProjectMemory = MergeProjectMemory(g.projectMemory, work.ProjectMemory)
 	work.Messages = InjectProjectMemory(work.Messages, work.ProjectMemory)
+	var st domain.PruneStats
 	if g.pruneEnabled && g.history != nil {
-		var st domain.PruneStats
 		work.Messages, st = PruneMessages(ctx, g.history, tenant, work.Messages, g.effectivePruneMaxLines(), g.logger)
 		g.recordOptimization(ctx, "stream", st, string(work.Credential.Provider), work.Model)
-		if err := emitOptimizerEvent(tw, st); err != nil {
-			return err
-		}
 	} else {
-		g.recordOptimization(ctx, "stream", finishPruneStats(domain.PruneStats{}), string(work.Credential.Provider), work.Model)
+		st = finishPruneStats(domain.PruneStats{})
+		g.recordOptimization(ctx, "stream", st, string(work.Credential.Provider), work.Model)
+	}
+	if err := emitOptimizerEvent(tw, st); err != nil {
+		return err
 	}
 
 	// 1. Cache lookup
@@ -300,15 +301,16 @@ func (g *Governor) Stream(ctx context.Context, req *domain.InferenceRequest, tw 
 }
 
 func emitOptimizerEvent(tw domain.TokenWriter, st domain.PruneStats) error {
-	if st.BlocksSeen == 0 && st.BlocksPruned == 0 && st.BlocksSkipped == 0 {
-		return nil
-	}
 	payload, err := json.Marshal(struct {
-		Mode  string            `json:"mode"`
-		Stats domain.PruneStats `json:"stats"`
+		Version string            `json:"version"`
+		Source  string            `json:"source"`
+		Mode    string            `json:"mode"`
+		Stats   domain.PruneStats `json:"stats"`
 	}{
-		Mode:  streamPruneMode(st),
-		Stats: st,
+		Version: "v1",
+		Source:  "stream",
+		Mode:    streamPruneMode(st),
+		Stats:   st,
 	})
 	if err != nil {
 		return fmt.Errorf("marshal optimizer event: %w", err)

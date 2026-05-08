@@ -109,6 +109,27 @@ func TestStream_RoutesToCorrectAdapter(t *testing.T) {
 	}
 }
 
+func TestStream_EmitsOptimizerReceiptForZeroSavings(t *testing.T) {
+	t.Parallel()
+
+	stub := &stubAdapter{tokens: [][]byte{[]byte("ok")}}
+	g := New(WithAdapter(domain.ProviderAnthropic, stub))
+
+	rec := &recordingWriter{}
+	if err := g.Stream(context.Background(), newReq(domain.ProviderAnthropic), rec); err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	if len(rec.events) != 1 {
+		t.Fatalf("events=%d want 1", len(rec.events))
+	}
+	got := string(rec.events[0].data)
+	for _, want := range []string{`"version":"v1"`, `"source":"stream"`, `"mode":"none"`} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("optimizer receipt missing %s: %s", want, got)
+		}
+	}
+}
+
 func TestStream_EmitsOptimizerEventForPrunedContext(t *testing.T) {
 	t.Parallel()
 
