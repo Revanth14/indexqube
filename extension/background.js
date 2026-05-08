@@ -43,33 +43,35 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
 async function optimizeText(text, settings) {
   const gatewayUrl = normalizeGatewayUrl(settings?.gatewayUrl);
-  const headers = {
-    "Accept": "application/json",
-    "Content-Type": "text/plain; charset=utf-8",
-    "X-IQ-Session-Key": settings?.sessionKey || ""
-  };
   const projectMemory = cleanOptional(settings?.projectMemory);
-  if (projectMemory) {
-    headers["X-IQ-Project-Memory"] = projectMemory;
-  }
   const contextPath = cleanOptional(settings?.contextPath);
   const contextLang = cleanOptional(settings?.contextLang);
+  const sessionKey = cleanOptional(settings?.sessionKey);
   const legacyDefaultContext = contextPath === "browser-prompt.txt" && (!contextLang || contextLang === "txt");
-  if (!legacyDefaultContext) {
-    if (contextPath) {
-      headers["X-IQ-Context-Path"] = contextPath;
-    }
-    if (contextLang) {
-      headers["X-IQ-Context-Lang"] = contextLang;
-    }
-  }
+  const requestBody = {
+    text: String(text || ""),
+    sessionKey,
+    projectMemory,
+    context: legacyDefaultContext
+      ? {}
+      : {
+          path: contextPath,
+          lang: contextLang
+        }
+  };
+  const headers = {
+    "Accept": "application/json",
+    "Content-Type": "application/json; charset=utf-8",
+    "X-IQ-Session-Key": sessionKey,
+    "X-IQ-Contract-Version": "2"
+  };
 
   let response;
   try {
     response = await fetch(`${gatewayUrl}/v1/optimize`, {
       method: "POST",
       headers,
-      body: text
+      body: JSON.stringify(requestBody)
     });
   } catch (err) {
     const detail = err && err.message ? err.message : String(err);
@@ -80,7 +82,7 @@ async function optimizeText(text, settings) {
 
   const body = await response.text();
   if (!response.ok) {
-    const message = body || `IndexQube returned ${response.status}`;
+    const message = extractErrorMessage(body) || `IndexQube returned ${response.status}`;
     await safeRecordUsageError({ message, statusCode: response.status });
     throw new Error(message);
   }
@@ -90,7 +92,34 @@ async function optimizeText(text, settings) {
 }
 
 function cleanOptional(value) {
-  return String(value || "").trim();
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function extractErrorMessage(body) {
+  const raw = typeof body === "string" ? body.trim() : "";
+  if (!raw) {
+    return "";
+  }
+  try {
+    const payload = JSON.parse(raw);
+    if (payload && typeof payload === "object") {
+      const message = cleanOptional(payload.error) || cleanOptional(payload.message) || cleanOptional(payload.detail);
+      if (message) {
+        return truncateMessage(message);
+      }
+    }
+  } catch (_err) {
+    // Fall back to the plain response body below.
+  }
+  return truncateMessage(raw.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim());
+}
+
+function truncateMessage(message, maxLength = 1000) {
+  const clean = cleanOptional(message);
+  if (clean.length <= maxLength) {
+    return clean;
+  }
+  return `${clean.slice(0, maxLength - 1)}…`;
 }
 
 function normalizeGatewayUrl(value) {
@@ -155,7 +184,7 @@ async function recordUsage(result) {
   const bytesSaved = Number(result.bytesSaved || 0);
   const tokensSaved = Number(result.tokensSaved || 0);
   usage.requestsTotal += 1;
-  usage.optimizedRequests += result.blocksPruned > 0 ? 1 : 0;
+  usage.optimizedRequests += isOptimizedResult(result) ? 1 : 0;
   usage.blocksSeenTotal += result.blocksSeen;
   usage.blocksPrunedTotal += result.blocksPruned;
   usage.blocksSkippedTotal += result.blocksSkipped;
@@ -206,20 +235,23 @@ function normalizeUsage(raw) {
   return usage;
 }
 
+function isOptimizedResult(result) {
+  return result.blocksPruned > 0 || result.bytesSaved > 0 || result.tokensSaved > 0;
+}
+
 function classifyOutcome(result) {
+  if (isOptimizedResult(result)) {
+    return "optimized";
+  }
   switch (result.mode) {
     case "diff":
     case "unchanged":
-      return result.mode;
     case "skipped":
     case "stateless":
     case "warmup":
       return result.mode;
     default:
       break;
-  }
-  if (result.blocksPruned > 0) {
-    return "optimized";
   }
   if (result.blocksSkipped > 0) {
     return "skipped";
@@ -312,9 +344,33 @@ function messagesToText(messages) {
     return "";
   }
   return messages
-    .map((message) => String(message?.content || "").trim())
+    .map((message) => messageContentToText(message?.content).trim())
     .filter(Boolean)
     .join("\n\n");
+}
+
+function messageContentToText(content) {
+  if (typeof content === "string") {
+    return content;
+  }
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => {
+        if (typeof part === "string") {
+          return part;
+        }
+        if (part && typeof part.text === "string") {
+          return part.text;
+        }
+        if (part && part.type === "text" && typeof part.content === "string") {
+          return part.content;
+        }
+        return "";
+      })
+      .filter(Boolean)
+      .join("\n");
+  }
+  return "";
 }
 
 function formatSkipReasonMap(reasons) {
