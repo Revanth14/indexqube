@@ -14,8 +14,11 @@
   ],
   "activationEvents": [
     "onView:indexqube.chatView",
+    "onCommand:indexqube.openChat",
     "onCommand:indexqube.openSettings",
-    "onCommand:indexqube.setProviderKey"
+    "onCommand:indexqube.setProviderKey",
+    "onCommand:indexqube.checkGateway",
+    "onCommand:indexqube.resetSession"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -33,11 +36,15 @@
         {
           "id": "indexqube.chatView",
           "type": "webview",
-          "name": "Chat"
+          "name": "IndexQube Chat"
         }
       ]
     },
     "commands": [
+      {
+        "command": "indexqube.openChat",
+        "title": "IndexQube: Open Chat"
+      },
       {
         "command": "indexqube.openSettings",
         "title": "IndexQube: Open Settings"
@@ -45,6 +52,14 @@
       {
         "command": "indexqube.setProviderKey",
         "title": "IndexQube: Set Provider Key"
+      },
+      {
+        "command": "indexqube.checkGateway",
+        "title": "IndexQube: Check Gateway"
+      },
+      {
+        "command": "indexqube.resetSession",
+        "title": "IndexQube: Reset Workspace Session"
       }
     ],
     "configuration": {
@@ -65,6 +80,58 @@
           "type": "string",
           "default": "claude-3-5-sonnet",
           "description": "The model ID to use."
+        },
+        "indexqube.contextMode": {
+          "type": "string",
+          "enum": ["selection", "activeFile", "openEditors", "workspace"],
+          "default": "activeFile",
+          "description": "Default editor context included with each request."
+        },
+        "indexqube.maxContextBytes": {
+          "type": "number",
+          "default": 120000,
+          "minimum": 1000,
+          "description": "Maximum total context bytes sent to the gateway."
+        },
+        "indexqube.maxFileBytes": {
+          "type": "number",
+          "default": 60000,
+          "minimum": 1000,
+          "description": "Maximum bytes included from any one file."
+        },
+        "indexqube.maxWorkspaceFiles": {
+          "type": "number",
+          "default": 30,
+          "minimum": 1,
+          "description": "Maximum files sampled in workspace context mode."
+        },
+        "indexqube.projectMemory": {
+          "type": "string",
+          "default": "",
+          "description": "Optional project memory sent as IndexQube system context."
+        },
+        "indexqube.maxTokens": {
+          "type": "number",
+          "default": 4096,
+          "minimum": 1,
+          "description": "Maximum output tokens requested from the provider."
+        },
+        "indexqube.temperature": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "maximum": 2,
+          "description": "Sampling temperature sent to the provider."
+        },
+        "indexqube.azureEndpoint": {
+          "type": "string",
+          "default": "",
+          "description": "Azure OpenAI endpoint used when provider is azure."
+        },
+        "indexqube.awsRegion": {
+          "type": "string",
+          "default": "us-east-1",
+          "description": "AWS region used when provider is bedrock."
         }
       }
     }

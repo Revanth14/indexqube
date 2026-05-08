@@ -28,5 +28,13 @@ module.exports = {
     filename: 'extension.js',
     libraryTarget: 'commonjs'
   },
+  watchOptions: {
+    aggregateTimeout: 200,
+    ignored: [
+      '**/node_modules/**',
+      '**/dist/**'
+    ],
+    poll: 1000
+  },
   devtool: 'nosources-source-map'
 };
