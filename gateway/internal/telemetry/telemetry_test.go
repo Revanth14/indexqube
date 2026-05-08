@@ -60,6 +60,9 @@ func TestPrometheusHandler_ExposesGatewayMetrics(t *testing.T) {
 	p.Metrics.OptimizerBlocks.WithLabelValues("optimize", "pruned").Add(1)
 	p.Metrics.OptimizerDiffs.WithLabelValues("optimize", "exact").Add(1)
 	p.Metrics.OptimizerReduction.WithLabelValues("optimize").Observe(0.75)
+	p.Metrics.OptimizerDuration.WithLabelValues("optimize").Observe(0.002)
+	p.Metrics.ProviderDuration.WithLabelValues("openai", "gpt-4o-mini", "ok").Observe(0.25)
+	p.Metrics.StreamErrors.WithLabelValues("provider_key_invalid", "openai", "gpt-4o-mini").Inc()
 	p.Metrics.StreamCancellations.Inc()
 
 	rec := httptest.NewRecorder()
@@ -82,6 +85,9 @@ func TestPrometheusHandler_ExposesGatewayMetrics(t *testing.T) {
 		`iq_optimizer_blocks_total{result="pruned",source="optimize"} 1`,
 		`iq_optimizer_diffs_total{mode="exact",source="optimize"} 1`,
 		"iq_optimizer_reduction_ratio",
+		"iq_optimizer_duration_seconds",
+		`iq_provider_request_duration_seconds_count{model="gpt-4o-mini",provider="openai",result="ok"} 1`,
+		`iq_stream_errors_total{code="provider_key_invalid",model="gpt-4o-mini",provider="openai"} 1`,
 		"iq_stream_cancellations_total 1",
 		"go_goroutines",             // from Go collector
 		"process_cpu_seconds_total", // from process collector

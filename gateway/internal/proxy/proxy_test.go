@@ -186,6 +186,41 @@ func TestReadyz_GovernorNotReady(t *testing.T) {
 	}
 }
 
+func TestModels_FilterByProvider(t *testing.T) {
+	t.Parallel()
+	srv := newTestServer(t, &fakeGovernor{})
+
+	resp, err := http.Get(srv.URL + "/v1/models?provider=anthropic")
+	if err != nil {
+		t.Fatalf("GET /v1/models: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d, want 200", resp.StatusCode)
+	}
+
+	var got struct {
+		Object string `json:"object"`
+		Data   []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode models response: %v", err)
+	}
+	if got.Object != "list" {
+		t.Fatalf("object=%q, want list", got.Object)
+	}
+	if len(got.Data) == 0 {
+		t.Fatal("expected anthropic models")
+	}
+	for _, model := range got.Data {
+		if !strings.HasPrefix(model.ID, "claude-") {
+			t.Fatalf("unexpected anthropic model id %q", model.ID)
+		}
+	}
+}
+
 func TestDiagnostics_PrivacySafeHistorySummary(t *testing.T) {
 	t.Parallel()
 	gov := govpkg.New(

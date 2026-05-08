@@ -481,6 +481,9 @@ func (p *Proxy) streamThroughGovernor(w http.ResponseWriter, r *http.Request, re
 		// Best-effort error frame. If this write also fails, the client is
 		// already gone; we log and return.
 		safePayload := upstreamErrorPayload(err)
+		if p.metrics != nil {
+			p.metrics.StreamErrors.WithLabelValues(safePayload.Code, string(req.Credential.Provider), req.Model).Inc()
+		}
 		errBytes, mErr := json.Marshal(errorEnvelope{Error: safePayload})
 		if mErr == nil {
 			if wErr := sw.WriteEvent("error", errBytes); wErr != nil {

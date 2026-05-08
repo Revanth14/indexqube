@@ -97,6 +97,7 @@ func (p *Proxy) registerRoutes() {
 	p.mux.HandleFunc("GET /healthz", p.handleHealth)
 	p.mux.HandleFunc("GET /readyz", p.handleReady)
 	p.mux.HandleFunc("GET /v1/diagnostics", p.handleDiagnostics)
+	p.mux.HandleFunc("GET /v1/models", p.handleModels)
 	p.mux.HandleFunc("POST /v1/chat/completions", p.handleChatCompletions)
 	p.mux.HandleFunc("POST /v1/optimize", p.handleOptimize)
 }

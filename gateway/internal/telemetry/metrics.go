@@ -60,6 +60,20 @@ type Metrics struct {
 	// Labels: source = "optimize" | "stream".
 	OptimizerReduction *prometheus.HistogramVec
 
+	// OptimizerDuration captures local gateway optimization latency.
+	// Labels: source = "optimize" | "stream".
+	OptimizerDuration *prometheus.HistogramVec
+
+	// ProviderDuration captures upstream provider dispatch latency, including
+	// full streaming body time for successful streams.
+	// Labels: provider, model, result = "ok" | "error".
+	ProviderDuration *prometheus.HistogramVec
+
+	// StreamErrors counts streamed requests that failed after SSE headers were
+	// committed and had to be reported as an error event.
+	// Labels: code, provider, model.
+	StreamErrors *prometheus.CounterVec
+
 	// FailoverRequests counts successful failover attempts.
 	// Labels: from (failed provider), to (secondary provider).
 	FailoverRequests *prometheus.CounterVec
@@ -172,6 +186,29 @@ func newMetrics(reg prometheus.Registerer) *Metrics {
 			Buckets:   []float64{0, 0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 0.99, 1},
 		}, []string{"source"}),
 
+		OptimizerDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Namespace: "iq",
+			Subsystem: "optimizer",
+			Name:      "duration_seconds",
+			Help:      "Latency spent pruning and preparing request context before provider dispatch.",
+			Buckets:   []float64{0.0001, 0.00025, 0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1},
+		}, []string{"source"}),
+
+		ProviderDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Namespace: "iq",
+			Subsystem: "provider",
+			Name:      "request_duration_seconds",
+			Help:      "Latency of upstream provider requests, including streaming response body time.",
+			Buckets:   []float64{0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 300},
+		}, []string{"provider", "model", "result"}),
+
+		StreamErrors: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "iq",
+			Subsystem: "stream",
+			Name:      "errors_total",
+			Help:      "Total streaming errors emitted after SSE headers were committed.",
+		}, []string{"code", "provider", "model"}),
+
 		FailoverRequests: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: "iq",
 			Subsystem: "governor",
@@ -208,6 +245,9 @@ func newMetrics(reg prometheus.Registerer) *Metrics {
 		m.OptimizerDiffs,
 		m.OptimizerSkips,
 		m.OptimizerReduction,
+		m.OptimizerDuration,
+		m.ProviderDuration,
+		m.StreamErrors,
 		m.FailoverRequests,
 		m.EstimatedCostSavedUSD,
 		m.StreamCancellations,
@@ -239,6 +279,7 @@ func newMetrics(reg prometheus.Registerer) *Metrics {
 			m.OptimizerSkips.WithLabelValues(source, reason).Add(0)
 		}
 		m.OptimizerReduction.WithLabelValues(source)
+		m.OptimizerDuration.WithLabelValues(source)
 	}
 
 	return m

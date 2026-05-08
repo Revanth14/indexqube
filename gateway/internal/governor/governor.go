@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/Revanth14/indexqube/gateway/internal/cache"
 	"github.com/Revanth14/indexqube/gateway/internal/domain"
@@ -154,20 +155,24 @@ func cloneInferenceRequest(req *domain.InferenceRequest) *domain.InferenceReques
 // Optimize runs pruning (+ optional project memory) without calling any LLM.
 // Used by POST /v1/optimize (Chrome pre-processor Path A).
 func (g *Governor) Optimize(ctx context.Context, tenant string, msgs []domain.Message, projectMemory string) ([]domain.Message, domain.PruneStats, error) {
+	started := time.Now()
 	out := cloneMessages(msgs)
 	out = InjectProjectMemory(out, MergeProjectMemory(g.projectMemory, projectMemory))
 	if tenant == "" {
 		st := finishPruneStats(domain.PruneStats{})
 		g.recordOptimization(ctx, "optimize", st, "", "")
+		g.recordOptimizationDuration("optimize", time.Since(started))
 		return out, st, nil
 	}
 	if !g.pruneEnabled || g.history == nil {
 		st := finishPruneStats(domain.PruneStats{})
 		g.recordOptimization(ctx, "optimize", st, "", "")
+		g.recordOptimizationDuration("optimize", time.Since(started))
 		return out, st, nil
 	}
 	stMsgs, st := PruneMessages(ctx, g.history, tenant, out, g.effectivePruneMaxLines(), g.logger)
 	g.recordOptimization(ctx, "optimize", st, "", "")
+	g.recordOptimizationDuration("optimize", time.Since(started))
 	return stMsgs, st, nil
 }
 
@@ -202,6 +207,7 @@ func (g *Governor) Stream(ctx context.Context, req *domain.InferenceRequest, tw 
 	work.ProjectMemory = MergeProjectMemory(g.projectMemory, work.ProjectMemory)
 	work.Messages = InjectProjectMemory(work.Messages, work.ProjectMemory)
 	var st domain.PruneStats
+	optStarted := time.Now()
 	if g.pruneEnabled && g.history != nil {
 		work.Messages, st = PruneMessages(ctx, g.history, tenant, work.Messages, g.effectivePruneMaxLines(), g.logger)
 		g.recordOptimization(ctx, "stream", st, string(work.Credential.Provider), work.Model)
@@ -209,6 +215,7 @@ func (g *Governor) Stream(ctx context.Context, req *domain.InferenceRequest, tw 
 		st = finishPruneStats(domain.PruneStats{})
 		g.recordOptimization(ctx, "stream", st, string(work.Credential.Provider), work.Model)
 	}
+	g.recordOptimizationDuration("stream", time.Since(optStarted))
 	if err := emitOptimizerEvent(tw, st); err != nil {
 		return err
 	}
@@ -350,7 +357,9 @@ func (g *Governor) dispatchWithFailover(ctx context.Context, work *domain.Infere
 		sink = tee
 	}
 
+	started := time.Now()
 	err := a.Dispatch(ctx, work, sink)
+	g.recordProviderDuration(work.Credential.Provider, work.Model, err, time.Since(started))
 	if err != nil && isRetryable(err) {
 		if fallback, ok := g.getFallbackProvider(work.Credential.Provider); ok {
 			if fa, fok := g.adapters[fallback]; fok {
@@ -364,7 +373,10 @@ func (g *Governor) dispatchWithFailover(ctx context.Context, work *domain.Infere
 				}
 				work.Credential.Provider = fallback
 				// Failover bypasses the tee/cache for now.
-				return nil, fa.Dispatch(ctx, work, tw)
+				started := time.Now()
+				err := fa.Dispatch(ctx, work, tw)
+				g.recordProviderDuration(work.Credential.Provider, work.Model, err, time.Since(started))
+				return nil, err
 			}
 		}
 	}
@@ -403,6 +415,24 @@ func (g *Governor) recordWrite(result string) {
 		return
 	}
 	g.metrics.CacheWrites.WithLabelValues(result).Inc()
+}
+
+func (g *Governor) recordOptimizationDuration(source string, d time.Duration) {
+	if g.metrics == nil {
+		return
+	}
+	g.metrics.OptimizerDuration.WithLabelValues(source).Observe(d.Seconds())
+}
+
+func (g *Governor) recordProviderDuration(provider domain.Provider, model string, err error, d time.Duration) {
+	if g.metrics == nil {
+		return
+	}
+	result := "ok"
+	if err != nil {
+		result = "error"
+	}
+	g.metrics.ProviderDuration.WithLabelValues(string(provider), model, result).Observe(d.Seconds())
 }
 
 func (g *Governor) getFallbackProvider(p domain.Provider) (domain.Provider, bool) {
