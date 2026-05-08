@@ -51,6 +51,12 @@ func (s *stubAdapter) Ready(ctx context.Context) error {
 // recordingWriter captures the frames an Adapter emits.
 type recordingWriter struct {
 	frames [][]byte
+	events []recordedEvent
+}
+
+type recordedEvent struct {
+	name string
+	data []byte
 }
 
 func (r *recordingWriter) WriteData(data []byte) error {
@@ -59,9 +65,14 @@ func (r *recordingWriter) WriteData(data []byte) error {
 	r.frames = append(r.frames, cp)
 	return nil
 }
-func (r *recordingWriter) WriteEvent(_ string, _ []byte) error { return nil }
-func (r *recordingWriter) WriteDone() error                    { return nil }
-func (r *recordingWriter) Flush() error                        { return nil }
+func (r *recordingWriter) WriteEvent(event string, data []byte) error {
+	cp := make([]byte, len(data))
+	copy(cp, data)
+	r.events = append(r.events, recordedEvent{name: event, data: cp})
+	return nil
+}
+func (r *recordingWriter) WriteDone() error { return nil }
+func (r *recordingWriter) Flush() error     { return nil }
 
 func newReq(p domain.Provider) *domain.InferenceRequest {
 	return &domain.InferenceRequest{
@@ -95,6 +106,42 @@ func TestStream_RoutesToCorrectAdapter(t *testing.T) {
 	}
 	if len(rec.frames) != 2 {
 		t.Errorf("got %d frames, want 2", len(rec.frames))
+	}
+}
+
+func TestStream_EmitsOptimizerEventForPrunedContext(t *testing.T) {
+	t.Parallel()
+
+	h := NewMemoryHistory()
+	tenant := "ide-session"
+	oldLines := makeNumberedLines(80)
+	newLines := append([]string(nil), oldLines...)
+	newLines[40] = "line 0041 changed from VS Code"
+	h.Put(context.Background(), domain.ResolveTenantKey(tenant, ""), "src/main.go", strings.Join(oldLines, "\n"))
+
+	stub := &stubAdapter{tokens: [][]byte{[]byte("ok")}}
+	g := New(
+		WithAdapter(domain.ProviderAnthropic, stub),
+		WithHistory(h),
+		WithPruning(true, 8000),
+	)
+
+	req := newReq(domain.ProviderAnthropic)
+	req.SessionKey = tenant
+	req.Messages = []domain.Message{{Role: "user", Content: "```go src/main.go\n" + strings.Join(newLines, "\n") + "\n```"}}
+
+	rec := &recordingWriter{}
+	if err := g.Stream(context.Background(), req, rec); err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	if len(rec.events) != 1 {
+		t.Fatalf("events=%d want 1", len(rec.events))
+	}
+	if rec.events[0].name != "iq_optimizer" {
+		t.Fatalf("event=%q want iq_optimizer", rec.events[0].name)
+	}
+	if !strings.Contains(string(rec.events[0].data), `"mode":"diff"`) {
+		t.Fatalf("optimizer event missing diff mode: %s", rec.events[0].data)
 	}
 }
 

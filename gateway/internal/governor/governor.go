@@ -15,6 +15,7 @@ package governor
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -204,6 +205,9 @@ func (g *Governor) Stream(ctx context.Context, req *domain.InferenceRequest, tw 
 		var st domain.PruneStats
 		work.Messages, st = PruneMessages(ctx, g.history, tenant, work.Messages, g.effectivePruneMaxLines(), g.logger)
 		g.recordOptimization(ctx, "stream", st, string(work.Credential.Provider), work.Model)
+		if err := emitOptimizerEvent(tw, st); err != nil {
+			return err
+		}
 	} else {
 		g.recordOptimization(ctx, "stream", finishPruneStats(domain.PruneStats{}), string(work.Credential.Provider), work.Model)
 	}
@@ -293,6 +297,39 @@ func (g *Governor) Stream(ctx context.Context, req *domain.InferenceRequest, tw 
 	}
 
 	return nil
+}
+
+func emitOptimizerEvent(tw domain.TokenWriter, st domain.PruneStats) error {
+	if st.BlocksSeen == 0 && st.BlocksPruned == 0 && st.BlocksSkipped == 0 {
+		return nil
+	}
+	payload, err := json.Marshal(struct {
+		Mode  string            `json:"mode"`
+		Stats domain.PruneStats `json:"stats"`
+	}{
+		Mode:  streamPruneMode(st),
+		Stats: st,
+	})
+	if err != nil {
+		return fmt.Errorf("marshal optimizer event: %w", err)
+	}
+	return tw.WriteEvent("iq_optimizer", payload)
+}
+
+func streamPruneMode(st domain.PruneStats) string {
+	if st.BlocksPruned > 0 {
+		if st.DiffExact+st.DiffFallback > 0 {
+			return "diff"
+		}
+		return "unchanged"
+	}
+	if st.BlocksSkipped > 0 {
+		return "skipped"
+	}
+	if st.BlocksSeen > 0 {
+		return "warmup"
+	}
+	return "none"
 }
 
 func (g *Governor) dispatchWithFailover(ctx context.Context, work *domain.InferenceRequest, tw domain.TokenWriter) (*cache.Entry, error) {
