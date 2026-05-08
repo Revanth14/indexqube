@@ -1,9 +1,13 @@
 {
   "name": "indexqube",
   "displayName": "IndexQube",
-  "description": "MAANG-level AI Inference Gateway & Context Optimizer",
+  "description": "BYO-key AI coding assistant with gateway context optimization",
   "version": "0.1.0",
   "publisher": "revanth",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Revanth14/indexqube"
+  },
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -11,14 +15,6 @@
     "AI",
     "Programming Languages",
     "Other"
-  ],
-  "activationEvents": [
-    "onView:indexqube.chatView",
-    "onCommand:indexqube.openChat",
-    "onCommand:indexqube.openSettings",
-    "onCommand:indexqube.setProviderKey",
-    "onCommand:indexqube.checkGateway",
-    "onCommand:indexqube.resetSession"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -54,6 +50,10 @@
         "title": "IndexQube: Set Provider Key"
       },
       {
+        "command": "indexqube.pickModel",
+        "title": "IndexQube: Pick Model"
+      },
+      {
         "command": "indexqube.checkGateway",
         "title": "IndexQube: Check Gateway"
       },
@@ -72,30 +72,46 @@
         },
         "indexqube.provider": {
           "type": "string",
-          "enum": ["anthropic", "openai", "azure", "bedrock"],
+          "enum": [
+            "anthropic",
+            "openai",
+            "azure",
+            "bedrock"
+          ],
           "default": "anthropic",
           "description": "The LLM provider to use."
         },
         "indexqube.model": {
           "type": "string",
-          "default": "claude-3-5-sonnet",
+          "default": "claude-sonnet-4-6",
           "description": "The model ID to use."
         },
         "indexqube.contextMode": {
           "type": "string",
-          "enum": ["selection", "activeFile", "openEditors", "workspace"],
+          "enum": [
+            "selection",
+            "activeFile",
+            "openEditors",
+            "workspace"
+          ],
           "default": "activeFile",
           "description": "Default editor context included with each request."
         },
         "indexqube.memoryMode": {
           "type": "string",
-          "enum": ["workspace", "isolated"],
+          "enum": [
+            "workspace",
+            "isolated"
+          ],
           "default": "workspace",
           "description": "Controls optimizer session reuse. Workspace reuses one session for dedupe; isolated uses a fresh session key per request."
         },
         "indexqube.privacyMode": {
           "type": "string",
-          "enum": ["standard", "localOnly"],
+          "enum": [
+            "standard",
+            "localOnly"
+          ],
           "default": "standard",
           "description": "standard: allows HTTPS remote gateways and localhost. localOnly: restricts to localhost/127.0.0.1/::1 only — remote HTTPS gateways are also blocked."
         },
@@ -106,6 +122,14 @@
           },
           "default": [],
           "description": "Additional file path patterns excluded from IndexQube context. Supports * wildcards."
+        },
+        "indexqube.secretPatterns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Additional regex patterns for inline secret redaction (e.g. [\"MY_TOKEN_[A-Z0-9]+\"]). Matches are replaced with [redacted] before sending."
         },
         "indexqube.maxContextBytes": {
           "type": "number",
@@ -161,14 +185,16 @@
     "compile": "webpack",
     "watch": "webpack --watch",
     "package": "webpack --mode production --devtool hidden-source-map",
+    "package:vsix": "npm run package && vsce package --no-dependencies --out dist/",
     "lint": "eslint src --ext ts"
   },
   "devDependencies": {
-    "@types/vscode": "^1.85.0",
     "@types/node": "20.x",
+    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^3.9.1",
+    "ts-loader": "^9.5.1",
     "typescript": "^5.3.3",
     "webpack": "^5.89.0",
-    "webpack-cli": "^5.1.4",
-    "ts-loader": "^9.5.1"
+    "webpack-cli": "^5.1.4"
   }
 }
