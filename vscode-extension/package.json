@@ -87,6 +87,26 @@
           "default": "activeFile",
           "description": "Default editor context included with each request."
         },
+        "indexqube.memoryMode": {
+          "type": "string",
+          "enum": ["workspace", "isolated"],
+          "default": "workspace",
+          "description": "Controls optimizer session reuse. Workspace reuses one session for dedupe; isolated uses a fresh session key per request."
+        },
+        "indexqube.privacyMode": {
+          "type": "string",
+          "enum": ["standard", "localOnly"],
+          "default": "standard",
+          "description": "standard: allows HTTPS remote gateways and localhost. localOnly: restricts to localhost/127.0.0.1/::1 only — remote HTTPS gateways are also blocked."
+        },
+        "indexqube.contextExcludePatterns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Additional file path patterns excluded from IndexQube context. Supports * wildcards."
+        },
         "indexqube.maxContextBytes": {
           "type": "number",
           "default": 120000,
