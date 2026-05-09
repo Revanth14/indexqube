@@ -52,6 +52,15 @@ type Governor struct {
 	semanticEnabled   bool
 	semanticThreshold float64
 	embedder          func(ctx context.Context, apiKey, text string) ([]float32, error)
+
+	// Circuit breaker — one per registered provider.
+	breakers      map[domain.Provider]*breaker
+	cbMaxFailures uint32
+	cbOpenTimeout time.Duration
+
+	// llmTimeout caps how long a single upstream provider call may run.
+	// 0 means no additional timeout (relies on the request context alone).
+	llmTimeout time.Duration
 }
 
 // Option configures a Governor at construction time.
@@ -127,8 +136,30 @@ func WithProjectMemory(memory string) Option {
 	}
 }
 
+// WithCircuitBreaker configures the per-provider circuit breaker.
+//   - maxFailures: number of consecutive errors before opening the circuit.
+//   - openTimeout: how long to stay open before probing (half-open state).
+//
+// Defaults (applied when zero values are given): 5 failures, 30 s open timeout.
+func WithCircuitBreaker(maxFailures uint32, openTimeout time.Duration) Option {
+	return func(g *Governor) {
+		g.cbMaxFailures = maxFailures
+		g.cbOpenTimeout = openTimeout
+	}
+}
+
+// WithLLMTimeout sets a hard deadline on each upstream provider call.
+// If the provider does not complete within d the call is cancelled and
+// counted as a failure (possibly triggering the circuit breaker).
+// Use 0 to rely solely on the request context (no additional timeout).
+func WithLLMTimeout(d time.Duration) Option {
+	return func(g *Governor) {
+		g.llmTimeout = d
+	}
+}
+
 // New returns a Governor with the given configuration.
-func New(opts ...Option) *Governor {
+func New(opts ...Option) (*Governor, error) {
 	g := &Governor{
 		adapters: make(map[domain.Provider]Adapter),
 		logger:   slog.Default(),
@@ -136,8 +167,16 @@ func New(opts ...Option) *Governor {
 	for _, opt := range opts {
 		opt(g)
 	}
-	return g
+
+	// Initialise circuit breakers — one per registered provider.
+	g.breakers = make(map[domain.Provider]*breaker, len(g.adapters))
+	for p := range g.adapters {
+		g.breakers[p] = newBreaker(p, g.cbMaxFailures, g.cbOpenTimeout, g.logger)
+	}
+
+	return g, nil
 }
+
 
 func (g *Governor) effectivePruneMaxLines() int {
 	if g.pruneMaxLines > 0 {
@@ -342,8 +381,7 @@ func streamPruneMode(st domain.PruneStats) string {
 }
 
 func (g *Governor) dispatchWithFailover(ctx context.Context, work *domain.InferenceRequest, tw domain.TokenWriter) (*cache.Entry, error) {
-	a, ok := g.adapters[work.Credential.Provider]
-	if !ok {
+	if _, ok := g.adapters[work.Credential.Provider]; !ok {
 		return nil, fmt.Errorf("governor: no adapter registered for provider %q", work.Credential.Provider)
 	}
 
@@ -358,11 +396,11 @@ func (g *Governor) dispatchWithFailover(ctx context.Context, work *domain.Infere
 	}
 
 	started := time.Now()
-	err := a.Dispatch(ctx, work, sink)
+	err := g.dispatchOne(ctx, work.Credential.Provider, work, sink)
 	g.recordProviderDuration(work.Credential.Provider, work.Model, err, time.Since(started))
 	if err != nil && isRetryable(err) {
 		if fallback, ok := g.getFallbackProvider(work.Credential.Provider); ok {
-			if fa, fok := g.adapters[fallback]; fok {
+			if _, fok := g.adapters[fallback]; fok {
 				g.logger.InfoContext(ctx, "primary provider failed; failing over",
 					slog.String("from", string(work.Credential.Provider)),
 					slog.String("to", string(fallback)),
@@ -374,7 +412,7 @@ func (g *Governor) dispatchWithFailover(ctx context.Context, work *domain.Infere
 				work.Credential.Provider = fallback
 				// Failover bypasses the tee/cache for now.
 				started := time.Now()
-				err := fa.Dispatch(ctx, work, tw)
+				err := g.dispatchOne(ctx, fallback, work, tw)
 				g.recordProviderDuration(work.Credential.Provider, work.Model, err, time.Since(started))
 				return nil, err
 			}
@@ -453,12 +491,17 @@ func isRetryable(err error) bool {
 	if err == nil {
 		return false
 	}
-	msg := strings.ToLower(err.Error())
-	// Detect 429 (Rate Limit) and 503 (Service Unavailable)
-	return strings.Contains(msg, "429") ||
-		strings.Contains(msg, "503") ||
-		strings.Contains(msg, "overloaded") ||
-		strings.Contains(msg, "rate limit")
+	// A circuit-open error means the primary provider is suspended;
+	// let the governor try the fallback instead of returning immediately.
+	if errors.Is(err, ErrCircuitOpen) {
+		return true
+	}
+	// Structured ProviderError carries the HTTP status code — no string matching.
+	var pe *domain.ProviderError
+	if errors.As(err, &pe) {
+		return pe.IsRetryable()
+	}
+	return false
 }
 
 func (g *Governor) recordOptimization(ctx context.Context, source string, st domain.PruneStats, provider, model string) {
@@ -517,4 +560,46 @@ func (g *Governor) Ready(ctx context.Context) error {
 	// In v1, MemoryCache is always ready if initialized. Future L2
 	// implementations (Supabase/Redis) will implement a health check here.
 	return nil
+}
+
+// dispatchOne routes a single inference request to the named provider,
+// enforcing the circuit breaker and an optional per-call LLM timeout.
+//
+// Circuit breaker: if the provider's circuit is open the call returns
+// circuitOpenError immediately without touching the network.
+// LLM timeout: if g.llmTimeout > 0 a child context with that deadline is
+// used so a hung provider doesn't hold the goroutine indefinitely.
+func (g *Governor) dispatchOne(ctx context.Context, provider domain.Provider, work *domain.InferenceRequest, tw domain.TokenWriter) error {
+	a, ok := g.adapters[provider]
+	if !ok {
+		return fmt.Errorf("governor: no adapter for provider %q", provider)
+	}
+
+	cb, cbOk := g.breakers[provider]
+	if cbOk {
+		allowed, done := cb.allow()
+		if !allowed {
+			return circuitOpenError(provider)
+		}
+		defer func() { done(false) }() // overwritten on success below
+
+		if g.llmTimeout > 0 {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, g.llmTimeout)
+			defer cancel()
+		}
+
+		err := a.Dispatch(ctx, work, tw)
+		done(err == nil)   // record the actual outcome
+		done = func(_ bool) {} // prevent the deferred call from double-recording
+		return err
+	}
+
+	// No circuit breaker registered (shouldn't happen after New, but safe fallback).
+	if g.llmTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, g.llmTimeout)
+		defer cancel()
+	}
+	return a.Dispatch(ctx, work, tw)
 }
