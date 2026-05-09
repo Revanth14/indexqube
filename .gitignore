@@ -37,6 +37,7 @@ coverage.out
 *.jsonl
 logs/
 gateway/logs/
+gateway/docs/
 tmp/
 build/
 
