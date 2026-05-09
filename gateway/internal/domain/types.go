@@ -5,7 +5,12 @@
 // Anything HTTP-, provider-, or storage-specific does NOT belong here.
 package domain
 
-import "context"
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"net/http"
+)
 
 // Provider is the upstream LLM provider tag carried on each request.
 // The governor uses it to dispatch to a registered adapter.
@@ -31,6 +36,21 @@ func (p Provider) IsValid() bool {
 type Credential struct {
 	Provider Provider
 	APIKey   string
+}
+
+// String implements fmt.Stringer. It intentionally redacts the API key so the
+// struct is safe to pass to loggers, error formatters, or fmt.Sprintf.
+func (c Credential) String() string {
+	return fmt.Sprintf("Credential{Provider:%s,APIKey:[REDACTED]}", c.Provider)
+}
+
+// LogValue implements slog.LogValuer so that structured loggers (zerolog, slog)
+// never emit the raw APIKey field even when the whole struct is logged.
+func (c Credential) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("provider", string(c.Provider)),
+		slog.String("api_key", "[REDACTED]"),
+	)
 }
 
 // Message is the canonical chat message shape, lightly OpenAI-compatible.
@@ -130,3 +150,37 @@ type TokenWriter interface {
 type Embedder interface {
 	Embed(ctx context.Context, text string) ([]float32, error)
 }
+
+// ─── Provider errors ──────────────────────────────────────────────────────────
+
+// ProviderError is a structured error returned by all provider adapters.
+// It carries the upstream HTTP status code so the governor can make failover
+// decisions without brittle string matching on error messages.
+type ProviderError struct {
+	Provider   Provider
+	StatusCode int
+	// Message is a sanitised, caller-safe description (no billing/account info).
+	Message string
+	// Cause preserves the raw upstream response for internal logging.
+	Cause error
+}
+
+func (e *ProviderError) Error() string {
+	if e.Cause != nil {
+		return fmt.Sprintf("%s error (HTTP %d): %s: %v", e.Provider, e.StatusCode, e.Message, e.Cause)
+	}
+	return fmt.Sprintf("%s error (HTTP %d): %s", e.Provider, e.StatusCode, e.Message)
+}
+
+func (e *ProviderError) Unwrap() error { return e.Cause }
+
+// IsRateLimit reports whether the provider returned 429 Too Many Requests.
+func (e *ProviderError) IsRateLimit() bool { return e.StatusCode == http.StatusTooManyRequests }
+
+// IsUnavailable reports whether the provider returned 503 Service Unavailable.
+func (e *ProviderError) IsUnavailable() bool { return e.StatusCode == http.StatusServiceUnavailable }
+
+// IsRetryable reports whether the governor should attempt a provider failover.
+// Only rate-limit and unavailable responses warrant a cross-provider retry;
+// all other errors (bad request, auth failure, context-too-long) are terminal.
+func (e *ProviderError) IsRetryable() bool { return e.IsRateLimit() || e.IsUnavailable() }
