@@ -241,7 +241,7 @@ func TestModels_FilterByProvider(t *testing.T) {
 
 func TestDiagnostics_PrivacySafeHistorySummary(t *testing.T) {
 	t.Parallel()
-	gov := govpkg.New(
+	gov, _ := govpkg.New(
 		govpkg.WithHistory(govpkg.NewMemoryHistory()),
 		govpkg.WithPruning(true, 8000),
 	)
@@ -614,10 +614,10 @@ func TestClaudeMessages_OptimizePrunesRepeatedTextBlock(t *testing.T) {
 	if len(bodies) != 2 {
 		t.Fatalf("got %d upstream bodies, want 2", len(bodies))
 	}
-	if strings.Contains(bodies[0], "[iq:repeated ref:") {
+	if strings.Contains(bodies[0], "[iq:ref") {
 		t.Fatalf("first request should warm session, got body=%s", bodies[0])
 	}
-	if !strings.Contains(bodies[1], "[iq:repeated ref:") {
+	if !strings.Contains(bodies[1], "[iq:ref") {
 		t.Fatalf("second request should prune repeated block, got body=%s", bodies[1])
 	}
 	if !strings.Contains(bodies[1], "latest instruction stays") {
@@ -658,10 +658,10 @@ func TestClaudeMessages_OptimizePrunesRepeatedLargeChunks(t *testing.T) {
 	if len(bodies) != 2 {
 		t.Fatalf("got %d upstream bodies, want 2", len(bodies))
 	}
-	if strings.Contains(bodies[0], "[iq:repeated ref:") {
+	if strings.Contains(bodies[0], "[iq:ref") {
 		t.Fatalf("first request should warm session, got body=%s", bodies[0])
 	}
-	if !strings.Contains(bodies[1], "[iq:repeated ref:") {
+	if !strings.Contains(bodies[1], "[iq:ref") {
 		t.Fatalf("second request should prune repeated large chunks, got body=%s", bodies[1])
 	}
 	if len(bodies[1]) >= len(bodies[0]) {
@@ -672,7 +672,10 @@ func TestClaudeMessages_OptimizePrunesRepeatedLargeChunks(t *testing.T) {
 	}
 }
 
-func TestClaudeMessages_OptimizePrunesRepeatedChunksInLatestMessage(t *testing.T) {
+// TestClaudeMessages_OptimizePreservesLatestTurnWhilePruningOldContent verifies
+// Phase 3 policy: old repeated content is pruned, but the latest user turn is
+// always preserved regardless of its content being previously seen.
+func TestClaudeMessages_OptimizePreservesLatestTurnWhilePruningOldContent(t *testing.T) {
 	t.Parallel()
 	var bodies []string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -685,11 +688,16 @@ func TestClaudeMessages_OptimizePrunesRepeatedChunksInLatestMessage(t *testing.T
 	t.Cleanup(upstream.Close)
 	srv := newClaudeTestServer(t, upstream.URL, memory.NewStore(time.Hour), "optimize", true)
 
-	repeated := strings.Repeat("latest-message repeated code context line\n", 260)
-	first := fmt.Sprintf(`{"model":"claude-sonnet-4-6","stream":true,"messages":[{"role":"user","content":%q}]}`, repeated)
-	second := fmt.Sprintf(`{"model":"claude-sonnet-4-6","stream":true,"messages":[{"role":"assistant","content":"I saw the context."},{"role":"user","content":%q}]}`, repeated+"\n\nPlease review the active file now.")
+	// Large repeated context that will be saved on first request.
+	repeated := strings.Repeat("repeated-context-line-that-should-be-pruned\n", 260)
+	// Both requests use the same body: old repeated content in message[0],
+	// new latest instruction in message[1] (the latest user turn).
+	body := fmt.Sprintf(
+		`{"model":"claude-sonnet-4-6","stream":true,"messages":[{"role":"user","content":%q},{"role":"user","content":"Please review the active file now."}]}`,
+		repeated,
+	)
 
-	for _, body := range []string{first, second} {
+	for i := 0; i < 2; i++ {
 		req, err := http.NewRequest(http.MethodPost, srv.URL+"/v1/messages", strings.NewReader(body))
 		if err != nil {
 			t.Fatalf("new request: %v", err)
@@ -706,17 +714,20 @@ func TestClaudeMessages_OptimizePrunesRepeatedChunksInLatestMessage(t *testing.T
 	if len(bodies) != 2 {
 		t.Fatalf("got %d upstream bodies, want 2", len(bodies))
 	}
-	if strings.Contains(bodies[0], "[iq:repeated ref:") {
+	if strings.Contains(bodies[0], "[iq:ref") {
 		t.Fatalf("first request should warm session, got body=%s", bodies[0])
 	}
-	if !strings.Contains(bodies[1], "[iq:repeated ref:") {
-		t.Fatalf("second request should prune repeated latest-message chunks, got body=%s", bodies[1])
+	// Old content (message[0]) must be pruned.
+	if !strings.Contains(bodies[1], "[iq:ref") {
+		t.Fatalf("second request should prune old repeated content, got body=%s", bodies[1])
 	}
-	if len(bodies[1]) >= len(bodies[0]) {
-		t.Fatalf("second request did not shrink after latest-message pruning: first=%d second=%d", len(bodies[0]), len(bodies[1]))
-	}
+	// Latest turn (message[1]) must be preserved verbatim.
 	if !strings.Contains(bodies[1], "Please review the active file now.") {
-		t.Fatalf("latest instruction missing after optimize, got body=%s", bodies[1])
+		t.Fatalf("latest turn must be preserved, got body=%s", bodies[1])
+	}
+	// Body must have shrunk since the large repeated block was removed.
+	if len(bodies[1]) >= len(bodies[0]) {
+		t.Fatalf("second request did not shrink: first=%d second=%d", len(bodies[0]), len(bodies[1]))
 	}
 }
 
@@ -949,7 +960,7 @@ func TestChatCompletions_ClientDisconnectViaWriteError(t *testing.T) {
 
 func TestOptimize_WithoutSessionKeyIsStateless(t *testing.T) {
 	t.Parallel()
-	gov := govpkg.New(
+	gov, _ := govpkg.New(
 		govpkg.WithHistory(govpkg.NewMemoryHistory()),
 		govpkg.WithPruning(true, 8000),
 	)
@@ -968,7 +979,7 @@ func TestOptimize_WithoutSessionKeyIsStateless(t *testing.T) {
 
 func TestOptimize_SameSessionPrunesSecondRequest(t *testing.T) {
 	t.Parallel()
-	gov := govpkg.New(
+	gov, _ := govpkg.New(
 		govpkg.WithHistory(govpkg.NewMemoryHistory()),
 		govpkg.WithPruning(true, 8000),
 	)
@@ -987,7 +998,7 @@ func TestOptimize_SameSessionPrunesSecondRequest(t *testing.T) {
 
 func TestOptimize_DifferentSessionsDoNotShareHistory(t *testing.T) {
 	t.Parallel()
-	gov := govpkg.New(
+	gov, _ := govpkg.New(
 		govpkg.WithHistory(govpkg.NewMemoryHistory()),
 		govpkg.WithPruning(true, 8000),
 	)
@@ -1041,7 +1052,7 @@ func TestOptimize_JSONPromptContextShape(t *testing.T) {
 
 func TestOptimize_JSONPromptContextAutoWrapsAndPrunes(t *testing.T) {
 	t.Parallel()
-	gov := govpkg.New(
+	gov, _ := govpkg.New(
 		govpkg.WithHistory(govpkg.NewMemoryHistory()),
 		govpkg.WithPruning(true, 8000),
 	)
@@ -1080,7 +1091,7 @@ func TestOptimize_JSONPromptContextAutoWrapsAndPrunes(t *testing.T) {
 
 func TestOptimize_JSONResponseIncludesStatsHeaders(t *testing.T) {
 	t.Parallel()
-	gov := govpkg.New(
+	gov, _ := govpkg.New(
 		govpkg.WithHistory(govpkg.NewMemoryHistory()),
 		govpkg.WithPruning(true, 8000),
 	)
@@ -1146,7 +1157,7 @@ func TestOptimize_JSONResponseIncludesStatsHeaders(t *testing.T) {
 
 func TestOptimize_JSONContractModesAndSavings(t *testing.T) {
 	t.Parallel()
-	gov := govpkg.New(
+	gov, _ := govpkg.New(
 		govpkg.WithHistory(govpkg.NewMemoryHistory()),
 		govpkg.WithPruning(true, 8000),
 	)
@@ -1187,7 +1198,7 @@ func TestOptimize_JSONContractModesAndSavings(t *testing.T) {
 
 func TestOptimize_JSONContractSkippedMode(t *testing.T) {
 	t.Parallel()
-	gov := govpkg.New(
+	gov, _ := govpkg.New(
 		govpkg.WithHistory(govpkg.NewMemoryHistory()),
 		govpkg.WithPruning(true, 8000),
 	)
@@ -1206,7 +1217,7 @@ func TestOptimize_JSONContractSkippedMode(t *testing.T) {
 
 func TestOptimize_JSONContextTextUsesDefaultSyntheticPath(t *testing.T) {
 	t.Parallel()
-	gov := govpkg.New(
+	gov, _ := govpkg.New(
 		govpkg.WithHistory(govpkg.NewMemoryHistory()),
 		govpkg.WithPruning(true, 8000),
 	)
@@ -1230,7 +1241,7 @@ func TestOptimize_JSONContextTextUsesDefaultSyntheticPath(t *testing.T) {
 
 func TestOptimize_TextPlainReturnsCompressedPayload(t *testing.T) {
 	t.Parallel()
-	gov := govpkg.New(
+	gov, _ := govpkg.New(
 		govpkg.WithHistory(govpkg.NewMemoryHistory()),
 		govpkg.WithPruning(true, 8000),
 	)
@@ -1269,7 +1280,7 @@ func TestOptimize_TextPlainReturnsCompressedPayload(t *testing.T) {
 
 func TestOptimize_TextPlainAcceptJSONReturnsContract(t *testing.T) {
 	t.Parallel()
-	gov := govpkg.New(
+	gov, _ := govpkg.New(
 		govpkg.WithHistory(govpkg.NewMemoryHistory()),
 		govpkg.WithPruning(true, 8000),
 	)
@@ -1315,7 +1326,7 @@ func TestOptimize_TextPlainAcceptJSONReturnsContract(t *testing.T) {
 
 func TestOptimize_TextPlainAutoWrapsRawCode(t *testing.T) {
 	t.Parallel()
-	gov := govpkg.New(
+	gov, _ := govpkg.New(
 		govpkg.WithHistory(govpkg.NewMemoryHistory()),
 		govpkg.WithPruning(true, 8000),
 	)
@@ -1343,7 +1354,7 @@ func TestOptimize_TextPlainAutoWrapsRawCode(t *testing.T) {
 
 func TestOptimize_TextPlainMixedPromptWrapsOnlyCode(t *testing.T) {
 	t.Parallel()
-	gov := govpkg.New(
+	gov, _ := govpkg.New(
 		govpkg.WithHistory(govpkg.NewMemoryHistory()),
 		govpkg.WithPruning(true, 8000),
 	)
@@ -1379,7 +1390,7 @@ func TestOptimize_TextPlainMixedPromptWrapsOnlyCode(t *testing.T) {
 
 func TestOptimize_TextPlainMixedPromptUsesFileHint(t *testing.T) {
 	t.Parallel()
-	gov := govpkg.New(
+	gov, _ := govpkg.New(
 		govpkg.WithHistory(govpkg.NewMemoryHistory()),
 		govpkg.WithPruning(true, 8000),
 	)
@@ -1409,7 +1420,7 @@ func TestOptimize_TextPlainMixedPromptUsesFileHint(t *testing.T) {
 
 func TestOptimize_TextPlainMultiFilePromptPrunesEachFile(t *testing.T) {
 	t.Parallel()
-	gov := govpkg.New(
+	gov, _ := govpkg.New(
 		govpkg.WithHistory(govpkg.NewMemoryHistory()),
 		govpkg.WithPruning(true, 8000),
 	)
@@ -1476,7 +1487,7 @@ func TestOptimize_TextPlainMultiFilePromptPrunesEachFile(t *testing.T) {
 
 func TestOptimize_TextPlainMultiFilePromptSupportsMarkdownHeadings(t *testing.T) {
 	t.Parallel()
-	gov := govpkg.New(
+	gov, _ := govpkg.New(
 		govpkg.WithHistory(govpkg.NewMemoryHistory()),
 		govpkg.WithPruning(true, 8000),
 	)
@@ -1505,7 +1516,7 @@ func TestOptimize_TextPlainMultiFilePromptSupportsMarkdownHeadings(t *testing.T)
 
 func TestOptimize_TextPlainCodeThenQuestionKeepsQuestionOutsideCode(t *testing.T) {
 	t.Parallel()
-	gov := govpkg.New(
+	gov, _ := govpkg.New(
 		govpkg.WithHistory(govpkg.NewMemoryHistory()),
 		govpkg.WithPruning(true, 8000),
 	)
@@ -1528,7 +1539,7 @@ func TestOptimize_TextPlainCodeThenQuestionKeepsQuestionOutsideCode(t *testing.T
 
 func TestOptimize_TextPlainNaturalLanguageStaysPlain(t *testing.T) {
 	t.Parallel()
-	gov := govpkg.New(
+	gov, _ := govpkg.New(
 		govpkg.WithHistory(govpkg.NewMemoryHistory()),
 		govpkg.WithPruning(true, 8000),
 	)
@@ -1548,7 +1559,7 @@ func TestOptimize_TextPlainNaturalLanguageStaysPlain(t *testing.T) {
 
 func TestOptimize_TextPlainLegacyDefaultContextDoesNotFenceNaturalLanguage(t *testing.T) {
 	t.Parallel()
-	gov := govpkg.New(
+	gov, _ := govpkg.New(
 		govpkg.WithHistory(govpkg.NewMemoryHistory()),
 		govpkg.WithPruning(true, 8000),
 	)
@@ -1572,7 +1583,7 @@ func TestOptimize_TextPlainLegacyDefaultContextDoesNotFenceNaturalLanguage(t *te
 
 func TestOptimize_TextPlainNotSmallerExposesSkipReason(t *testing.T) {
 	t.Parallel()
-	gov := govpkg.New(
+	gov, _ := govpkg.New(
 		govpkg.WithHistory(govpkg.NewMemoryHistory()),
 		govpkg.WithPruning(true, 8000),
 	)
@@ -1594,7 +1605,7 @@ func TestOptimize_TextPlainNotSmallerExposesSkipReason(t *testing.T) {
 
 func TestOptimize_TextPlainInjectsProjectMemory(t *testing.T) {
 	t.Parallel()
-	gov := govpkg.New(
+	gov, _ := govpkg.New(
 		govpkg.WithHistory(govpkg.NewMemoryHistory()),
 		govpkg.WithPruning(true, 8000),
 		govpkg.WithProjectMemory("Always preserve repo-specific rules."),

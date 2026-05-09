@@ -2,7 +2,7 @@ package governor
 
 import (
 	"context"
-	"errors"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -12,23 +12,23 @@ import (
 func TestStream_Failover(t *testing.T) {
 	t.Parallel()
 
-	// Primary adapter fails with 429.
+	// Primary adapter fails with 429 — must be a *domain.ProviderError for isRetryable.
 	primary := &stubAdapter{
-		err: errors.New("anthropic api error: status=429 body=rate limit exceeded"),
+		err: &domain.ProviderError{Provider: domain.ProviderAnthropic, StatusCode: http.StatusTooManyRequests, Message: "rate limit exceeded"},
 	}
 	// Secondary adapter succeeds.
 	secondary := &stubAdapter{
 		tokens: [][]byte{[]byte("failover-success")},
 	}
 
-	g := New(
+	g, _ := New(
 		WithAdapter(domain.ProviderAnthropic, primary),
 		WithAdapter(domain.ProviderBedrock, secondary),
 	)
 
 	rec := &recordingWriter{}
 	req := newReq(domain.ProviderAnthropic)
-	
+
 	if err := g.Stream(context.Background(), req, rec); err != nil {
 		t.Fatalf("Stream should have succeeded via failover: %v", err)
 	}
@@ -47,13 +47,13 @@ func TestStream_Failover(t *testing.T) {
 func TestStream_Failover_NotRetryable(t *testing.T) {
 	t.Parallel()
 
-	// Primary adapter fails with 401 (Not retryable).
+	// Primary adapter fails with 401 — not retryable.
 	primary := &stubAdapter{
-		err: errors.New("anthropic api error: status=401 body=invalid key"),
+		err: &domain.ProviderError{Provider: domain.ProviderAnthropic, StatusCode: http.StatusUnauthorized, Message: "invalid key"},
 	}
 	secondary := &stubAdapter{}
 
-	g := New(
+	g, _ := New(
 		WithAdapter(domain.ProviderAnthropic, primary),
 		WithAdapter(domain.ProviderBedrock, secondary),
 	)

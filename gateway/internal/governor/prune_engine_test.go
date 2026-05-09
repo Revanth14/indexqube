@@ -259,7 +259,7 @@ func TestPruneMessages_TooLargeDiffRecordsSkip(t *testing.T) {
 
 func TestGovernor_Optimize_InjectsMemory(t *testing.T) {
 	t.Parallel()
-	g := New(
+	g, _ := New(
 		WithHistory(NewMemoryHistory()),
 		WithPruning(false, 8000),
 	)
@@ -340,7 +340,7 @@ func TestLoadProjectMemory_Directory(t *testing.T) {
 func TestGovernor_Optimize_MergesStaticAndRequestMemoryWithPrunedPrompt(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	g := New(
+	g, _ := New(
 		WithHistory(NewMemoryHistory()),
 		WithPruning(true, 8000),
 		WithProjectMemory("Always answer with repository-specific context."),

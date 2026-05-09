@@ -89,7 +89,7 @@ func TestStream_RoutesToCorrectAdapter(t *testing.T) {
 	anthropic := &stubAdapter{tokens: [][]byte{[]byte("a"), []byte("b")}}
 	openai := &stubAdapter{tokens: [][]byte{[]byte("x")}}
 
-	g := New(
+	g, _ := New(
 		WithAdapter(domain.ProviderAnthropic, anthropic),
 		WithAdapter(domain.ProviderOpenAI, openai),
 	)
@@ -113,7 +113,7 @@ func TestStream_EmitsOptimizerReceiptForZeroSavings(t *testing.T) {
 	t.Parallel()
 
 	stub := &stubAdapter{tokens: [][]byte{[]byte("ok")}}
-	g := New(WithAdapter(domain.ProviderAnthropic, stub))
+	g, _ := New(WithAdapter(domain.ProviderAnthropic, stub))
 
 	rec := &recordingWriter{}
 	if err := g.Stream(context.Background(), newReq(domain.ProviderAnthropic), rec); err != nil {
@@ -141,7 +141,7 @@ func TestStream_EmitsOptimizerEventForPrunedContext(t *testing.T) {
 	h.Put(context.Background(), domain.ResolveTenantKey(tenant, ""), "src/main.go", strings.Join(oldLines, "\n"))
 
 	stub := &stubAdapter{tokens: [][]byte{[]byte("ok")}}
-	g := New(
+	g, _ := New(
 		WithAdapter(domain.ProviderAnthropic, stub),
 		WithHistory(h),
 		WithPruning(true, 8000),
@@ -168,7 +168,7 @@ func TestStream_EmitsOptimizerEventForPrunedContext(t *testing.T) {
 
 func TestStream_ErrorsOnUnregisteredProvider(t *testing.T) {
 	t.Parallel()
-	g := New() // empty registry
+	g, _ := New() // empty registry
 	err := g.Stream(context.Background(), newReq(domain.ProviderAnthropic), &recordingWriter{})
 	if err == nil {
 		t.Fatal("expected error, got nil")
@@ -180,7 +180,7 @@ func TestStream_ErrorsOnUnregisteredProvider(t *testing.T) {
 
 func TestStream_ErrorsOnNilRequest(t *testing.T) {
 	t.Parallel()
-	g := New(WithAdapter(domain.ProviderAnthropic, &stubAdapter{}))
+	g, _ := New(WithAdapter(domain.ProviderAnthropic, &stubAdapter{}))
 	err := g.Stream(context.Background(), nil, &recordingWriter{})
 	if err == nil {
 		t.Fatal("expected error on nil request")
@@ -190,7 +190,7 @@ func TestStream_ErrorsOnNilRequest(t *testing.T) {
 func TestStream_PropagatesAdapterError(t *testing.T) {
 	t.Parallel()
 	want := errors.New("upstream exploded")
-	g := New(WithAdapter(domain.ProviderAnthropic, &stubAdapter{err: want}))
+	g, _ := New(WithAdapter(domain.ProviderAnthropic, &stubAdapter{err: want}))
 	got := g.Stream(context.Background(), newReq(domain.ProviderAnthropic), &recordingWriter{})
 	if !errors.Is(got, want) {
 		t.Errorf("got err=%v, want=%v", got, want)
@@ -203,7 +203,7 @@ func TestStream_PropagatesContextCancellation(t *testing.T) {
 	cancel()
 
 	stub := &stubAdapter{tokens: [][]byte{[]byte("a"), []byte("b"), []byte("c")}}
-	g := New(WithAdapter(domain.ProviderAnthropic, stub))
+	g, _ := New(WithAdapter(domain.ProviderAnthropic, stub))
 
 	err := g.Stream(ctx, newReq(domain.ProviderAnthropic), &recordingWriter{})
 	if !errors.Is(err, context.Canceled) {
@@ -213,7 +213,7 @@ func TestStream_PropagatesContextCancellation(t *testing.T) {
 
 func TestWithAdapter_NilIsIgnored(t *testing.T) {
 	t.Parallel()
-	g := New(WithAdapter(domain.ProviderAnthropic, nil))
+	g, _ := New(WithAdapter(domain.ProviderAnthropic, nil))
 	err := g.Stream(context.Background(), newReq(domain.ProviderAnthropic), &recordingWriter{})
 	if err == nil {
 		t.Error("expected unrouteable error since nil adapter should be ignored")
@@ -222,7 +222,7 @@ func TestWithAdapter_NilIsIgnored(t *testing.T) {
 
 func TestReady_NoAdapters(t *testing.T) {
 	t.Parallel()
-	g := New()
+	g, _ := New()
 	if err := g.Ready(context.Background()); err == nil {
 		t.Fatal("expected no-adapters readiness error")
 	}
@@ -230,7 +230,7 @@ func TestReady_NoAdapters(t *testing.T) {
 
 func TestReady_AdapterError(t *testing.T) {
 	t.Parallel()
-	g := New(WithAdapter(domain.ProviderAnthropic, &stubAdapter{readyErr: errors.New("warming up")}))
+	g, _ := New(WithAdapter(domain.ProviderAnthropic, &stubAdapter{readyErr: errors.New("warming up")}))
 	err := g.Ready(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "warming up") {
 		t.Fatalf("Ready err=%v, want adapter error", err)
@@ -239,7 +239,7 @@ func TestReady_AdapterError(t *testing.T) {
 
 func TestReady_HealthyAdapters(t *testing.T) {
 	t.Parallel()
-	g := New(WithAdapter(domain.ProviderAnthropic, &stubAdapter{}))
+	g, _ := New(WithAdapter(domain.ProviderAnthropic, &stubAdapter{}))
 	if err := g.Ready(context.Background()); err != nil {
 		t.Fatalf("Ready: %v", err)
 	}
@@ -252,7 +252,7 @@ func TestStream_CacheMissThenHit(t *testing.T) {
 
 	stub := &stubAdapter{tokens: [][]byte{[]byte("hello"), []byte("world")}}
 	c := cache.NewMemoryCache(cache.MemoryConfig{MaxBytes: 1 << 20})
-	g := New(
+	g, _ := New(
 		WithAdapter(domain.ProviderAnthropic, stub),
 		WithCache(c, 1<<20),
 	)
@@ -293,7 +293,7 @@ func TestStream_AdapterErrorDoesNotPopulateCache(t *testing.T) {
 		err:    errors.New("midstream"),
 	}
 	c := cache.NewMemoryCache(cache.MemoryConfig{MaxBytes: 1 << 20})
-	g := New(
+	g, _ := New(
 		WithAdapter(domain.ProviderAnthropic, stub),
 		WithCache(c, 1<<20),
 	)
@@ -324,7 +324,7 @@ func TestStream_TeeAbandonOnEventSkipsCacheWrite(t *testing.T) {
 	t.Parallel()
 
 	c := cache.NewMemoryCache(cache.MemoryConfig{MaxBytes: 1 << 20})
-	g := New(
+	g, _ := New(
 		WithAdapter(domain.ProviderAnthropic, errorEventAdapter{}),
 		WithCache(c, 1<<20),
 	)
@@ -342,7 +342,7 @@ func TestStream_DifferentTenantsDoNotShareCache(t *testing.T) {
 
 	stub := &stubAdapter{tokens: [][]byte{[]byte("payload")}}
 	c := cache.NewMemoryCache(cache.MemoryConfig{MaxBytes: 1 << 20})
-	g := New(
+	g, _ := New(
 		WithAdapter(domain.ProviderAnthropic, stub),
 		WithCache(c, 1<<20),
 	)

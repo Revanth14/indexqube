@@ -104,7 +104,7 @@ func TestBrowserPromptFixtures_NormalizeRawText(t *testing.T) {
 
 func TestBrowserPromptFixtures_TinyCodeNotSmallerRecordsSkip(t *testing.T) {
 	t.Parallel()
-	gov := govpkg.New(
+	gov, _ := govpkg.New(
 		govpkg.WithHistory(govpkg.NewMemoryHistory()),
 		govpkg.WithPruning(true, 8000),
 	)
