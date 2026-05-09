@@ -24,10 +24,38 @@ func (r *recordingWriter) WriteEvent(_ string, _ []byte) error { return nil }
 func (r *recordingWriter) WriteDone() error                    { return nil }
 func (r *recordingWriter) Flush() error                        { return nil }
 
+func TestValidateAzureEndpoint(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		endpoint string
+		wantErr  bool
+	}{
+		{"https://myresource.openai.azure.com", false},
+		{"https://contoso.cognitiveservices.azure.com", false},
+		{"http://myresource.openai.azure.com", true},  // no https
+		{"", true},                                     // empty
+		{"ftp://example.com", true},                   // wrong scheme
+		{"https://", true},                             // missing host
+		{"https://10.0.0.1", true},                    // private IP
+		{"https://192.168.1.1", true},                 // private IP
+		{"https://172.16.0.1", true},                  // private IP
+		{"https://169.254.169.254", true},             // link-local (AWS metadata)
+	} {
+		err := validateAzureEndpoint(tc.endpoint)
+		if tc.wantErr && err == nil {
+			t.Errorf("validateAzureEndpoint(%q): expected error, got nil", tc.endpoint)
+		}
+		if !tc.wantErr && err != nil {
+			t.Errorf("validateAzureEndpoint(%q): unexpected error: %v", tc.endpoint, err)
+		}
+	}
+}
+
 func TestDispatch_HappyPath(t *testing.T) {
 	t.Parallel()
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("api-key") != "test-key" {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
@@ -46,11 +74,12 @@ func TestDispatch_HappyPath(t *testing.T) {
 	a := New(WithHTTPClient(srv.Client()))
 	rec := &recordingWriter{}
 	req := &domain.InferenceRequest{
-		Model: "gpt-4",
-		Messages: []domain.Message{{Role: "user", Content: "hi"}},
+		Model:         "gpt-4",
+		AzureEndpoint: srv.URL,
+		Messages:      []domain.Message{{Role: "user", Content: "hi"}},
 		Credential: domain.Credential{
 			Provider: domain.ProviderAzure,
-			APIKey:   srv.URL + "|test-key",
+			APIKey:   "test-key",
 		},
 	}
 

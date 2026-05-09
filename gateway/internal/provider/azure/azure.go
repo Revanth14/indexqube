@@ -14,7 +14,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/Revanth14/indexqube/gateway/internal/domain"
@@ -113,8 +115,8 @@ func (a *Adapter) Dispatch(ctx context.Context, req *domain.InferenceRequest, tw
 		}
 	}
 
-	if !strings.HasPrefix(endpoint, "http") {
-		return fmt.Errorf("azure: invalid or missing endpoint in credential")
+	if err := validateAzureEndpoint(endpoint); err != nil {
+		return err
 	}
 
 	// Azure URL format: {endpoint}/openai/deployments/{deployment}/chat/completions?api-version={version}
@@ -203,6 +205,28 @@ func readUpstreamError(resp *http.Response) error {
 	const limit = 64 << 10
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, limit))
 	return fmt.Errorf("azure api error: status=%d body=%s", resp.StatusCode, bytes.TrimSpace(body))
+}
+
+// validateAzureEndpoint blocks SSRF by requiring HTTPS and rejecting
+// private, link-local, or unspecified IP addresses as the target host.
+func validateAzureEndpoint(endpoint string) error {
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return fmt.Errorf("azure: malformed endpoint: %w", err)
+	}
+	if u.Scheme != "https" {
+		return fmt.Errorf("azure: endpoint must use https, got %q", u.Scheme)
+	}
+	host := u.Hostname()
+	if host == "" {
+		return fmt.Errorf("azure: endpoint missing hostname")
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		if ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
+			return fmt.Errorf("azure: endpoint must not use a private, link-local, or unspecified address")
+		}
+	}
+	return nil
 }
 
 func buildRequest(req *domain.InferenceRequest) ([]byte, error) {

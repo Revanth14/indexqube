@@ -24,6 +24,10 @@ var stringRules = []struct {
 	{regexp.MustCompile(`\bxox[baprs]-[A-Za-z0-9-]{20,}\b`), `[redacted-slack-token]`},
 	{regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b`), `[redacted-jwt]`},
 	{regexp.MustCompile(`(?is)-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----.*?-----END (?:[A-Z ]+ )?PRIVATE KEY-----`), `[redacted-private-key]`},
+	// AWS secret access keys in key-value context
+	{regexp.MustCompile(`(?i)("?(?:aws[_-]secret[_-]access[_-]key|secret[_-]access[_-]key)"?\s*[:=]\s*"?)[A-Za-z0-9/+=]{20,}("?)`), `${1}` + marker + `${2}`},
+	// Azure API / subscription keys in key-value context
+	{regexp.MustCompile(`(?i)("?(?:ocp-apim-subscription-key|azure[_-]openai[_-]api[_-]key|azure[_-]api[_-]key)"?\s*[:=]\s*"?)[A-Za-z0-9]{20,}("?)`), `${1}` + marker + `${2}`},
 }
 
 // String redacts common API key and bearer-token shapes from arbitrary text.
@@ -49,7 +53,9 @@ func ValueForKey(key, value string) string {
 func SensitiveKey(key string) bool {
 	normalized := strings.NewReplacer("-", "", "_", "", " ", "").Replace(strings.ToLower(key))
 	switch normalized {
-	case "authorization", "xiqproviderkey", "xapikey", "apikey", "providerkey", "providerapikey":
+	case "authorization", "xiqproviderkey", "xapikey", "apikey", "providerkey", "providerapikey",
+		"awssecretaccesskey", "secretaccesskey",
+		"azureapikey", "azureopenaiapikey", "ocpapimsubscriptionkey":
 		return true
 	default:
 		return false

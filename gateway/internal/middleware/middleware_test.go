@@ -133,7 +133,7 @@ func TestLogging_EmitsAccessLog(t *testing.T) {
 	h := Chain(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusTeapot)
 		_, _ = w.Write([]byte("hello"))
-	}), RequestID, Logging(logger))
+	}), RequestID, Logging(logger, nil))
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/foo", nil)
@@ -207,7 +207,7 @@ func TestStatusRecorder_UnwrapEnablesFlushing(t *testing.T) {
 		}
 	})
 	tp := newTelemetry(t)
-	h := Chain(mux, RouteResolver(mux), Metrics(tp.Metrics), Logging(slog.New(slog.NewTextHandler(io.Discard, nil))))
+	h := Chain(mux, RouteResolver(mux), Metrics(tp.Metrics), Logging(slog.New(slog.NewTextHandler(io.Discard, nil)), nil))
 
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
@@ -220,6 +220,54 @@ func TestStatusRecorder_UnwrapEnablesFlushing(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	if string(body) != "chunk1" {
 		t.Errorf("body=%q, want chunk1", string(body))
+	}
+}
+
+func TestLogging_TrustedProxyHonorsXFF(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, nil))
+
+	h := Logging(logger, []string{"127.0.0.1"})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "127.0.0.1:9999"
+	req.Header.Set("X-Forwarded-For", "203.0.113.42, 10.0.0.1")
+	h.ServeHTTP(rec, req)
+
+	var entry map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
+		t.Fatalf("log not JSON: %v", err)
+	}
+	if got := entry["remote_addr"]; got != "203.0.113.42" {
+		t.Errorf("remote_addr=%v, want 203.0.113.42 (first XFF entry)", got)
+	}
+}
+
+func TestLogging_UntrustedProxyIgnoresXFF(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, nil))
+
+	h := Logging(logger, []string{"10.0.0.1"})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "192.168.1.99:9999"
+	req.Header.Set("X-Forwarded-For", "203.0.113.42")
+	h.ServeHTTP(rec, req)
+
+	var entry map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
+		t.Fatalf("log not JSON: %v", err)
+	}
+	if got := entry["remote_addr"]; got != "192.168.1.99:9999" {
+		t.Errorf("remote_addr=%v, want RemoteAddr (XFF must not be trusted)", got)
 	}
 }
 

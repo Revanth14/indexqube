@@ -1,0 +1,40 @@
+[Unit]
+Description=IndexQube Gateway
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=indexqube
+Group=indexqube
+WorkingDirectory=/opt/indexqube
+EnvironmentFile=/etc/indexqube/gateway.env
+ExecStart=/opt/indexqube/indexqube-gateway
+Restart=on-failure
+RestartSec=3
+
+# Streaming proxy: many concurrent SSE connections.
+LimitNOFILE=65536
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target

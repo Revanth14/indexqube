@@ -1,0 +1,11 @@
+.git
+.gitignore
+.cache
+.cache/
+bin/
+dist/
+deployments/
+scripts/
+*.md
+Dockerfile
+.dockerignore

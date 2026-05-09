@@ -1,0 +1,20 @@
+dev-api.indexqube.com {
+	log {
+		output file /var/log/caddy/indexqube-access.log
+	}
+
+	# Aligned with INDEXQUBE_MAX_BODY_BYTES (20_000_000) plus headroom.
+	request_body {
+		max_size 25MB
+	}
+
+	reverse_proxy 127.0.0.1:8080 {
+		# Streaming-first: never buffer, never time out long generations.
+		# Caddy auto-detects text/event-stream, but be explicit.
+		flush_interval -1
+		transport http {
+			read_timeout 0
+			write_timeout 0
+		}
+	}
+}

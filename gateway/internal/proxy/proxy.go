@@ -10,8 +10,10 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/Revanth14/indexqube/gateway/internal/domain"
+	"github.com/Revanth14/indexqube/gateway/internal/memory"
 	"github.com/Revanth14/indexqube/gateway/internal/telemetry"
 )
 
@@ -25,11 +27,27 @@ type Governor interface {
 
 // Proxy is the HTTP-facing component. Construct via New.
 type Proxy struct {
-	governor       Governor
-	logger         *slog.Logger
-	mux            *http.ServeMux
-	maxRequestSize int64
-	metrics        *telemetry.Metrics
+	governor        Governor
+	logger          *slog.Logger
+	mux             *http.ServeMux
+	maxRequestSize  int64
+	optimizeTimeout time.Duration
+	metrics         *telemetry.Metrics
+	claude          ClaudeMessagesConfig
+	claudeCooldowns *providerCooldowns
+}
+
+type ClaudeMessagesConfig struct {
+	Mode                 string
+	DevToken             string
+	AnthropicAPIKey      string
+	AnthropicBaseURL     string
+	AnthropicVersion     string
+	EnableLogPruner      bool
+	EnableBlockOptimizer bool
+	SessionStore         *memory.Store
+	HTTPClient           *http.Client
+	RateLimitCooldown    time.Duration
 }
 
 // Option configures a Proxy at construction time.
@@ -62,6 +80,22 @@ func WithMetrics(m *telemetry.Metrics) Option {
 	}
 }
 
+// WithOptimizeTimeout caps the duration of /v1/optimize requests. Streaming
+// requests are unaffected. A non-positive value disables the cap.
+func WithOptimizeTimeout(d time.Duration) Option {
+	return func(p *Proxy) {
+		if d > 0 {
+			p.optimizeTimeout = d
+		}
+	}
+}
+
+func WithClaudeMessages(cfg ClaudeMessagesConfig) Option {
+	return func(p *Proxy) {
+		p.claude = cfg
+	}
+}
+
 // New returns a wired Proxy. A nil governor is a programmer error and
 // panics fast at boot rather than 5xx-ing every request in production.
 func New(gov Governor, opts ...Option) *Proxy {
@@ -69,10 +103,12 @@ func New(gov Governor, opts ...Option) *Proxy {
 		panic("proxy: governor is required")
 	}
 	p := &Proxy{
-		governor:       gov,
-		logger:         slog.Default(),
-		mux:            http.NewServeMux(),
-		maxRequestSize: 8 << 20, // default 8 MiB
+		governor:        gov,
+		logger:          slog.Default(),
+		mux:             http.NewServeMux(),
+		maxRequestSize:  8 << 20, // default 8 MiB
+		optimizeTimeout: 30 * time.Second,
+		claudeCooldowns: newProviderCooldowns(),
 	}
 	for _, opt := range opts {
 		opt(p)
@@ -98,6 +134,8 @@ func (p *Proxy) registerRoutes() {
 	p.mux.HandleFunc("GET /readyz", p.handleReady)
 	p.mux.HandleFunc("GET /v1/diagnostics", p.handleDiagnostics)
 	p.mux.HandleFunc("GET /v1/models", p.handleModels)
+	p.mux.HandleFunc("POST /v1/messages/count_tokens", p.handleClaudeCountTokens)
+	p.mux.HandleFunc("POST /v1/messages", p.handleClaudeMessages)
 	p.mux.HandleFunc("POST /v1/chat/completions", p.handleChatCompletions)
 	p.mux.HandleFunc("POST /v1/optimize", p.handleOptimize)
 }

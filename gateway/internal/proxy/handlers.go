@@ -154,9 +154,11 @@ func (p *Proxy) handleOptimize(w http.ResponseWriter, r *http.Request) {
 		tenant = domain.ResolveTenantKey(sk, "")
 	}
 
-	msgs, stats, err := p.governor.Optimize(r.Context(), tenant, body.Messages, pm)
+	ctx, cancel := p.optimizeContext(r.Context())
+	defer cancel()
+	msgs, stats, err := p.governor.Optimize(ctx, tenant, body.Messages, pm)
 	if err != nil {
-		p.writeError(w, r, errorPayload{HTTPStatus: http.StatusInternalServerError, Type: "server_error", Message: err.Error()})
+		p.writeOptimizeError(w, r, err)
 		return
 	}
 	bodyOut := newOptimizeResponse(msgs, stats, tenant != "")
@@ -166,6 +168,31 @@ func (p *Proxy) handleOptimize(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewEncoder(w).Encode(bodyOut); err != nil {
 		p.logger.ErrorContext(r.Context(), "optimize encode failed", slog.Any("err", err))
 	}
+}
+
+// optimizeContext applies the configured per-request cap to /v1/optimize.
+// Returns the request context unchanged if no cap is set.
+func (p *Proxy) optimizeContext(parent context.Context) (context.Context, context.CancelFunc) {
+	if p.optimizeTimeout <= 0 {
+		return context.WithCancel(parent)
+	}
+	return context.WithTimeout(parent, p.optimizeTimeout)
+}
+
+// writeOptimizeError maps governor errors to client status. Deadline
+// exceeded (the optimize timeout firing) becomes 504 so callers can
+// distinguish "we gave up" from a real 5xx.
+func (p *Proxy) writeOptimizeError(w http.ResponseWriter, r *http.Request, err error) {
+	if errors.Is(err, context.DeadlineExceeded) {
+		p.writeError(w, r, errorPayload{
+			HTTPStatus: http.StatusGatewayTimeout,
+			Type:       "server_error",
+			Code:       "optimize_timeout",
+			Message:    "optimize exceeded configured timeout",
+		})
+		return
+	}
+	p.writeError(w, r, errorPayload{HTTPStatus: http.StatusInternalServerError, Type: "server_error", Message: err.Error()})
 }
 
 // handleOptimizeText is the Chrome-extension flow: POST raw prompt text,
@@ -198,14 +225,16 @@ func (p *Proxy) handleOptimizeText(w http.ResponseWriter, r *http.Request) {
 	if sk := r.Header.Get(headerSessionKey); sk != "" {
 		tenant = domain.ResolveTenantKey(sk, "")
 	}
+	ctx, cancel := p.optimizeContext(r.Context())
+	defer cancel()
 	msgs, stats, err := p.governor.Optimize(
-		r.Context(),
+		ctx,
 		tenant,
 		[]domain.Message{{Role: "user", Content: content}},
 		r.Header.Get(headerProjectMemory),
 	)
 	if err != nil {
-		p.writeError(w, r, errorPayload{HTTPStatus: http.StatusInternalServerError, Type: "server_error", Message: err.Error()})
+		p.writeOptimizeError(w, r, err)
 		return
 	}
 

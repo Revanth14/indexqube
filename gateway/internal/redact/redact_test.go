@@ -17,6 +17,8 @@ func TestString_RedactsKnownSecretShapes(t *testing.T) {
 		"xoxb-123456789012-abcdefghijklmnopqrst",
 		"eyJabc1234567890.eyJdef1234567890.signature1234567890",
 		"-----BEGIN PRIVATE KEY-----\nabc123\n-----END PRIVATE KEY-----",
+		`"aws_secret_access_key":"wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"`,
+		`azure_api_key=abcdefghijklmnopqrstuvwxyz123456`,
 	}, "\n")
 
 	got := String(input)
@@ -29,6 +31,8 @@ func TestString_RedactsKnownSecretShapes(t *testing.T) {
 		"xoxb-123456789012-abcdefghijklmnopqrst",
 		"eyJabc1234567890.eyJdef1234567890.signature1234567890",
 		"abc123",
+		"wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+		"abcdefghijklmnopqrstuvwxyz123456",
 	} {
 		if strings.Contains(got, leak) {
 			t.Fatalf("redacted string leaked %q: %s", leak, got)

@@ -16,13 +16,19 @@ type AppConfig struct {
 	Telemetry   TelemetryConfig
 	Cache       CacheConfig
 	Governor    GovernorConfig
+	ClaudeCode  ClaudeCodeConfig
 	AWS         AWSConfig
 	Azure       AzureConfig
 	Supabase    SupabaseConfig
 }
 
 type ServerConfig struct {
-	Port              string
+	BindAddr string
+	Port     string
+	// AdminBindAddr defaults to 127.0.0.1 so /metrics, /healthz, /readyz
+	// aren't reachable from outside the host. Set to 0.0.0.0 only when a
+	// scrape target needs in-cluster access.
+	AdminBindAddr     string
 	AdminPort         string
 	ReadHeaderTimeout time.Duration
 	ReadTimeout       time.Duration
@@ -34,6 +40,9 @@ type ServerConfig struct {
 	CORSAllowedOrigins        []string
 	CORSAllowChromeExtensions bool
 	CORSMaxAge                time.Duration
+	// TrustedProxies is a list of IP addresses or CIDR ranges (e.g. "10.0.0.0/8")
+	// from which X-Forwarded-For headers are trusted. Empty means no proxy is trusted.
+	TrustedProxies []string
 }
 
 // TelemetryConfig drives observability initialization.
@@ -70,6 +79,23 @@ type GovernorConfig struct {
 	HistoryMaxFileBytes      int64
 	HistoryMaxBytes          int64
 	HistoryTTL               time.Duration
+
+	// OptimizeTimeout caps Path A (/v1/optimize). Streaming requests are
+	// intentionally unbounded; this only applies to the synchronous
+	// prune+memory path.
+	OptimizeTimeout time.Duration
+}
+
+type ClaudeCodeConfig struct {
+	Mode                 string
+	DevToken             string
+	AnthropicAPIKey      string
+	AnthropicBaseURL     string
+	AnthropicVersion     string
+	EnableLogPruner      bool
+	EnableBlockOptimizer bool
+	SessionTTL           time.Duration
+	RateLimitCooldown    time.Duration
 }
 
 // CacheConfig drives the L1 in-memory response cache.
@@ -100,16 +126,18 @@ type AzureConfig struct {
 }
 
 type SupabaseConfig struct {
-	DBURL          string
-	ServiceRoleKey string
+	DBURL string
 }
 
 // Load reads environment variables, applies defaults, and validates required fields.
 func Load() (*AppConfig, error) {
+	env := getEnvFirst([]string{"INDEXQUBE_ENV", "APP_ENV"}, "development")
 	cfg := &AppConfig{
-		Environment: getEnvWithDefault("APP_ENV", "development"),
+		Environment: env,
 		Server: ServerConfig{
+			BindAddr:          os.Getenv("INDEXQUBE_BIND_ADDR"),
 			Port:              getEnvWithDefault("PORT", "8080"),
+			AdminBindAddr:     getEnvWithDefault("ADMIN_BIND_ADDR", "127.0.0.1"),
 			AdminPort:         getEnvWithDefault("ADMIN_PORT", "9100"),
 			ReadHeaderTimeout: getEnvAsDuration("SERVER_READ_HEADER_TIMEOUT", 10*time.Second),
 			ReadTimeout:       getEnvAsDuration("SERVER_READ_TIMEOUT", 30*time.Second),
@@ -123,8 +151,9 @@ func Load() (*AppConfig, error) {
 				"http://localhost:5173",
 				"http://localhost:8080",
 			}),
-			CORSAllowChromeExtensions: getEnvAsBool("CORS_ALLOW_CHROME_EXTENSIONS", getEnvWithDefault("APP_ENV", "development") != "production"),
+			CORSAllowChromeExtensions: getEnvAsBool("CORS_ALLOW_CHROME_EXTENSIONS", env != "production"),
 			CORSMaxAge:                getEnvAsDuration("CORS_MAX_AGE", 10*time.Minute),
+			TrustedProxies:            getEnvAsCSV("TRUSTED_PROXIES", nil),
 		},
 		Telemetry: TelemetryConfig{
 			ServiceName:    getEnvWithDefault("OTEL_SERVICE_NAME", "indexqube-gateway"),
@@ -132,20 +161,32 @@ func Load() (*AppConfig, error) {
 			OTLPEndpoint:   os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
 			OTLPInsecure:   getEnvAsBool("OTEL_EXPORTER_OTLP_INSECURE", true),
 			MetricsEnabled: getEnvAsBool("METRICS_ENABLED", true),
-			LogLevel:       getEnvWithDefault("LOG_LEVEL", "info"),
+			LogLevel:       getEnvFirst([]string{"INDEXQUBE_LOG_LEVEL", "LOG_LEVEL"}, "info"),
 		},
 		Governor: GovernorConfig{
 			EgressReductionTarget:    getEnvAsFloat64("GOVERNOR_EGRESS_TARGET", 0.65),
 			MaxTokensPerRequest:      getEnvAsInt("GOVERNOR_MAX_TOKENS", 8192),
-			MaxRequestSize:           int64(getEnvAsInt("GOVERNOR_MAX_REQUEST_SIZE", 8<<20)),
-			PruneEnabled:             getEnvAsBool("GOVERNOR_PRUNE_ENABLED", true),
+			MaxRequestSize:           int64(getEnvAsIntFirst([]string{"INDEXQUBE_MAX_BODY_BYTES", "GOVERNOR_MAX_REQUEST_SIZE"}, 8<<20)),
+			PruneEnabled:             getEnvAsBoolFirst([]string{"INDEXQUBE_ENABLE_BLOCK_OPTIMIZER", "GOVERNOR_PRUNE_ENABLED"}, true),
 			PruneMaxLines:            getEnvAsInt("GOVERNOR_PRUNE_MAX_LINES", 8000),
 			ProjectMemoryPath:        getEnvWithDefault("GOVERNOR_PROJECT_MEMORY_PATH", "indexqube_context.md"),
 			HistoryMaxTenants:        getEnvAsInt("GOVERNOR_HISTORY_MAX_TENANTS", 1024),
 			HistoryMaxFilesPerTenant: getEnvAsInt("GOVERNOR_HISTORY_MAX_FILES_PER_TENANT", 256),
 			HistoryMaxFileBytes:      int64(getEnvAsInt("GOVERNOR_HISTORY_MAX_FILE_BYTES", 2<<20)),
 			HistoryMaxBytes:          int64(getEnvAsInt("GOVERNOR_HISTORY_MAX_BYTES", 64<<20)),
-			HistoryTTL:               getEnvAsDuration("GOVERNOR_HISTORY_TTL", 2*time.Hour),
+			HistoryTTL:               getSessionTTL(),
+			OptimizeTimeout:          getEnvAsDuration("GOVERNOR_OPTIMIZE_TIMEOUT", 30*time.Second),
+		},
+		ClaudeCode: ClaudeCodeConfig{
+			Mode:                 getEnvWithDefault("INDEXQUBE_MODE", "observe"),
+			DevToken:             os.Getenv("INDEXQUBE_DEV_TOKEN"),
+			AnthropicAPIKey:      os.Getenv("ANTHROPIC_API_KEY"),
+			AnthropicBaseURL:     getEnvFirst([]string{"INDEXQUBE_ANTHROPIC_BASE_URL", "ANTHROPIC_BASE_URL"}, "https://api.anthropic.com"),
+			AnthropicVersion:     getEnvWithDefault("ANTHROPIC_VERSION", "2023-06-01"),
+			EnableLogPruner:      getEnvAsBool("INDEXQUBE_ENABLE_LOG_PRUNER", false),
+			EnableBlockOptimizer: getEnvAsBool("INDEXQUBE_ENABLE_BLOCK_OPTIMIZER", false),
+			SessionTTL:           getSessionTTL(),
+			RateLimitCooldown:    getEnvAsDuration("INDEXQUBE_RATE_LIMIT_COOLDOWN", 30*time.Second),
 		},
 		Cache: CacheConfig{
 			Enabled:           getEnvAsBool("CACHE_ENABLED", true),
@@ -164,8 +205,7 @@ func Load() (*AppConfig, error) {
 			APIKey:   os.Getenv("AZURE_OPENAI_API_KEY"),
 		},
 		Supabase: SupabaseConfig{
-			DBURL:          os.Getenv("SUPABASE_DB_URL"),
-			ServiceRoleKey: os.Getenv("SUPABASE_SERVICE_ROLE_KEY"),
+			DBURL: os.Getenv("SUPABASE_DB_URL"),
 		},
 	}
 
@@ -178,12 +218,19 @@ func Load() (*AppConfig, error) {
 
 // validate ensures all critical infrastructure variables are present.
 func validate(cfg *AppConfig) error {
+	switch cfg.ClaudeCode.Mode {
+	case "observe", "dry_run", "optimize":
+	default:
+		return fmt.Errorf("INDEXQUBE_MODE must be observe, dry_run, or optimize, got %q", cfg.ClaudeCode.Mode)
+	}
 	// For local dev, we might bypass some checks, but production requires strict validation.
 	if cfg.Environment == "production" {
 		if cfg.Supabase.DBURL == "" {
 			return errors.New("SUPABASE_DB_URL is required in production")
 		}
-		// Add other strict production checks here
+		if cfg.Server.CORSAllowChromeExtensions {
+			return errors.New("CORS_ALLOW_CHROME_EXTENSIONS must be false in production")
+		}
 	}
 	return nil
 }
@@ -195,6 +242,48 @@ func getEnvWithDefault(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func getEnvFirst(keys []string, fallback string) string {
+	for _, key := range keys {
+		if value, exists := os.LookupEnv(key); exists {
+			return value
+		}
+	}
+	return fallback
+}
+
+func getEnvAsIntFirst(keys []string, fallback int) int {
+	for _, key := range keys {
+		if valStr := os.Getenv(key); valStr != "" {
+			val, err := strconv.Atoi(valStr)
+			if err == nil {
+				return val
+			}
+		}
+	}
+	return fallback
+}
+
+func getEnvAsBoolFirst(keys []string, fallback bool) bool {
+	for _, key := range keys {
+		if valStr := os.Getenv(key); valStr != "" {
+			switch valStr {
+			case "1", "true", "TRUE", "True", "yes", "y":
+				return true
+			case "0", "false", "FALSE", "False", "no", "n":
+				return false
+			}
+		}
+	}
+	return fallback
+}
+
+func getSessionTTL() time.Duration {
+	if minutes := getEnvAsInt("INDEXQUBE_SESSION_TTL_MINUTES", 0); minutes > 0 {
+		return time.Duration(minutes) * time.Minute
+	}
+	return getEnvAsDuration("GOVERNOR_HISTORY_TTL", 2*time.Hour)
 }
 
 func getEnvAsInt(key string, fallback int) int {

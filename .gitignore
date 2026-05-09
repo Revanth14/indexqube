@@ -34,5 +34,10 @@ coverage.out
 # Logs/build/cache
 .cache/
 *.log
+*.jsonl
+logs/
+gateway/logs/
 tmp/
 build/
+
+commands.txt

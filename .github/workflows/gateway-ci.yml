@@ -1,0 +1,39 @@
+name: gateway-ci
+
+on:
+  pull_request:
+    paths:
+      - 'gateway/**'
+      - '.github/workflows/gateway-ci.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'gateway/**'
+      - '.github/workflows/gateway-ci.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: vet + test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: gateway
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache-dependency-path: gateway/go.sum
+
+      - name: Verify module checksums
+        run: go mod verify
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test (race detector enabled)
+        run: go test -race -count=1 ./...

@@ -12,9 +12,11 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Revanth14/indexqube/gateway/internal/domain"
 	govpkg "github.com/Revanth14/indexqube/gateway/internal/governor"
+	"github.com/Revanth14/indexqube/gateway/internal/memory"
 )
 
 // fakeGovernor lets tests script the governor's streaming behavior.
@@ -61,6 +63,22 @@ func (f *fakeGovernor) Ready(ctx context.Context) error {
 func newTestServer(t *testing.T, gov Governor) *httptest.Server {
 	t.Helper()
 	p := New(gov)
+	srv := httptest.NewServer(p.Handler())
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func newClaudeTestServer(t *testing.T, upstreamURL string, store *memory.Store, mode string, optimize bool) *httptest.Server {
+	t.Helper()
+	p := New(&fakeGovernor{}, WithClaudeMessages(ClaudeMessagesConfig{
+		Mode:                 mode,
+		DevToken:             "iq-dev-local",
+		AnthropicAPIKey:      "sk-ant-test",
+		AnthropicBaseURL:     upstreamURL,
+		AnthropicVersion:     "2023-06-01",
+		EnableBlockOptimizer: optimize,
+		SessionStore:         store,
+	}))
 	srv := httptest.NewServer(p.Handler())
 	t.Cleanup(srv.Close)
 	return srv
@@ -404,6 +422,324 @@ func TestChatCompletions_HappyPathStreaming(t *testing.T) {
 	}
 	if gov.gotReq.Credential.APIKey != "sk-ant-xyz" {
 		t.Errorf("got key=%q, want sk-ant-xyz", gov.gotReq.Credential.APIKey)
+	}
+}
+
+func TestClaudeMessages_AnthropicPassthroughStreaming(t *testing.T) {
+	t.Parallel()
+	var gotKey, gotVersion string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotKey = r.Header.Get("x-api-key")
+		gotVersion = r.Header.Get("anthropic-version")
+		if r.URL.Path != "/v1/messages" {
+			t.Errorf("path=%q, want /v1/messages", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "event: message_start\n")
+		_, _ = io.WriteString(w, `data: {"type":"message_start","message":{"id":"msg_1","model":"claude-sonnet-4-6"}}`+"\n\n")
+		_, _ = io.WriteString(w, "event: content_block_delta\n")
+		_, _ = io.WriteString(w, `data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"hello"}}`+"\n\n")
+		_, _ = io.WriteString(w, "event: message_stop\n")
+		_, _ = io.WriteString(w, `data: {"type":"message_stop"}`+"\n\n")
+	}))
+	t.Cleanup(upstream.Close)
+	srv := newClaudeTestServer(t, upstream.URL, memory.NewStore(time.Hour), "observe", false)
+
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/v1/messages", strings.NewReader(`{"model":"claude-sonnet-4-6","stream":true,"messages":[{"role":"user","content":"hi"}]}`))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer iq-dev-local")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST /v1/messages: %v", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, body)
+	}
+	if gotKey != "sk-ant-test" {
+		t.Fatalf("x-api-key=%q, want test key", gotKey)
+	}
+	if gotVersion != "2023-06-01" {
+		t.Fatalf("anthropic-version=%q, want 2023-06-01", gotVersion)
+	}
+	if !strings.Contains(string(body), "content_block_delta") || !strings.Contains(string(body), "hello") {
+		t.Fatalf("body=%s, want anthropic SSE passthrough", body)
+	}
+}
+
+func TestClaudeMessages_InvalidDevToken(t *testing.T) {
+	t.Parallel()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("upstream should not be called")
+	}))
+	t.Cleanup(upstream.Close)
+	srv := newClaudeTestServer(t, upstream.URL, memory.NewStore(time.Hour), "observe", false)
+
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/v1/messages", strings.NewReader(`{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hi"}]}`))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer wrong")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST /v1/messages: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status=%d body=%s, want 401", resp.StatusCode, body)
+	}
+}
+
+func TestClaudeCountTokens_Passthrough(t *testing.T) {
+	t.Parallel()
+	var gotPath, gotKey string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotKey = r.Header.Get("x-api-key")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"input_tokens":123}`)
+	}))
+	t.Cleanup(upstream.Close)
+	srv := newClaudeTestServer(t, upstream.URL, memory.NewStore(time.Hour), "observe", false)
+
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/v1/messages/count_tokens", strings.NewReader(`{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hi"}]}`))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer iq-dev-local")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST /v1/messages/count_tokens: %v", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s, want 200", resp.StatusCode, body)
+	}
+	if gotPath != "/v1/messages/count_tokens" {
+		t.Fatalf("upstream path=%q, want /v1/messages/count_tokens", gotPath)
+	}
+	if gotKey != "sk-ant-test" {
+		t.Fatalf("x-api-key=%q, want test key", gotKey)
+	}
+	if !strings.Contains(string(body), `"input_tokens":123`) {
+		t.Fatalf("body=%s, want input_tokens response", body)
+	}
+}
+
+func TestClaudeMessages_RateLimitOpensModelCooldown(t *testing.T) {
+	t.Parallel()
+	var calls int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Retry-After", "60")
+		w.Header().Set("request-id", "req_test_rate_limit")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(w, `{"type":"error","request_id":"req_body_rate_limit","error":{"type":"rate_limit_error","message":"rate limited sk-ant-secret"}}`)
+	}))
+	t.Cleanup(upstream.Close)
+	srv := newClaudeTestServer(t, upstream.URL, memory.NewStore(time.Hour), "dry_run", false)
+	body := `{"model":"claude-haiku-4-5-20251001","stream":true,"messages":[{"role":"user","content":"hello"}]}`
+
+	for i := 0; i < 2; i++ {
+		req, err := http.NewRequest(http.MethodPost, srv.URL+"/v1/messages", strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		req.Header.Set("Authorization", "Bearer iq-dev-local")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("POST /v1/messages: %v", err)
+		}
+		gotBody, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusTooManyRequests {
+			t.Fatalf("request %d status=%d body=%s, want 429", i+1, resp.StatusCode, gotBody)
+		}
+		if retry := resp.Header.Get("Retry-After"); retry == "" {
+			t.Fatalf("request %d missing Retry-After header", i+1)
+		}
+		if strings.Contains(string(gotBody), "sk-ant-secret") || strings.Contains(string(gotBody), "rate limited sk-ant-secret") {
+			t.Fatalf("request %d leaked upstream body detail: %s", i+1, gotBody)
+		}
+	}
+
+	if calls != 1 {
+		t.Fatalf("upstream calls=%d, want 1; second request should be served by cooldown", calls)
+	}
+}
+
+func TestClaudeMessages_OptimizePrunesRepeatedTextBlock(t *testing.T) {
+	t.Parallel()
+	var bodies []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, string(body))
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "event: message_stop\n")
+		_, _ = io.WriteString(w, `data: {"type":"message_stop"}`+"\n\n")
+	}))
+	t.Cleanup(upstream.Close)
+	srv := newClaudeTestServer(t, upstream.URL, memory.NewStore(time.Hour), "optimize", true)
+	repeated := strings.Repeat("important project context line\n", 80)
+	body := fmt.Sprintf(`{"model":"claude-sonnet-4-6","stream":true,"messages":[{"role":"user","content":%q},{"role":"user","content":"latest instruction stays"}]}`, repeated)
+
+	for i := 0; i < 2; i++ {
+		req, err := http.NewRequest(http.MethodPost, srv.URL+"/v1/messages", strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		req.Header.Set("Authorization", "Bearer iq-dev-local")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("POST /v1/messages: %v", err)
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+	}
+
+	if len(bodies) != 2 {
+		t.Fatalf("got %d upstream bodies, want 2", len(bodies))
+	}
+	if strings.Contains(bodies[0], "[iq:repeated ref:") {
+		t.Fatalf("first request should warm session, got body=%s", bodies[0])
+	}
+	if !strings.Contains(bodies[1], "[iq:repeated ref:") {
+		t.Fatalf("second request should prune repeated block, got body=%s", bodies[1])
+	}
+	if !strings.Contains(bodies[1], "latest instruction stays") {
+		t.Fatalf("latest instruction missing after optimize, got body=%s", bodies[1])
+	}
+}
+
+func TestClaudeMessages_OptimizePrunesRepeatedLargeChunks(t *testing.T) {
+	t.Parallel()
+	var bodies []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, string(body))
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "event: message_stop\n")
+		_, _ = io.WriteString(w, `data: {"type":"message_stop"}`+"\n\n")
+	}))
+	t.Cleanup(upstream.Close)
+	srv := newClaudeTestServer(t, upstream.URL, memory.NewStore(time.Hour), "optimize", true)
+
+	repeated := strings.Repeat("large repeated context line with enough bytes to chunk safely\n", 500)
+	body := fmt.Sprintf(`{"model":"claude-sonnet-4-6","stream":true,"messages":[{"role":"user","content":%q},{"role":"user","content":"latest instruction stays"}]}`, repeated)
+
+	for i := 0; i < 2; i++ {
+		req, err := http.NewRequest(http.MethodPost, srv.URL+"/v1/messages", strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		req.Header.Set("Authorization", "Bearer iq-dev-local")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("POST /v1/messages: %v", err)
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+	}
+
+	if len(bodies) != 2 {
+		t.Fatalf("got %d upstream bodies, want 2", len(bodies))
+	}
+	if strings.Contains(bodies[0], "[iq:repeated ref:") {
+		t.Fatalf("first request should warm session, got body=%s", bodies[0])
+	}
+	if !strings.Contains(bodies[1], "[iq:repeated ref:") {
+		t.Fatalf("second request should prune repeated large chunks, got body=%s", bodies[1])
+	}
+	if len(bodies[1]) >= len(bodies[0]) {
+		t.Fatalf("second request did not shrink after repeated large chunk pruning: first=%d second=%d", len(bodies[0]), len(bodies[1]))
+	}
+	if !strings.Contains(bodies[1], "latest instruction stays") {
+		t.Fatalf("latest instruction missing after optimize, got body=%s", bodies[1])
+	}
+}
+
+func TestClaudeMessages_OptimizePrunesRepeatedChunksInLatestMessage(t *testing.T) {
+	t.Parallel()
+	var bodies []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, string(body))
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "event: message_stop\n")
+		_, _ = io.WriteString(w, `data: {"type":"message_stop"}`+"\n\n")
+	}))
+	t.Cleanup(upstream.Close)
+	srv := newClaudeTestServer(t, upstream.URL, memory.NewStore(time.Hour), "optimize", true)
+
+	repeated := strings.Repeat("latest-message repeated code context line\n", 260)
+	first := fmt.Sprintf(`{"model":"claude-sonnet-4-6","stream":true,"messages":[{"role":"user","content":%q}]}`, repeated)
+	second := fmt.Sprintf(`{"model":"claude-sonnet-4-6","stream":true,"messages":[{"role":"assistant","content":"I saw the context."},{"role":"user","content":%q}]}`, repeated+"\n\nPlease review the active file now.")
+
+	for _, body := range []string{first, second} {
+		req, err := http.NewRequest(http.MethodPost, srv.URL+"/v1/messages", strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		req.Header.Set("Authorization", "Bearer iq-dev-local")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("POST /v1/messages: %v", err)
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+	}
+
+	if len(bodies) != 2 {
+		t.Fatalf("got %d upstream bodies, want 2", len(bodies))
+	}
+	if strings.Contains(bodies[0], "[iq:repeated ref:") {
+		t.Fatalf("first request should warm session, got body=%s", bodies[0])
+	}
+	if !strings.Contains(bodies[1], "[iq:repeated ref:") {
+		t.Fatalf("second request should prune repeated latest-message chunks, got body=%s", bodies[1])
+	}
+	if len(bodies[1]) >= len(bodies[0]) {
+		t.Fatalf("second request did not shrink after latest-message pruning: first=%d second=%d", len(bodies[0]), len(bodies[1]))
+	}
+	if !strings.Contains(bodies[1], "Please review the active file now.") {
+		t.Fatalf("latest instruction missing after optimize, got body=%s", bodies[1])
+	}
+}
+
+func TestProxyAnthropicStream_UsesMessageDeltaOutputTokens(t *testing.T) {
+	t.Parallel()
+	body := strings.Join([]string{
+		`event: content_block_delta`,
+		`data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"fallback text"}}`,
+		``,
+		`event: message_delta`,
+		`data: {"type":"message_delta","usage":{"output_tokens":42}}`,
+		``,
+	}, "\n")
+	resp := &http.Response{Body: io.NopCloser(strings.NewReader(body))}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+
+	stats := proxyAnthropicStream(rec, req, resp)
+	if stats.OutputTokens != 42 {
+		t.Fatalf("OutputTokens=%d, want 42", stats.OutputTokens)
+	}
+	if got := stats.estimatedOutputTokens(); got != 42 {
+		t.Fatalf("estimatedOutputTokens=%d, want exact usage token count", got)
 	}
 }
 
