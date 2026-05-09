@@ -96,6 +96,22 @@ type ClaudeCodeConfig struct {
 	EnableBlockOptimizer bool
 	SessionTTL           time.Duration
 	RateLimitCooldown    time.Duration
+
+	// Bedrock backend for /v1/messages (replaces direct Anthropic calls).
+	BedrockEnabled       bool
+	BedrockRegion        string
+	BedrockModelPrefix   string // "us." for cross-region, "" for single-region
+	BedrockModelOverride string // force a specific Bedrock model ID for all requests
+
+	// Optimizer tuning (all have safe defaults when zero).
+	OptMinSpanBytes            int
+	OptTargetChunkBytes        int
+	OptMaxChunkBytes           int
+	OptMinSavedTokens          int
+	OptEnableToolResultPruning bool
+	OptEnableAssistantPruning  bool
+	OptEnableSystemPruning     bool
+	OptDiagnostics             bool
 }
 
 // CacheConfig drives the L1 in-memory response cache.
@@ -187,6 +203,20 @@ func Load() (*AppConfig, error) {
 			EnableBlockOptimizer: getEnvAsBool("INDEXQUBE_ENABLE_BLOCK_OPTIMIZER", false),
 			SessionTTL:           getSessionTTL(),
 			RateLimitCooldown:    getEnvAsDuration("INDEXQUBE_RATE_LIMIT_COOLDOWN", 30*time.Second),
+
+			BedrockEnabled:       getEnvAsBool("INDEXQUBE_BEDROCK_ENABLED", false),
+			BedrockRegion:        getEnvWithDefault("INDEXQUBE_BEDROCK_REGION", "us-east-1"),
+			BedrockModelPrefix:   getEnvWithDefault("INDEXQUBE_BEDROCK_MODEL_PREFIX", "us."),
+			BedrockModelOverride: os.Getenv("INDEXQUBE_BEDROCK_MODEL_OVERRIDE"),
+
+			OptMinSpanBytes:            getEnvAsInt("INDEXQUBE_OPT_MIN_SPAN_BYTES", 0),
+			OptTargetChunkBytes:        getEnvAsInt("INDEXQUBE_OPT_TARGET_CHUNK_BYTES", 0),
+			OptMaxChunkBytes:           getEnvAsInt("INDEXQUBE_OPT_MAX_CHUNK_BYTES", 0),
+			OptMinSavedTokens:          getEnvAsInt("INDEXQUBE_OPT_MIN_SAVED_TOKENS", 0),
+			OptEnableToolResultPruning: getEnvAsBool("INDEXQUBE_OPT_ENABLE_TOOL_RESULT_PRUNING", true),
+			OptEnableAssistantPruning:  getEnvAsBool("INDEXQUBE_OPT_ENABLE_ASSISTANT_PRUNING", false),
+			OptEnableSystemPruning:     getEnvAsBool("INDEXQUBE_OPT_ENABLE_SYSTEM_PRUNING", true),
+			OptDiagnostics:             getEnvAsBool("INDEXQUBE_OPT_DIAGNOSTICS", false),
 		},
 		Cache: CacheConfig{
 			Enabled:           getEnvAsBool("CACHE_ENABLED", true),
