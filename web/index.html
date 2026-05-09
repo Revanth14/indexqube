@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>IndexQube — touch less grass</title>
+  <meta name="description" content="Your Claude Pro limits last 3x longer. IndexQube strips redundant context before it reaches Anthropic, so you stop hitting the wall mid-session." />
+  <meta property="og:title" content="IndexQube — touch less grass" />
+  <meta property="og:description" content="Your Claude Pro limits last 3x longer. IndexQube strips redundant context before it reaches Anthropic." />
+  <meta property="og:type" content="website" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:       #0a0a0a;
+      --surface:  #111111;
+      --border:   #222222;
+      --text:     #e8e8e8;
+      --muted:    #666666;
+      --green:    #00ff88;
+      --green-dim: #00cc6a;
+      --red:      #ff4455;
+    }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Courier New', Courier, monospace;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ── NAV ── */
+    nav {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 1.25rem 2rem;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .logo {
+      font-size: 1rem;
+      font-weight: 700;
+      color: var(--green);
+      letter-spacing: -0.5px;
+    }
+
+    .logo span { color: var(--text); }
+
+    nav a {
+      color: var(--muted);
+      text-decoration: none;
+      font-size: 0.8rem;
+      transition: color 0.15s;
+    }
+
+    nav a:hover { color: var(--text); }
+
+    /* ── HERO ── */
+    .hero {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 5rem 2rem 4rem;
+      text-align: center;
+      gap: 2rem;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      background: #0d1f16;
+      border: 1px solid #1a3d2a;
+      color: var(--green);
+      font-size: 0.72rem;
+      padding: 0.35rem 0.85rem;
+      border-radius: 999px;
+      letter-spacing: 0.05em;
+    }
+
+    .badge::before {
+      content: '';
+      display: block;
+      width: 6px;
+      height: 6px;
+      background: var(--green);
+      border-radius: 50%;
+      animation: pulse 2s ease-in-out infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0.3; }
+    }
+
+    h1 {
+      font-size: clamp(2.2rem, 6vw, 4.2rem);
+      font-weight: 700;
+      line-height: 1.05;
+      letter-spacing: -1.5px;
+      max-width: 720px;
+    }
+
+    h1 .green { color: var(--green); }
+
+    .sub {
+      font-size: clamp(0.9rem, 2vw, 1.05rem);
+      color: var(--muted);
+      max-width: 520px;
+      line-height: 1.7;
+    }
+
+    /* ── TERMINAL CARD ── */
+    .terminal {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      width: 100%;
+      max-width: 560px;
+      overflow: hidden;
+      text-align: left;
+    }
+
+    .terminal-bar {
+      background: #1a1a1a;
+      padding: 0.6rem 1rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .dot {
+      width: 10px; height: 10px;
+      border-radius: 50%;
+    }
+    .dot.red    { background: #ff5f57; }
+    .dot.yellow { background: #febc2e; }
+    .dot.green  { background: #28c840; }
+
+    .terminal-title {
+      font-size: 0.72rem;
+      color: var(--muted);
+      margin-left: auto;
+      margin-right: auto;
+    }
+
+    .terminal-body {
+      padding: 1.25rem 1.5rem;
+      font-size: 0.82rem;
+      line-height: 1.8;
+    }
+
+    .line-before { color: var(--red); }
+    .line-after  { color: var(--green); }
+    .line-dim    { color: var(--muted); }
+    .line-label  {
+      display: inline-block;
+      width: 7ch;
+      color: var(--muted);
+    }
+
+    .savings-row {
+      margin-top: 1rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+    }
+
+    .stat { text-align: center; }
+    .stat-value { font-size: 1.2rem; font-weight: 700; color: var(--green); }
+    .stat-label { font-size: 0.68rem; color: var(--muted); margin-top: 0.15rem; }
+
+    /* ── FEATURES ── */
+    .features {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 1rem;
+      max-width: 720px;
+      width: 100%;
+    }
+
+    .chip {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.6rem 1rem;
+      font-size: 0.78rem;
+      color: var(--muted);
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .chip .icon { color: var(--green); font-size: 0.9rem; }
+
+    /* ── WAITLIST ── */
+    .waitlist {
+      width: 100%;
+      max-width: 440px;
+    }
+
+    .waitlist h2 {
+      font-size: 0.85rem;
+      color: var(--muted);
+      margin-bottom: 0.75rem;
+      text-align: center;
+      letter-spacing: 0.05em;
+    }
+
+    .form-row {
+      display: flex;
+      gap: 0.5rem;
+    }
+
+    input[type="email"] {
+      flex: 1;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--text);
+      font-family: inherit;
+      font-size: 0.85rem;
+      padding: 0.7rem 1rem;
+      border-radius: 6px;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+
+    input[type="email"]::placeholder { color: var(--muted); }
+    input[type="email"]:focus { border-color: var(--green); }
+
+    button[type="submit"] {
+      background: var(--green);
+      color: #000;
+      font-family: inherit;
+      font-size: 0.82rem;
+      font-weight: 700;
+      padding: 0.7rem 1.2rem;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background 0.15s, transform 0.1s;
+    }
+
+    button[type="submit"]:hover { background: var(--green-dim); }
+    button[type="submit"]:active { transform: scale(0.97); }
+
+    .form-note {
+      text-align: center;
+      font-size: 0.7rem;
+      color: var(--muted);
+      margin-top: 0.6rem;
+    }
+
+    /* ── SUCCESS STATE ── */
+    .success-msg {
+      display: none;
+      text-align: center;
+      color: var(--green);
+      font-size: 0.85rem;
+      padding: 0.8rem;
+      border: 1px solid #1a3d2a;
+      background: #0d1f16;
+      border-radius: 6px;
+    }
+
+    /* ── FOOTER ── */
+    footer {
+      padding: 1.5rem 2rem;
+      border-top: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 0.72rem;
+      color: var(--muted);
+    }
+
+    footer a { color: var(--muted); text-decoration: none; }
+    footer a:hover { color: var(--text); }
+
+    @media (max-width: 540px) {
+      nav { padding: 1rem; }
+      .form-row { flex-direction: column; }
+      footer { flex-direction: column; gap: 0.5rem; text-align: center; }
+    }
+  </style>
+</head>
+<body>
+
+<nav>
+  <div class="logo">index<span>qube</span></div>
+  <a href="mailto:revanthcse1@gmail.com">contact</a>
+</nav>
+
+<main class="hero">
+
+  <div class="badge">early access open</div>
+
+  <h1>we make you<br/><span class="green">touch less grass</span></h1>
+
+  <p class="sub">
+    Your Claude Pro limits run out because Claude Code re-reads the same files on every turn.
+    IndexQube sits between Claude Code and Anthropic and strips the redundant context —
+    so your $20/month goes 2–3× further.
+  </p>
+
+  <!-- terminal mockup -->
+  <div class="terminal">
+    <div class="terminal-bar">
+      <div class="dot red"></div>
+      <div class="dot yellow"></div>
+      <div class="dot green"></div>
+      <div class="terminal-title">session log</div>
+    </div>
+    <div class="terminal-body">
+      <div><span class="line-label line-dim">before</span> <span class="line-before">↑ 14,400 tokens</span>  <span class="line-dim">— full codebase, again</span></div>
+      <div><span class="line-label line-dim">after &nbsp;</span> <span class="line-after">↑ &nbsp;2,100 tokens</span>  <span class="line-dim">— only what changed</span></div>
+      <div class="savings-row">
+        <div class="stat">
+          <div class="stat-value">85%</div>
+          <div class="stat-label">tokens saved</div>
+        </div>
+        <div class="stat">
+          <div class="stat-value">3×</div>
+          <div class="stat-label">longer sessions</div>
+        </div>
+        <div class="stat">
+          <div class="stat-value">$0</div>
+          <div class="stat-label">extra to Anthropic</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- chips -->
+  <div class="features">
+    <div class="chip"><span class="icon">⚡</span> works with your existing Claude Pro</div>
+    <div class="chip"><span class="icon">🔑</span> no API key needed</div>
+    <div class="chip"><span class="icon">🔒</span> your credentials never leave you</div>
+    <div class="chip"><span class="icon">🔌</span> one URL change in Claude Code settings</div>
+  </div>
+
+  <!-- waitlist form -->
+  <div class="waitlist">
+    <h2>// get early access</h2>
+    <form id="waitlist-form" action="https://formsubmit.co/revanthcse1@gmail.com" method="POST">
+      <input type="hidden" name="_subject" value="IndexQube early access request" />
+      <input type="hidden" name="_captcha" value="false" />
+      <input type="hidden" name="_next" value="https://indexqube.com?joined=1" />
+      <div class="form-row">
+        <input type="email" name="email" placeholder="you@example.com" required autocomplete="email" />
+        <button type="submit">get access →</button>
+      </div>
+    </form>
+    <p class="form-note">no spam. we'll ping you when it's ready.</p>
+  </div>
+
+</main>
+
+<footer>
+  <span>© 2025 indexqube</span>
+  <span>built for devs who bill by the hour, not the token</span>
+</footer>
+
+<script>
+  // Show success message if redirected back with ?joined=1
+  if (new URLSearchParams(location.search).get('joined') === '1') {
+    const form = document.getElementById('waitlist-form');
+    const msg = document.createElement('div');
+    msg.className = 'success-msg';
+    msg.style.display = 'block';
+    msg.textContent = '✓ you\'re on the list. we\'ll be in touch.';
+    form.replaceWith(msg);
+  }
+</script>
+
+</body>
+</html>
