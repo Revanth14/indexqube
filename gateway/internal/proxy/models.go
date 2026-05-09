@@ -4,15 +4,17 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strings"
 )
 
-type modelEntry struct {
+// ModelEntry is an exported model descriptor returned by /v1/models.
+type ModelEntry struct {
 	ID          string `json:"id"`
 	Description string `json:"description,omitempty"`
 }
 
-var modelCatalog = map[string][]modelEntry{
+var modelCatalog = map[string][]ModelEntry{
 	"anthropic": {
 		{ID: "claude-opus-4-7", Description: "Most capable"},
 		{ID: "claude-sonnet-4-6", Description: "Balanced (recommended)"},
@@ -37,15 +39,6 @@ var modelCatalog = map[string][]modelEntry{
 		{ID: "gpt-4", Description: "Azure GPT-4 deployment"},
 		{ID: "gpt-35-turbo", Description: "Azure GPT-3.5 Turbo deployment"},
 	},
-	"bedrock": {
-		{ID: "anthropic.claude-opus-4-7", Description: "Claude Opus 4.7 on Bedrock"},
-		{ID: "anthropic.claude-sonnet-4-6", Description: "Claude Sonnet 4.6 on Bedrock"},
-		{ID: "anthropic.claude-haiku-4-5-20251001-v1:0", Description: "Claude Haiku 4.5 on Bedrock"},
-		{ID: "anthropic.claude-3-5-sonnet-20241022-v2:0", Description: "Claude 3.5 Sonnet on Bedrock"},
-		{ID: "anthropic.claude-3-5-haiku-20241022-v1:0", Description: "Claude 3.5 Haiku on Bedrock"},
-		{ID: "anthropic.claude-3-opus-20240229-v1:0", Description: "Claude 3 Opus on Bedrock"},
-		{ID: "anthropic.claude-3-sonnet-20240229-v1:0", Description: "Claude 3 Sonnet on Bedrock"},
-	},
 }
 
 func (p *Proxy) handleModels(w http.ResponseWriter, r *http.Request) {
@@ -53,19 +46,31 @@ func (p *Proxy) handleModels(w http.ResponseWriter, r *http.Request) {
 
 	type response struct {
 		Object string       `json:"object"`
-		Data   []modelEntry `json:"data"`
+		Data   []ModelEntry `json:"data"`
 	}
 
-	var models []modelEntry
+	// When Bedrock is enabled and models were fetched at startup, return those
+	// for the "anthropic" provider (Claude Code always queries provider=anthropic).
+	if p.claude.Bedrock.Enabled && len(p.claude.Bedrock.Models) > 0 {
+		if provider == "" || provider == "anthropic" || provider == "bedrock" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(response{Object: "list", Data: p.claude.Bedrock.Models})
+			return
+		}
+	}
+
+	var models []ModelEntry
 	if provider != "" {
 		models = modelCatalog[provider]
 	} else {
 		for _, entries := range modelCatalog {
 			models = append(models, entries...)
 		}
+		sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })
 	}
 	if models == nil {
-		models = []modelEntry{}
+		models = []ModelEntry{}
 	}
 
 	w.Header().Set("Content-Type", "application/json")

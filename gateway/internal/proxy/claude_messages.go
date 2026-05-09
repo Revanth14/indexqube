@@ -19,15 +19,13 @@ import (
 
 	"github.com/Revanth14/indexqube/gateway/internal/memory"
 	"github.com/Revanth14/indexqube/gateway/internal/middleware"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
+	brtypes "github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 )
 
 const (
-	claudeDefaultMode       = "observe"
-	claudeMinBlockBytes     = 768
-	claudeTargetChunkBytes  = 2048
-	claudeProtectLastN      = 4
-	claudeMinMessageBytes   = 200
-	claudeReplacementFormat = "[iq:repeated ref:%s]"
+	claudeDefaultMode = "observe"
 )
 
 type anthropicMessagesRequest struct {
@@ -42,19 +40,45 @@ type anthropicMessage struct {
 	Content json.RawMessage `json:"content"`
 }
 
+// claudeOptimizerStats holds per-request accounting populated by prepareClaudeBody.
+// All byte/token fields reflect the state after optimization (or the original if skipped).
 type claudeOptimizerStats struct {
-	BlocksSeen            int            `json:"blocks_seen"`
-	BlocksNew             int            `json:"blocks_new"`
-	BlocksKnown           int            `json:"blocks_known"`
-	BlocksPruned          int            `json:"blocks_pruned"`
-	MessagesPruned        int            `json:"messages_pruned"`
-	BlockKinds            map[string]int `json:"block_kinds,omitempty"`
-	BytesBefore           int            `json:"bytes_before"`
-	BytesAfter            int            `json:"bytes_after"`
-	EstimatedTokensBefore int            `json:"estimated_tokens_before"`
-	EstimatedTokensAfter  int            `json:"estimated_tokens_after"`
-	EstimatedTokensSaved  int            `json:"estimated_tokens_saved"`
-	ReductionRatio        float64        `json:"reduction_ratio"`
+	// Block/span counts (backward-compatible log field names).
+	BlocksSeen   int `json:"blocks_seen"`
+	BlocksNew    int `json:"blocks_new"`
+	BlocksKnown  int `json:"blocks_known"`
+	BlocksPruned int `json:"blocks_pruned"`
+
+	// Byte/token accounting.
+	BytesBefore           int     `json:"bytes_before"`
+	BytesAfter            int     `json:"bytes_after"`
+	BytesEligible         int     `json:"bytes_eligible"`
+	BytesPruned           int     `json:"bytes_pruned"`
+	EstimatedTokensBefore int     `json:"estimated_tokens_before"`
+	EstimatedTokensAfter  int     `json:"estimated_tokens_after"`
+	EstimatedTokensSaved  int     `json:"estimated_tokens_saved"`
+	ReductionRatio        float64 `json:"reduction_ratio"`
+
+	// Per-class byte accounting (keyed by SpanClass* constants).
+	ClassBytesSeen     map[string]int `json:"class_bytes_seen,omitempty"`
+	ClassBytesEligible map[string]int `json:"class_bytes_eligible,omitempty"`
+	ClassBytesPruned   map[string]int `json:"class_bytes_pruned,omitempty"`
+	ClassSpansSeen     map[string]int `json:"class_spans_seen,omitempty"`
+	ClassSpansPruned   map[string]int `json:"class_spans_pruned,omitempty"`
+
+	// Preserve-reason counters.
+	PreservedLatestTurnBytes int `json:"preserved_latest_turn_bytes"`
+	PreservedLatestTurnCount int `json:"preserved_latest_turn_count"`
+	PreservedSmallBytes      int `json:"preserved_small_bytes"`
+	PreservedSmallCount      int `json:"preserved_small_count"`
+	PreservedSystemBytes     int `json:"preserved_system_bytes"`
+	PreservedSystemCount     int `json:"preserved_system_count"`
+	PreservedToolUseBytes    int `json:"preserved_tool_use_bytes"`
+	PreservedToolUseCount    int `json:"preserved_tool_use_count"`
+
+	// Size tracking.
+	LargestSpanBytes   int `json:"largest_span_bytes"`
+	LargestPrunedBytes int `json:"largest_pruned_bytes"`
 }
 
 type claudeStreamStats struct {
@@ -65,6 +89,7 @@ type claudeStreamStats struct {
 	StatusCode        int
 	Cancelled         bool
 	Completed         bool
+	Provider          string // "anthropic" or "bedrock"
 	UpstreamErr       string
 	UpstreamErrorCode string
 	UpstreamErrorType string
@@ -268,6 +293,15 @@ func (p *Proxy) claudeDefaults() ClaudeMessagesConfig {
 	if cfg.RateLimitCooldown <= 0 {
 		cfg.RateLimitCooldown = 30 * time.Second
 	}
+	// Apply optimizer defaults when not explicitly configured.
+	if cfg.Optimizer.MinSpanBytes <= 0 {
+		cfg.Optimizer.MinSpanBytes = 512
+		cfg.Optimizer.TargetChunkBytes = 2048
+		cfg.Optimizer.MaxChunkBytes = 8192
+		cfg.Optimizer.MinSavedTokens = 10
+		cfg.Optimizer.EnableToolResultPruning = true
+		cfg.Optimizer.EnableSystemPruning = true
+	}
 	return cfg
 }
 
@@ -275,8 +309,8 @@ func (c ClaudeMessagesConfig) validate() error {
 	if c.DevToken == "" {
 		return fmt.Errorf("INDEXQUBE_DEV_TOKEN is required for /v1/messages")
 	}
-	if c.AnthropicAPIKey == "" {
-		return fmt.Errorf("ANTHROPIC_API_KEY is required for /v1/messages")
+	if !c.Bedrock.Enabled && c.AnthropicAPIKey == "" {
+		return fmt.Errorf("ANTHROPIC_API_KEY is required for /v1/messages (or set INDEXQUBE_BEDROCK_ENABLED=true)")
 	}
 	switch c.Mode {
 	case "observe", "dry_run", "optimize":
@@ -312,8 +346,6 @@ func (p *Proxy) prepareClaudeBody(ctx context.Context, cfg ClaudeMessagesConfig,
 	if err := ctx.Err(); err != nil {
 		return nil, anthropicMessagesRequest{}, claudeOptimizerStats{}, err
 	}
-	// Single parse — map[string]any serves block extraction and rewriting.
-	// Typed fields needed downstream (Model, Stream) are pulled from the map.
 	var root map[string]any
 	if err := json.Unmarshal(body, &root); err != nil {
 		return nil, anthropicMessagesRequest{}, claudeOptimizerStats{}, fmt.Errorf("parse anthropic messages body: %w", err)
@@ -331,57 +363,115 @@ func (p *Proxy) prepareClaudeBody(ctx context.Context, cfg ClaudeMessagesConfig,
 		return body, req, stats, nil
 	}
 
-	blocks := extractClaudeBlocksFromRoot(root)
-	if cfg.Mode == "observe" {
-		for _, block := range blocks {
-			cfg.SessionStore.SaveBlock(sessionKey, block)
+	minSpanBytes := cfg.Optimizer.MinSpanBytes
+	if minSpanBytes <= 0 {
+		minSpanBytes = 512
+	}
+
+	spans := extractSpans(root)
+
+	// In observe mode or with optimizer disabled, just warm the session store.
+	if cfg.Mode == "observe" || !cfg.EnableBlockOptimizer {
+		for _, span := range spans {
+			if span.Bytes >= minSpanBytes {
+				cfg.SessionStore.SaveBlock(sessionKey, memory.Block{
+					Hash:   span.Hash,
+					Kind:   span.Class,
+					Bytes:  span.Bytes,
+					Tokens: span.Tokens,
+				})
+			}
 		}
 		return body, req, stats, nil
 	}
-	if cfg.Mode == "optimize" && !cfg.EnableBlockOptimizer {
-		for _, block := range blocks {
-			cfg.SessionStore.SaveBlock(sessionKey, block)
+
+	// optimize / dry_run: full span accounting and class-aware pruning.
+	stats.ClassBytesSeen = make(map[string]int)
+	stats.ClassBytesEligible = make(map[string]int)
+	stats.ClassBytesPruned = make(map[string]int)
+	stats.ClassSpansSeen = make(map[string]int)
+	stats.ClassSpansPruned = make(map[string]int)
+
+	var prunableSpans []TextSpan
+
+	for _, span := range spans {
+		if span.Bytes < minSpanBytes {
+			stats.PreservedSmallBytes += span.Bytes
+			stats.PreservedSmallCount++
+			continue
 		}
-		return body, req, stats, nil
-	}
-	stats.BlocksSeen = len(blocks)
-	stats.BlockKinds = make(map[string]int, 4)
-	prunable := make(map[string]bool, len(blocks))
-	for _, block := range blocks {
-		stats.BlockKinds[block.Kind]++
-		if cfg.SessionStore.Seen(sessionKey, block.Hash) {
-			prunable[block.Hash] = true
-			stats.BlocksKnown++
-		} else {
+
+		stats.BlocksSeen++
+		stats.ClassBytesSeen[span.Class] += span.Bytes
+		stats.ClassSpansSeen[span.Class]++
+		if span.Bytes > stats.LargestSpanBytes {
+			stats.LargestSpanBytes = span.Bytes
+		}
+
+		known := cfg.SessionStore.Seen(sessionKey, span.Hash)
+		cfg.SessionStore.SaveBlock(sessionKey, memory.Block{
+			Hash:   span.Hash,
+			Kind:   span.Class,
+			Bytes:  span.Bytes,
+			Tokens: span.Tokens,
+		})
+
+		if !known {
 			stats.BlocksNew++
+			continue
 		}
+		stats.BlocksKnown++
+
+		// Latest-turn spans must never be pruned regardless of whether the
+		// content was seen before. The model needs current-turn context intact.
+		if span.IsLatestTurn {
+			stats.PreservedLatestTurnBytes += span.Bytes
+			stats.PreservedLatestTurnCount++
+			continue
+		}
+
+		if !isEligibleSpanClass(span.Class, cfg.Optimizer) {
+			switch span.Class {
+			case SpanClassSystemText:
+				stats.PreservedSystemBytes += span.Bytes
+				stats.PreservedSystemCount++
+			case SpanClassToolUse:
+				stats.PreservedToolUseBytes += span.Bytes
+				stats.PreservedToolUseCount++
+			}
+			continue
+		}
+
+		stats.ClassBytesEligible[span.Class] += span.Bytes
+		stats.BytesEligible += span.Bytes
+		prunableSpans = append(prunableSpans, span)
 	}
 
-	// Save all blocks for future deduplication.
-	for _, block := range blocks {
-		cfg.SessionStore.SaveBlock(sessionKey, block)
+	if len(prunableSpans) == 0 {
+		return body, req, stats, nil
 	}
 
-	// Always re-parse so the rewrite mutates a fresh tree and the original
-	// body stays intact for dry_run mode.
+	// Rewrite on a fresh parse so the original stays intact for dry_run.
 	var rewriteRoot map[string]any
 	if err := json.Unmarshal(body, &rewriteRoot); err != nil {
 		p.logger.WarnContext(ctx, "claude optimize re-parse failed; forwarding original", slog.Any("err", err))
 		return body, req, stats, nil
 	}
 
-	// Phase 1: Message-level dedup — compact old conversation turns whose
-	// full content was already seen in a prior request. This catches the
-	// many small messages that individually fall below claudeMinBlockBytes
-	// but collectively dominate Claude Code's repeated payload.
-	msgPruned := pruneOldMessages(rewriteRoot, cfg.SessionStore, sessionKey)
-	stats.MessagesPruned = msgPruned
-
-	// Phase 2: Chunk-level dedup — replace remaining repeated text spans
-	// within surviving messages.
-	var chunkPruned int
-	if len(prunable) > 0 {
-		chunkPruned = applyChunkRewrite(rewriteRoot, prunable)
+	pruneCount := 0
+	for _, span := range prunableSpans {
+		replacement := classSpecificReplacement(span)
+		if err := setSpanText(rewriteRoot, span, replacement); err != nil {
+			p.logger.WarnContext(ctx, "span replacement failed", slog.String("path", span.Path), slog.Any("err", err))
+			continue
+		}
+		pruneCount++
+		stats.ClassBytesPruned[span.Class] += span.Bytes
+		stats.ClassSpansPruned[span.Class]++
+		stats.BytesPruned += span.Bytes
+		if span.Bytes > stats.LargestPrunedBytes {
+			stats.LargestPrunedBytes = span.Bytes
+		}
 	}
 
 	optimized, err := json.Marshal(rewriteRoot)
@@ -390,7 +480,7 @@ func (p *Proxy) prepareClaudeBody(ctx context.Context, cfg ClaudeMessagesConfig,
 		return body, req, stats, nil
 	}
 
-	stats.BlocksPruned = chunkPruned
+	stats.BlocksPruned = pruneCount
 	stats.BytesAfter = len(optimized)
 	stats.EstimatedTokensAfter = estimateTokens(len(optimized))
 	stats.EstimatedTokensSaved = max(0, stats.EstimatedTokensBefore-stats.EstimatedTokensAfter)
@@ -401,376 +491,289 @@ func (p *Proxy) prepareClaudeBody(ctx context.Context, cfg ClaudeMessagesConfig,
 	if cfg.Mode == "optimize" {
 		return optimized, req, stats, nil
 	}
+	// dry_run: report accurate stats but forward the original body.
 	return body, req, stats, nil
 }
 
-// pruneOldMessages compacts old conversation turns whose full serialized
-// content was already seen in a prior request. It protects the last N
-// messages to preserve the current turn context. For user messages with
-// tool_result blocks, only the tool_result content is replaced (keeping
-// tool_use_id intact). For assistant messages, tool_use blocks are kept
-// (they're referenced by subsequent tool_results) and text is compacted.
-func pruneOldMessages(root map[string]any, store *memory.Store, sessionKey string) int {
-	messages, ok := root["messages"].([]any)
-	if !ok || len(messages) <= claudeProtectLastN {
-		return 0
-	}
-
-	pruned := 0
-	cutoff := len(messages) - claudeProtectLastN
-
-	for i := 0; i < cutoff; i++ {
-		msg, ok := messages[i].(map[string]any)
-		if !ok {
-			continue
-		}
-
-		contentJSON, err := json.Marshal(msg["content"])
-		if err != nil || len(contentJSON) < claudeMinMessageBytes {
-			continue
-		}
-
-		msgHash := "msg:" + hashText(string(contentJSON))
-		if !store.Seen(sessionKey, msgHash) {
-			continue
-		}
-
-		// This message content was seen in a prior request — compact it.
-		role, _ := msg["role"].(string)
-		msg["content"] = compactMessageContent(msg["content"], role, msgHash)
-		pruned++
-	}
-
-	return pruned
-}
-
-// compactMessageContent replaces the bulk of a message's content with a
-// short marker while preserving structural elements the API requires.
-func compactMessageContent(content any, role, hash string) any {
-	marker := fmt.Sprintf("[iq:prior %s turn ref:%s]", role, hash[4:16])
-
-	switch c := content.(type) {
-	case string:
-		return marker
-	case []any:
-		if role == "assistant" {
-			// Keep tool_use blocks (subsequent tool_results reference them by ID).
-			// Replace text blocks with the compact marker.
-			kept := make([]any, 0, len(c))
-			addedMarker := false
-			for _, rawItem := range c {
-				item, ok := rawItem.(map[string]any)
-				if !ok {
-					continue
-				}
-				typ, _ := item["type"].(string)
-				if typ == "tool_use" {
-					kept = append(kept, item)
-				} else if !addedMarker {
-					kept = append(kept, map[string]any{"type": "text", "text": marker})
-					addedMarker = true
-				}
-			}
-			if len(kept) == 0 {
-				return marker
-			}
-			return kept
-		}
-		// For user messages: keep tool_result wrappers (tool_use_id) but
-		// replace their content with the compact marker.
-		for _, rawItem := range c {
-			item, ok := rawItem.(map[string]any)
-			if !ok {
-				continue
-			}
-			typ, _ := item["type"].(string)
-			switch typ {
-			case "tool_result":
-				item["content"] = marker
-			case "text":
-				item["text"] = marker
-			}
-		}
-		return c
+// isEligibleSpanClass returns true if the span class is eligible for pruning
+// under the given optimizer config.
+func isEligibleSpanClass(class string, cfg OptimizerConfig) bool {
+	switch class {
+	case SpanClassUserTextOld:
+		return true
+	case SpanClassToolResultOld:
+		return cfg.EnableToolResultPruning
+	case SpanClassAssistantTextOld:
+		return cfg.EnableAssistantPruning
+	case SpanClassSystemText:
+		return cfg.EnableSystemPruning
 	default:
-		return marker
+		return false
 	}
 }
 
-// applyChunkRewrite runs the chunk-level span-preserving rewrite on the
-// already-parsed root. Returns the number of chunks replaced.
-func applyChunkRewrite(root map[string]any, repeated map[string]bool) int {
-	totalPruned := 0
-	if sys := root["system"]; sys != nil {
-		rewritten, n := rewriteAnthropicContentValue(sys, repeated)
-		if n > 0 {
-			root["system"] = rewritten
-			totalPruned += n
-		}
+// classSpecificReplacement returns a compact replacement marker for a pruned
+// span. Short format minimises the token overhead of the marker itself.
+func classSpecificReplacement(span TextSpan) string {
+	h := span.Hash
+	if len(h) > 12 {
+		h = h[:12]
+	}
+	return "[iq:ref " + h + "]"
+}
+
+// setSpanText navigates to the span's location in root and replaces its text
+// value with replacement. Returns an error if the navigation fails.
+func setSpanText(root map[string]any, span TextSpan, replacement string) error {
+	if span.Role == "system" {
+		return setSystemSpanText(root, span, replacement)
 	}
 	messages, ok := root["messages"].([]any)
+	if !ok || span.MessageIndex < 0 || span.MessageIndex >= len(messages) {
+		return fmt.Errorf("invalid message index %d", span.MessageIndex)
+	}
+	msg, ok := messages[span.MessageIndex].(map[string]any)
 	if !ok {
-		return totalPruned
+		return fmt.Errorf("message[%d] is not a map", span.MessageIndex)
 	}
-	for _, rawMsg := range messages {
-		msg, ok := rawMsg.(map[string]any)
-		if !ok {
-			continue
-		}
-		rewritten, n := rewriteAnthropicContentValue(msg["content"], repeated)
-		if n > 0 {
-			msg["content"] = rewritten
-			totalPruned += n
-		}
-	}
-	return totalPruned
-}
-
-func extractClaudeBlocksFromRoot(root map[string]any) []memory.Block {
-	var blocks []memory.Block
-	appendText := func(kind, text string) {
-		for _, chunk := range splitStableTextChunks(text) {
-			if len(chunk) < claudeMinBlockBytes {
-				continue
-			}
-			sum := sha256.Sum256([]byte(chunk))
-			blocks = append(blocks, memory.Block{
-				Hash:   hex.EncodeToString(sum[:]),
-				Kind:   kind,
-				Bytes:  len(chunk),
-				Tokens: estimateTokens(len(chunk)),
-			})
-		}
-	}
-	for _, text := range textValuesFromAny(root["system"]) {
-		appendText("system", text)
-	}
-	if messages, ok := root["messages"].([]any); ok {
-		for i, rawMsg := range messages {
-			msg, ok := rawMsg.(map[string]any)
-			if !ok {
-				continue
-			}
-			role, _ := msg["role"].(string)
-			// Chunk-level blocks from text values.
-			for _, text := range textValuesFromAny(msg["content"]) {
-				appendText("message:"+role, text)
-			}
-			// Message-level block: hash the full serialized content so we
-			// can deduplicate entire old messages, including ones with many
-			// small content blocks that individually fall below the chunk
-			// threshold.
-			contentJSON, err := json.Marshal(msg["content"])
-			if err == nil && len(contentJSON) >= claudeMinMessageBytes {
-				sum := sha256.Sum256(contentJSON)
-				blocks = append(blocks, memory.Block{
-					Hash:   "msg:" + hex.EncodeToString(sum[:]),
-					Kind:   fmt.Sprintf("message_full:%s:%d", role, i),
-					Bytes:  len(contentJSON),
-					Tokens: estimateTokens(len(contentJSON)),
-				})
-			}
-		}
-	}
-	return blocks
-}
-
-func textValuesFromAny(v any) []string {
-	if v == nil {
+	if span.ContentIndex < 0 {
+		msg["content"] = replacement
 		return nil
 	}
-	if s, ok := v.(string); ok {
-		return []string{s}
+	content, ok := msg["content"].([]any)
+	if !ok || span.ContentIndex >= len(content) {
+		return fmt.Errorf("invalid content index %d", span.ContentIndex)
 	}
-	arr, ok := v.([]any)
+	item, ok := content[span.ContentIndex].(map[string]any)
 	if !ok {
-		return nil
+		return fmt.Errorf("content[%d] is not a map", span.ContentIndex)
 	}
-	var out []string
-	for _, item := range arr {
-		m, ok := item.(map[string]any)
-		if !ok {
-			continue
-		}
-		typ, _ := m["type"].(string)
-		switch typ {
-		case "text":
-			if text, ok := m["text"].(string); ok {
-				out = append(out, text)
+	switch span.BlockType {
+	case "text":
+		item["text"] = replacement
+	case "tool_result":
+		if span.SubContentIndex < 0 {
+			item["content"] = replacement
+		} else {
+			sub, ok := item["content"].([]any)
+			if !ok || span.SubContentIndex >= len(sub) {
+				return fmt.Errorf("invalid tool_result sub-content index %d", span.SubContentIndex)
 			}
-		case "tool_result":
-			// tool_result content can be a string or an array of content blocks.
-			out = append(out, textValuesFromAny(m["content"])...)
-		}
-	}
-	return out
-}
-
-func splitStableTextChunks(text string) []string {
-	text = strings.TrimSpace(text)
-	if text == "" {
-		return nil
-	}
-	// Small-to-medium blocks are hashed as a single unit. This threshold
-	// must be low enough that large user messages with appended instructions
-	// still get chunked so the shared prefix chunks can be deduplicated.
-	if len(text) <= 8192 {
-		return []string{text}
-	}
-	lines := strings.Split(text, "\n")
-	var chunks []string
-	var b strings.Builder
-	for _, line := range lines {
-		if b.Len()+len(line)+1 > claudeTargetChunkBytes && b.Len() >= claudeMinBlockBytes {
-			chunks = append(chunks, strings.TrimSpace(b.String()))
-			b.Reset()
-		}
-		b.WriteString(line)
-		b.WriteByte('\n')
-	}
-	if strings.TrimSpace(b.String()) != "" {
-		chunks = append(chunks, strings.TrimSpace(b.String()))
-	}
-	return chunks
-}
-
-
-
-
-// rewriteAnthropicContentValue replaces repeated text spans within a content
-// value. Returns the (possibly rewritten) content and the number of chunks
-// actually replaced.
-func rewriteAnthropicContentValue(content any, repeated map[string]bool) (any, int) {
-	switch c := content.(type) {
-	case string:
-		rewritten, n := replaceRepeatedSpans(c, repeated)
-		if n > 0 {
-			return rewritten, n
-		}
-		return content, 0
-	case []any:
-		total := 0
-		for _, rawItem := range c {
-			item, ok := rawItem.(map[string]any)
+			subItem, ok := sub[span.SubContentIndex].(map[string]any)
 			if !ok {
-				continue
+				return fmt.Errorf("tool_result content[%d] is not a map", span.SubContentIndex)
 			}
-			typ, _ := item["type"].(string)
-			switch typ {
-			case "text":
-				text, ok := item["text"].(string)
-				if !ok || len(text) < claudeMinBlockBytes {
-					continue
-				}
-				rewritten, n := replaceRepeatedSpans(text, repeated)
-				if n > 0 {
-					item["text"] = rewritten
-					total += n
-				}
-			case "tool_result":
-				// Recurse into tool_result content (string or content array).
-				rewritten, n := rewriteAnthropicContentValue(item["content"], repeated)
-				if n > 0 {
-					item["content"] = rewritten
-					total += n
-				}
-			}
+			subItem["text"] = replacement
 		}
-		return c, total
 	default:
-		return content, 0
+		return fmt.Errorf("unsupported block type %q for span replacement", span.BlockType)
 	}
+	return nil
 }
 
-// replaceRepeatedSpans replaces repeated text chunks in the original text
-// without altering the whitespace or formatting of non-repeated content.
-// For text <= 8KB (single chunk), it replaces the whole value if matched.
-// For text > 8KB, it locates chunk boundaries within the original text and
-// replaces only the byte spans of matched chunks.
-// Returns the result text and the number of chunks replaced.
-func replaceRepeatedSpans(text string, repeated map[string]bool) (string, int) {
-	trimmed := strings.TrimSpace(text)
-	if len(trimmed) < claudeMinBlockBytes {
-		return text, 0
+func setSystemSpanText(root map[string]any, span TextSpan, replacement string) error {
+	if span.ContentIndex < 0 {
+		root["system"] = replacement
+		return nil
+	}
+	sysArr, ok := root["system"].([]any)
+	if !ok || span.ContentIndex >= len(sysArr) {
+		return fmt.Errorf("invalid system content index %d", span.ContentIndex)
+	}
+	item, ok := sysArr[span.ContentIndex].(map[string]any)
+	if !ok {
+		return fmt.Errorf("system[%d] is not a map", span.ContentIndex)
+	}
+	item["text"] = replacement
+	return nil
+}
+
+// forwardClaudeMessagesViaBedrock proxies /v1/messages to the Bedrock
+// InvokeModelWithResponseStream API. The Anthropic Messages body is forwarded
+// as-is except that `model` and `stream` are removed and
+// `anthropic_version: "bedrock-2023-05-31"` is injected. The binary AWS event
+// stream is decoded and re-emitted as standard Anthropic SSE so Claude Code
+// sees an identical response shape regardless of backend.
+func (p *Proxy) forwardClaudeMessagesViaBedrock(w http.ResponseWriter, r *http.Request, cfg ClaudeMessagesConfig, body []byte) claudeStreamStats {
+	// Parse the model name before mutating the body.
+	var meta struct {
+		Model string `json:"model"`
+	}
+	_ = json.Unmarshal(body, &meta)
+
+	modelID := toBedrockModelID(meta.Model, cfg.Bedrock)
+
+	// Transform body: remove model/stream, inject bedrock anthropic_version.
+	var root map[string]any
+	if err := json.Unmarshal(body, &root); err != nil {
+		p.writeError(w, r, errorPayload{HTTPStatus: http.StatusBadRequest, Type: "invalid_request_error", Message: "cannot parse request body"})
+		return claudeStreamStats{Status: "error", StatusCode: http.StatusBadRequest}
+	}
+	delete(root, "model")
+	delete(root, "stream")
+	delete(root, "context_management") // Bedrock rejects this Anthropic-specific field
+	root["anthropic_version"] = "bedrock-2023-05-31"
+	bedrockBody, err := json.Marshal(root)
+	if err != nil {
+		p.writeError(w, r, errorPayload{HTTPStatus: http.StatusInternalServerError, Type: "server_error", Message: "failed to marshal bedrock body"})
+		return claudeStreamStats{Status: "error", StatusCode: http.StatusInternalServerError}
 	}
 
-	// Single-chunk fast path: the whole value is one hash unit.
-	if len(trimmed) <= 8192 {
-		hash := hashText(trimmed)
-		if repeated[hash] {
-			return fmt.Sprintf(claudeReplacementFormat, hash[:12]), 1
+	client, err := bedrockClientFor(r.Context(), cfg.Bedrock)
+	if err != nil {
+		p.writeError(w, r, errorPayload{HTTPStatus: http.StatusServiceUnavailable, Type: "server_error", Code: "bedrock_unavailable", Message: err.Error()})
+		return claudeStreamStats{Status: "error", StatusCode: http.StatusServiceUnavailable}
+	}
+
+	p.logger.InfoContext(r.Context(), "bedrock invoke", slog.String("model_id", modelID))
+	output, err := client.InvokeModelWithResponseStream(r.Context(), &bedrockruntime.InvokeModelWithResponseStreamInput{
+		ModelId:     &modelID,
+		Body:        bedrockBody,
+		ContentType: strPtr("application/json"),
+		Accept:      strPtr("application/json"),
+	})
+	if err != nil {
+		if errors.Is(err, context.Canceled) || r.Context().Err() != nil {
+			return claudeStreamStats{Status: "cancelled", Cancelled: true, Provider: "bedrock"}
 		}
-		return text, 0
+		p.logger.ErrorContext(r.Context(), "bedrock invoke failed", slog.String("model_id", modelID), slog.Any("err", err))
+		code, message := classifyUpstreamError(err)
+		p.writeError(w, r, errorPayload{HTTPStatus: http.StatusBadGateway, Type: "upstream_error", Code: code, Message: message})
+		return claudeStreamStats{Status: "error", StatusCode: http.StatusBadGateway, Provider: "bedrock", UpstreamErr: err.Error()}
 	}
 
-	// Multi-chunk path: walk lines, build chunks with byte offsets within
-	// the trimmed region, and replace only matched spans.
-	trimStart := strings.Index(text, trimmed[:1])
-	if trimStart < 0 {
-		trimStart = 0
-	}
+	h := w.Header()
+	h.Set("Content-Type", "text/event-stream")
+	h.Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	h.Set("Connection", "keep-alive")
+	h.Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+	rc := http.NewResponseController(w)
+	_ = rc.Flush()
 
-	type span struct {
-		start int    // byte offset in original text
-		end   int    // exclusive byte offset in original text
-		hash  string // SHA-256 of trimmed chunk content
-	}
+	stats := claudeStreamStats{Status: "completed", StatusCode: http.StatusOK, Provider: "bedrock"}
+	stream := output.GetStream()
+	defer stream.Close()
 
-	var spans []span
-	lines := strings.Split(trimmed, "\n")
-	var b strings.Builder
-	chunkStartInTrimmed := 0
-	posInTrimmed := 0
-
-	for _, line := range lines {
-		if b.Len()+len(line)+1 > claudeTargetChunkBytes && b.Len() >= claudeMinBlockBytes {
-			chunk := strings.TrimSpace(b.String())
-			if len(chunk) >= claudeMinBlockBytes {
-				spans = append(spans, span{
-					start: trimStart + chunkStartInTrimmed,
-					end:   trimStart + posInTrimmed,
-					hash:  hashText(chunk),
-				})
-			}
-			chunkStartInTrimmed = posInTrimmed
-			b.Reset()
+	for event := range stream.Events() {
+		if err := r.Context().Err(); err != nil {
+			stats.Status = "cancelled"
+			stats.Cancelled = true
+			return stats
 		}
-		b.WriteString(line)
-		b.WriteByte('\n')
-		posInTrimmed += len(line) + 1
-	}
-	if chunk := strings.TrimSpace(b.String()); len(chunk) >= claudeMinBlockBytes {
-		spans = append(spans, span{
-			start: trimStart + chunkStartInTrimmed,
-			end:   trimStart + len(trimmed),
-			hash:  hashText(chunk),
-		})
-	}
-
-	if len(spans) == 0 {
-		return text, 0
-	}
-
-	// Build result by replacing only matched spans, preserving everything else.
-	var out strings.Builder
-	out.Grow(len(text))
-	cursor := 0
-	count := 0
-	for _, s := range spans {
-		if !repeated[s.hash] {
+		chunk, ok := event.(*brtypes.ResponseStreamMemberChunk)
+		if !ok {
 			continue
 		}
-		out.WriteString(text[cursor:s.start])
-		out.WriteString(fmt.Sprintf(claudeReplacementFormat, s.hash[:12]))
-		cursor = s.end
-		count++
+		payload := chunk.Value.Bytes
+
+		// Extract event type to emit the SSE event header.
+		var ev struct {
+			Type string `json:"type"`
+		}
+		_ = json.Unmarshal(payload, &ev)
+
+		var line string
+		if ev.Type != "" {
+			line = "event: " + ev.Type + "\ndata: " + string(payload) + "\n\n"
+		} else {
+			line = "data: " + string(payload) + "\n\n"
+		}
+		if _, err := io.WriteString(w, line); err != nil {
+			stats.Status = "cancelled"
+			stats.Cancelled = true
+			return stats
+		}
+		_ = rc.Flush()
+
+		switch ev.Type {
+		case "content_block_delta":
+			stats.Chunks++
+			stats.OutputText += anthropicDeltaTextLen(string(payload))
+		case "message_delta":
+			if tokens := anthropicUsageOutputTokens(string(payload)); tokens > 0 {
+				stats.OutputTokens = tokens
+			}
+		}
 	}
-	if count == 0 {
-		return text, 0
+	if err := stream.Err(); err != nil {
+		// Headers already sent (HTTP 200). Send an SSE error event so the
+		// client knows the stream terminated abnormally.
+		errPayload := fmt.Sprintf(`{"type":"error","error":{"type":"stream_error","message":%q}}`, err.Error())
+		_, _ = io.WriteString(w, "event: error\ndata: "+errPayload+"\n\n")
+		_ = rc.Flush()
+		stats.Status = "error"
+		stats.UpstreamErr = err.Error()
+		return stats
 	}
-	out.WriteString(text[cursor:])
-	return out.String(), count
+	stats.Completed = true
+	return stats
 }
+
+// bedrockClientFor returns the pre-built client from cfg, or creates one from
+// the default AWS credential chain when none was supplied (e.g. in tests).
+func bedrockClientFor(ctx context.Context, cfg BedrockConfig) (*bedrockruntime.Client, error) {
+	if cfg.Client != nil {
+		return cfg.Client, nil
+	}
+	region := cfg.Region
+	if region == "" {
+		region = "us-east-1"
+	}
+	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(region))
+	if err != nil {
+		return nil, fmt.Errorf("load AWS config: %w", err)
+	}
+	return bedrockruntime.NewFromConfig(awsCfg), nil
+}
+
+// bedrockKnownModels maps Claude Code model names to their Bedrock model IDs
+// (without regional prefix). Package-level to avoid per-request allocation.
+var bedrockKnownModels = map[string]string{
+	// Claude 3 series
+	"claude-3-sonnet-20240229":   "anthropic.claude-3-sonnet-20240229-v1:0",
+	"claude-3-haiku-20240307":    "anthropic.claude-3-haiku-20240307-v1:0",
+	"claude-3-5-haiku-20241022":  "anthropic.claude-3-5-haiku-20241022-v1:0",
+	"claude-3-5-haiku-latest":    "anthropic.claude-3-5-haiku-20241022-v1:0",
+	// Claude 4 series (IDs from Bedrock ListFoundationModels)
+	"claude-sonnet-4-20250514":   "anthropic.claude-sonnet-4-20250514-v1:0",
+	"claude-haiku-4-5-20251001":  "anthropic.claude-haiku-4-5-20251001-v1:0",
+	"claude-sonnet-4-5-20250929": "anthropic.claude-sonnet-4-5-20250929-v1:0",
+	"claude-opus-4-1-20250805":   "anthropic.claude-opus-4-1-20250805-v1:0",
+	"claude-opus-4-5-20251101":   "anthropic.claude-opus-4-5-20251101-v1:0",
+	"claude-opus-4-20250514":     "anthropic.claude-opus-4-20250514-v1:0",
+	// Unversioned aliases used by the Claude Code CLI
+	"claude-sonnet-4-6": "anthropic.claude-sonnet-4-6",
+	"claude-opus-4-6":   "anthropic.claude-opus-4-6-v1",
+	"claude-opus-4-7":   "anthropic.claude-opus-4-7",
+}
+
+// toBedrockModelID maps a Claude Code model name to its AWS Bedrock model ID.
+// ModelOverride takes precedence. For unknown models a best-effort pattern is
+// applied; use INDEXQUBE_BEDROCK_MODEL_OVERRIDE to pin an exact ID.
+func toBedrockModelID(model string, cfg BedrockConfig) string {
+	if cfg.ModelOverride != "" {
+		return cfg.ModelOverride
+	}
+	prefix := cfg.ModelPrefix
+	if prefix == "" {
+		prefix = "us."
+	}
+	// Already a Bedrock-style ID (contains ":").
+	if strings.Contains(model, ":") {
+		return model
+	}
+	if id, ok := bedrockKnownModels[model]; ok {
+		return prefix + id
+	}
+	// Best-effort: dated names get -v1:0, unversioned aliases do not.
+	if strings.ContainsAny(model, "0123456789") {
+		return prefix + "anthropic." + model + "-v1:0"
+	}
+	return prefix + "anthropic." + model
+}
+
+func strPtr(s string) *string { return &s }
 
 func hashText(text string) string {
 	sum := sha256.Sum256([]byte(strings.TrimSpace(text)))
@@ -778,6 +781,9 @@ func hashText(text string) string {
 }
 
 func (p *Proxy) forwardClaudeMessages(w http.ResponseWriter, r *http.Request, cfg ClaudeMessagesConfig, body []byte) claudeStreamStats {
+	if cfg.Bedrock.Enabled {
+		return p.forwardClaudeMessagesViaBedrock(w, r, cfg, body)
+	}
 	upstreamURL, err := url.JoinPath(strings.TrimRight(cfg.AnthropicBaseURL, "/"), "v1", "messages")
 	if err != nil {
 		p.writeError(w, r, errorPayload{HTTPStatus: http.StatusInternalServerError, Type: "server_error", Code: "bad_upstream_url", Message: err.Error()})
@@ -1011,7 +1017,7 @@ func (p *Proxy) logClaudeRequestComplete(ctx context.Context, requestID, mode, m
 		slog.String("event", "request_complete"),
 		slog.String("request_id", requestID),
 		slog.String("mode", mode),
-		slog.String("provider", "anthropic"),
+		slog.String("provider", firstNonEmpty(stream.Provider, "anthropic")),
 		slog.String("model", model),
 		slog.String("session_key", shortLogHash(sessionKey)),
 		slog.Int("bytes_before", bytesBefore),
@@ -1024,7 +1030,6 @@ func (p *Proxy) logClaudeRequestComplete(ctx context.Context, requestID, mode, m
 		slog.Int("blocks_new", opt.BlocksNew),
 		slog.Int("blocks_known", opt.BlocksKnown),
 		slog.Int("blocks_pruned", opt.BlocksPruned),
-		slog.Int("messages_pruned", opt.MessagesPruned),
 		slog.Int("stream_chunks", stream.Chunks),
 		slog.Int("estimated_output_tokens", stream.estimatedOutputTokens()),
 		slog.Int64("duration_ms", dur.Milliseconds()),
@@ -1033,8 +1038,48 @@ func (p *Proxy) logClaudeRequestComplete(ctx context.Context, requestID, mode, m
 		slog.Bool("stream_completed", stream.Completed),
 		slog.Bool("stream_cancelled", stream.Cancelled),
 	}
-	for kind, n := range opt.BlockKinds {
-		attrs = append(attrs, slog.Int("kind:"+kind, n))
+	if opt.BytesEligible > 0 {
+		attrs = append(attrs, slog.Int("bytes_eligible", opt.BytesEligible))
+	}
+	if opt.BytesPruned > 0 {
+		attrs = append(attrs, slog.Int("bytes_pruned", opt.BytesPruned))
+	}
+	if opt.LargestSpanBytes > 0 {
+		attrs = append(attrs, slog.Int("largest_span_bytes", opt.LargestSpanBytes))
+	}
+	if opt.LargestPrunedBytes > 0 {
+		attrs = append(attrs, slog.Int("largest_pruned_bytes", opt.LargestPrunedBytes))
+	}
+	if opt.PreservedLatestTurnCount > 0 {
+		attrs = append(attrs, slog.Int("preserved_latest_turn_count", opt.PreservedLatestTurnCount))
+		attrs = append(attrs, slog.Int("preserved_latest_turn_bytes", opt.PreservedLatestTurnBytes))
+	}
+	if opt.PreservedSmallCount > 0 {
+		attrs = append(attrs, slog.Int("preserved_small_count", opt.PreservedSmallCount))
+	}
+	if opt.PreservedSystemCount > 0 {
+		attrs = append(attrs, slog.Int("preserved_system_count", opt.PreservedSystemCount))
+	}
+	if opt.PreservedToolUseCount > 0 {
+		attrs = append(attrs, slog.Int("preserved_tool_use_count", opt.PreservedToolUseCount))
+	}
+	for class, bytes := range opt.ClassBytesSeen {
+		if bytes > 0 {
+			attrs = append(attrs, slog.Int("class_bytes_seen:"+class, bytes))
+		}
+	}
+	for class, bytes := range opt.ClassBytesEligible {
+		if bytes > 0 {
+			attrs = append(attrs, slog.Int("class_bytes_eligible:"+class, bytes))
+		}
+	}
+	for class, bytes := range opt.ClassBytesPruned {
+		if bytes > 0 {
+			attrs = append(attrs, slog.Int("class_bytes_pruned:"+class, bytes))
+		}
+	}
+	if stream.UpstreamErr != "" {
+		attrs = append(attrs, slog.String("upstream_err", stream.UpstreamErr))
 	}
 	if stream.UpstreamErrorCode != "" {
 		attrs = append(attrs, slog.String("upstream_error_code", stream.UpstreamErrorCode))
@@ -1095,9 +1140,3 @@ func estimateTokens(chars int) int {
 	return (chars + 3) / 4
 }
 
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}

@@ -15,6 +15,7 @@ import (
 	"github.com/Revanth14/indexqube/gateway/internal/domain"
 	"github.com/Revanth14/indexqube/gateway/internal/memory"
 	"github.com/Revanth14/indexqube/gateway/internal/telemetry"
+	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 )
 
 // Governor is the upstream contract the proxy depends on.
@@ -37,6 +38,31 @@ type Proxy struct {
 	claudeCooldowns *providerCooldowns
 }
 
+// BedrockConfig routes /v1/messages to AWS Bedrock instead of Anthropic's API.
+// When Enabled is true the gateway signs requests with SigV4 and maps Claude
+// model names to their Bedrock equivalents.
+type BedrockConfig struct {
+	Enabled       bool
+	Region        string
+	ModelPrefix   string // "us." for cross-region inference, "" for single-region
+	ModelOverride string // force a specific Bedrock model ID for all requests
+	Client        *bedrockruntime.Client
+	Models        []ModelEntry // populated at startup from ListFoundationModels
+}
+
+// OptimizerConfig tunes the class-aware block optimizer. Zero values enable
+// safe defaults via claudeDefaults().
+type OptimizerConfig struct {
+	MinSpanBytes            int  // minimum span size to consider for pruning (default 512)
+	TargetChunkBytes        int  // target chunk size for future long-block strategy (default 2048)
+	MaxChunkBytes           int  // maximum chunk size (default 8192)
+	MinSavedTokens          int  // skip rewrite if savings below this threshold (default 10)
+	EnableToolResultPruning bool // prune old tool_result spans (default true via claudeDefaults)
+	EnableAssistantPruning  bool // prune old assistant text spans (default false)
+	EnableSystemPruning     bool // prune system text spans (default true via claudeDefaults)
+	Diagnostics             bool // emit verbose per-class diagnostics in logs
+}
+
 type ClaudeMessagesConfig struct {
 	Mode                 string
 	DevToken             string
@@ -45,6 +71,8 @@ type ClaudeMessagesConfig struct {
 	AnthropicVersion     string
 	EnableLogPruner      bool
 	EnableBlockOptimizer bool
+	Optimizer            OptimizerConfig
+	Bedrock              BedrockConfig
 	SessionStore         *memory.Store
 	HTTPClient           *http.Client
 	RateLimitCooldown    time.Duration
