@@ -75,6 +75,30 @@ jq -R -s '
           then ((map(.blocks_known // 0) | add // 0) / (map(.blocks_seen // 0) | add // 0))
           else 0 end
         )
+      },
+      optimizer_quality: {
+        bytes_eligible: (map(.bytes_eligible // 0) | add // 0),
+        bytes_pruned: (map(.bytes_pruned // 0) | add // 0),
+        prune_ratio: (
+          if (map(.bytes_eligible // 0) | add // 0) > 0
+          then ((map(.bytes_pruned // 0) | add // 0) / (map(.bytes_eligible // 0) | add // 0))
+          else 0 end
+        ),
+        preserved_latest_turn_bytes: (map(.preserved_latest_turn_bytes // 0) | add // 0),
+        preserved_latest_turn_count: (map(.preserved_latest_turn_count // 0) | add // 0),
+        preserved_small_count: (map(.preserved_small_count // 0) | add // 0),
+        preserved_system_count: (map(.preserved_system_count // 0) | add // 0),
+        preserved_tool_use_count: (map(.preserved_tool_use_count // 0) | add // 0),
+        largest_span_bytes: (map(.largest_span_bytes // 0) | max // 0),
+        largest_pruned_bytes: (map(.largest_pruned_bytes // 0) | max // 0),
+        class_bytes_pruned: (
+          map(to_entries | map(select(.key | startswith("class_bytes_pruned:")))
+          | map({key: (.key | ltrimstr("class_bytes_pruned:")), value: .value}))
+          | add // []
+          | group_by(.key)
+          | map({key: .[0].key, value: (map(.value) | add // 0)})
+          | from_entries
+        )
       }
     }
 ' "$@"
