@@ -24,6 +24,8 @@ import (
 	"github.com/Revanth14/indexqube/gateway/internal/proxy"
 	"github.com/Revanth14/indexqube/gateway/internal/storage/supabase"
 	"github.com/Revanth14/indexqube/gateway/internal/telemetry"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
@@ -151,8 +153,41 @@ func main() {
 		)
 	}
 
-	gov := governor.New(govOpts...)
+	gov, err := governor.New(govOpts...)
+	if err != nil {
+		logger.Error("governor init failed", slog.Any("err", err))
+		os.Exit(1)
+	}
 	claudeStore := memory.NewStore(cfg.ClaudeCode.SessionTTL)
+
+	// Build the Bedrock client once at startup if the Bedrock backend is
+	// enabled. Credentials come from the standard AWS SDK credential chain
+	// (env vars → ~/.aws/credentials → IAM instance profile).
+	var bedrockClient *bedrockruntime.Client
+	var bedrockModels []proxy.ModelEntry
+	if cfg.ClaudeCode.BedrockEnabled {
+		awsCfg, err := awsconfig.LoadDefaultConfig(context.Background(),
+			awsconfig.WithRegion(cfg.ClaudeCode.BedrockRegion),
+		)
+		if err != nil {
+			logger.Error("failed to load AWS config for Bedrock", slog.Any("err", err))
+			os.Exit(1)
+		}
+		bedrockClient = bedrockruntime.NewFromConfig(awsCfg)
+		bedrockCfg := proxy.BedrockConfig{
+			Enabled:     cfg.ClaudeCode.BedrockEnabled,
+			Region:      cfg.ClaudeCode.BedrockRegion,
+			ModelPrefix: cfg.ClaudeCode.BedrockModelPrefix,
+			Client:      bedrockClient,
+		}
+		bedrockModels = proxy.FetchBedrockModels(context.Background(), bedrockCfg, logger)
+		logger.Info("bedrock backend enabled",
+			slog.String("region", cfg.ClaudeCode.BedrockRegion),
+			slog.String("model_prefix", cfg.ClaudeCode.BedrockModelPrefix),
+			slog.Int("models_available", len(bedrockModels)),
+		)
+	}
+
 	p := proxy.New(gov,
 		proxy.WithLogger(logger),
 		proxy.WithMaxRequestSize(cfg.Governor.MaxRequestSize),
@@ -166,9 +201,27 @@ func main() {
 			AnthropicVersion:     cfg.ClaudeCode.AnthropicVersion,
 			EnableLogPruner:      cfg.ClaudeCode.EnableLogPruner,
 			EnableBlockOptimizer: cfg.ClaudeCode.EnableBlockOptimizer,
-			SessionStore:         claudeStore,
-			HTTPClient:           upstreamClient,
-			RateLimitCooldown:    cfg.ClaudeCode.RateLimitCooldown,
+			Optimizer: proxy.OptimizerConfig{
+				MinSpanBytes:            cfg.ClaudeCode.OptMinSpanBytes,
+				TargetChunkBytes:        cfg.ClaudeCode.OptTargetChunkBytes,
+				MaxChunkBytes:           cfg.ClaudeCode.OptMaxChunkBytes,
+				MinSavedTokens:          cfg.ClaudeCode.OptMinSavedTokens,
+				EnableToolResultPruning: cfg.ClaudeCode.OptEnableToolResultPruning,
+				EnableAssistantPruning:  cfg.ClaudeCode.OptEnableAssistantPruning,
+				EnableSystemPruning:     cfg.ClaudeCode.OptEnableSystemPruning,
+				Diagnostics:             cfg.ClaudeCode.OptDiagnostics,
+			},
+			Bedrock: proxy.BedrockConfig{
+				Enabled:       cfg.ClaudeCode.BedrockEnabled,
+				Region:        cfg.ClaudeCode.BedrockRegion,
+				ModelPrefix:   cfg.ClaudeCode.BedrockModelPrefix,
+				ModelOverride: cfg.ClaudeCode.BedrockModelOverride,
+				Client:        bedrockClient,
+				Models:        bedrockModels,
+			},
+			SessionStore:      claudeStore,
+			HTTPClient:        upstreamClient,
+			RateLimitCooldown: cfg.ClaudeCode.RateLimitCooldown,
 		}),
 	)
 
