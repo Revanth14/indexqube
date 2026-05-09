@@ -60,6 +60,18 @@ func NewStore(ttl time.Duration) *Store {
 	}
 }
 
+func (s *Store) Get(sessionKey, hash string) (BlockMeta, bool) {
+	if sessionKey == "" || hash == "" {
+		return BlockMeta{}, false
+	}
+	now := time.Now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	session := s.getOrCreateLocked(sessionKey, now)
+	meta, ok := session.Blocks[hash]
+	return meta, ok
+}
+
 func (s *Store) Seen(sessionKey, hash string) bool {
 	if sessionKey == "" || hash == "" {
 		return false

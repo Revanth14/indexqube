@@ -4,6 +4,7 @@ package receipt
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"math"
@@ -86,11 +87,14 @@ type Totals struct {
 // Run replays samples through the real browser text normalization and governor
 // pruning stack.
 func Run(ctx context.Context, samples []Sample, opts Options) (Report, error) {
-	gov := governor.New(
+	gov, err := governor.New(
 		governor.WithHistory(governor.NewMemoryHistory()),
 		governor.WithPruning(true, opts.MaxLines),
 		governor.WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))),
 	)
+	if err != nil {
+		return Report{}, fmt.Errorf("receipt: governor init: %w", err)
+	}
 
 	var report Report
 	for _, sample := range samples {
