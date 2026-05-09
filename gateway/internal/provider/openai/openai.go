@@ -189,31 +189,64 @@ func isErrorChunk(payload []byte) bool {
 }
 
 // parseUpstreamErrorChunk extracts a structured error from an OpenAI
-// error frame. If parsing fails, the raw payload becomes the error message.
+// error frame and returns a *domain.ProviderError.
+// If parsing fails, the raw payload becomes the error message.
+// The status code is unknown for SSE-embedded errors so we use 0.
 func parseUpstreamErrorChunk(payload []byte) error {
 	var ev struct {
 		Error struct {
 			Message string `json:"message"`
 			Type    string `json:"type"`
-			Code    string `json:"code"`
+			Code    any    `json:"code"` // can be string or int
 		} `json:"error"`
 	}
-	if err := json.Unmarshal(payload, &ev); err != nil || ev.Error.Message == "" {
-		return fmt.Errorf("openai stream error: %s", bytes.TrimSpace(payload))
+	msg := "stream error"
+	if err := json.Unmarshal(payload, &ev); err == nil && ev.Error.Message != "" {
+		msg = sanitiseProviderMessage(ev.Error.Message)
 	}
-	if ev.Error.Type != "" {
-		return fmt.Errorf("openai stream error: %s: %s", ev.Error.Type, ev.Error.Message)
+	return &domain.ProviderError{
+		Provider:   domain.ProviderOpenAI,
+		StatusCode: 0, // unknown: embedded in SSE stream
+		Message:    msg,
+		Cause:      fmt.Errorf("raw chunk: %s", bytes.TrimSpace(payload)),
 	}
-	return fmt.Errorf("openai stream error: %s", ev.Error.Message)
 }
 
 // readUpstreamError consumes the upstream error body from a non-200
-// response and wraps it as a concise error suitable for emission to
-// the client through the proxy's SSE error frame.
+// response and returns a *domain.ProviderError with the HTTP status code
+// so the governor can make failover decisions without string matching.
 func readUpstreamError(resp *http.Response) error {
 	const limit = 64 << 10 // never read more than 64 KiB of error body
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, limit))
-	return fmt.Errorf("openai api error: status=%d body=%s", resp.StatusCode, bytes.TrimSpace(body))
+
+	// Try to extract message from OpenAI error envelope.
+	// Shape: {"error":{"message":"...","type":"...","code":"..."}}
+	var envelope struct {
+		Error struct {
+			Message string `json:"message"`
+			Type    string `json:"type"`
+		} `json:"error"`
+	}
+	msg := "upstream error"
+	if err := json.Unmarshal(body, &envelope); err == nil && envelope.Error.Message != "" {
+		msg = sanitiseProviderMessage(envelope.Error.Message)
+	}
+
+	return &domain.ProviderError{
+		Provider:   domain.ProviderOpenAI,
+		StatusCode: resp.StatusCode,
+		Message:    msg,
+		Cause:      fmt.Errorf("raw body: %s", bytes.TrimSpace(body)),
+	}
+}
+
+// sanitiseProviderMessage trims account-specific or billing detail from a
+// provider error message before it is returned to the caller.
+func sanitiseProviderMessage(msg string) string {
+	if len(msg) > 200 {
+		msg = msg[:200]
+	}
+	return msg
 }
 
 // buildRequest serializes the canonical InferenceRequest into OpenAI's

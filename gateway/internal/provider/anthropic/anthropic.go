@@ -144,13 +144,44 @@ func (a *Adapter) Dispatch(ctx context.Context, req *domain.InferenceRequest, tw
 	return streamSSE(ctx, resp.Body, tr)
 }
 
-// readUpstreamError consumes the upstream error body and wraps it as a
-// concise error suitable for emission to the client through the proxy's
-// SSE error frame.
+// readUpstreamError parses the Anthropic error response body and returns a
+// *domain.ProviderError with a sanitised message safe to surface to callers.
+// The raw body is preserved in Cause for internal logging.
 func readUpstreamError(resp *http.Response) error {
 	const limit = 64 << 10 // never read more than 64 KiB of error body
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, limit))
-	return fmt.Errorf("anthropic api error: status=%d body=%s", resp.StatusCode, bytes.TrimSpace(body))
+
+	// Try to extract the structured message from Anthropic's error envelope.
+	// Shape: {"type":"error","error":{"type":"rate_limit_error","message":"..."}}
+	var envelope struct {
+		Error struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+
+	msg := "upstream error"
+	if err := json.Unmarshal(body, &envelope); err == nil && envelope.Error.Message != "" {
+		// Sanitise: drop anything after the first newline and any content that
+		// looks like account-specific detail (credit balance, org names, etc.).
+		msg = sanitiseProviderMessage(envelope.Error.Message)
+	}
+
+	return &domain.ProviderError{
+		Provider:   domain.ProviderAnthropic,
+		StatusCode: resp.StatusCode,
+		Message:    msg,
+		Cause:      fmt.Errorf("raw body: %s", bytes.TrimSpace(body)),
+	}
+}
+
+// sanitiseProviderMessage strips account-specific or billing detail from a
+// provider error message before it is returned to the caller.
+func sanitiseProviderMessage(msg string) string {
+	if len(msg) > 200 {
+		msg = msg[:200]
+	}
+	return msg
 }
 
 // newChunkID returns an OpenAI-compatible chat completion chunk ID.
