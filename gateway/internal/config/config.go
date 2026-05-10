@@ -142,7 +142,9 @@ type AzureConfig struct {
 }
 
 type SupabaseConfig struct {
-	DBURL string
+	DBURL      string
+	URL        string // REST API base URL (e.g. https://xyz.supabase.co) for telemetry
+	ServiceKey string // service role key for telemetry inserts
 }
 
 // Load reads environment variables, applies defaults, and validates required fields.
@@ -235,7 +237,9 @@ func Load() (*AppConfig, error) {
 			APIKey:   os.Getenv("AZURE_OPENAI_API_KEY"),
 		},
 		Supabase: SupabaseConfig{
-			DBURL: os.Getenv("SUPABASE_DB_URL"),
+			DBURL:      os.Getenv("SUPABASE_DB_URL"),
+			URL:        os.Getenv("SUPABASE_URL"),
+			ServiceKey: os.Getenv("SUPABASE_SERVICE_ROLE_KEY"),
 		},
 	}
 
