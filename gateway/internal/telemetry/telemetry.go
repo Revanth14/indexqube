@@ -101,7 +101,9 @@ func (p *Provider) Shutdown(ctx context.Context) error {
 
 func buildLogger(cfg config.TelemetryConfig) *slog.Logger {
 	level := parseLogLevel(cfg.LogLevel)
-	base := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+	// Logs go to stderr so they never corrupt stdout when the gateway is
+	// embedded inside the iq wrapper (where Claude Code owns stdout).
+	base := slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
 		Level: level,
 	})
 	logger := slog.New(&tracingHandler{inner: base})
