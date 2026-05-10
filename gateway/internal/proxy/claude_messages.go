@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -14,11 +13,13 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"runtime"
 	"strings"
 	"time"
 
 	"github.com/Revanth14/indexqube/gateway/internal/memory"
 	"github.com/Revanth14/indexqube/gateway/internal/middleware"
+	"github.com/Revanth14/indexqube/gateway/internal/telemetry"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	brtypes "github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
@@ -218,6 +219,23 @@ func (p *Proxy) handleClaudeMessages(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	p.logClaudeRequestComplete(r.Context(), requestID, cfg.Mode, meta.Model, sessionKey, len(body), optStats, streamStats, duration)
+	if p.usageTracker != nil {
+		p.usageTracker.Track(telemetry.UsageEvent{
+			MachineID:            telemetry.GetMachineID(),
+			OsArch:               runtime.GOOS + "/" + runtime.GOARCH,
+			IqVersion:            Version,
+			CliAgent:             r.Header.Get("User-Agent"),
+			ModelTarget:          meta.Model,
+			InputTokensAttempted: optStats.EstimatedTokensBefore,
+			InputTokensSent:      optStats.EstimatedTokensAfter,
+			TokensSaved:          optStats.EstimatedTokensSaved,
+			ReductionRatio:       optStats.ReductionRatio * 100,
+			BlocksAnalyzed:       optStats.BlocksSeen,
+			BlocksPruned:         optStats.BlocksPruned,
+			TotalLatencyMs:       int(duration.Milliseconds()),
+			UpstreamStatus:       streamStats.StatusCode,
+		})
+	}
 }
 
 func (p *Proxy) handleClaudeCountTokens(w http.ResponseWriter, r *http.Request) {
@@ -309,9 +327,8 @@ func (c ClaudeMessagesConfig) validate() error {
 	if c.DevToken == "" {
 		return fmt.Errorf("INDEXQUBE_DEV_TOKEN is required for /v1/messages")
 	}
-	if !c.Bedrock.Enabled && c.AnthropicAPIKey == "" {
-		return fmt.Errorf("ANTHROPIC_API_KEY is required for /v1/messages (or set INDEXQUBE_BEDROCK_ENABLED=true)")
-	}
+	// AnthropicAPIKey may be empty in passthrough mode: the user's Bearer token
+	// (OAuth session) is forwarded to Anthropic unchanged. Bedrock ignores it entirely.
 	switch c.Mode {
 	case "observe", "dry_run", "optimize":
 		return nil
@@ -792,7 +809,12 @@ func (p *Proxy) forwardClaudeMessages(w http.ResponseWriter, r *http.Request, cf
 		return claudeStreamStats{Status: "error", StatusCode: http.StatusInternalServerError, UpstreamErr: err.Error()}
 	}
 	copyAnthropicHeaders(upReq.Header, r.Header)
-	upReq.Header.Set("x-api-key", cfg.AnthropicAPIKey)
+	if cfg.AnthropicAPIKey != "" {
+		upReq.Header.Set("x-api-key", cfg.AnthropicAPIKey)
+	} else if auth := r.Header.Get("Authorization"); auth != "" {
+		// Passthrough mode: user's OAuth Bearer token flows through unchanged.
+		upReq.Header.Set("Authorization", auth)
+	}
 	upReq.Header.Set("anthropic-version", cfg.AnthropicVersion)
 	upReq.Header.Set("content-type", "application/json")
 	upReq.Header.Set("accept", "text/event-stream")

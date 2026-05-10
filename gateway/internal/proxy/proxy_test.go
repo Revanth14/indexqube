@@ -474,19 +474,19 @@ func TestClaudeMessages_AnthropicPassthroughStreaming(t *testing.T) {
 	}
 }
 
-func TestClaudeMessages_InvalidDevToken(t *testing.T) {
+func TestClaudeMessages_MissingAuth(t *testing.T) {
 	t.Parallel()
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Fatal("upstream should not be called")
+		t.Fatal("upstream should not be called when no auth header is present")
 	}))
 	t.Cleanup(upstream.Close)
 	srv := newClaudeTestServer(t, upstream.URL, memory.NewStore(time.Hour), "observe", false)
 
+	// No Authorization header — gateway must reject with 401.
 	req, err := http.NewRequest(http.MethodPost, srv.URL+"/v1/messages", strings.NewReader(`{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hi"}]}`))
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
-	req.Header.Set("Authorization", "Bearer wrong")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("POST /v1/messages: %v", err)

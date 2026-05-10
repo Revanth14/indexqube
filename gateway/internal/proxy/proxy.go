@@ -26,6 +26,9 @@ type Governor interface {
 	Ready(ctx context.Context) error
 }
 
+// Version is stamped at build time via -ldflags "-X .../proxy.Version=v0.1.0".
+var Version = "dev"
+
 // Proxy is the HTTP-facing component. Construct via New.
 type Proxy struct {
 	governor        Governor
@@ -36,6 +39,7 @@ type Proxy struct {
 	metrics         *telemetry.Metrics
 	claude          ClaudeMessagesConfig
 	claudeCooldowns *providerCooldowns
+	usageTracker    *telemetry.SupabaseClient
 }
 
 // BedrockConfig routes /v1/messages to AWS Bedrock instead of Anthropic's API.
@@ -121,6 +125,14 @@ func WithOptimizeTimeout(d time.Duration) Option {
 func WithClaudeMessages(cfg ClaudeMessagesConfig) Option {
 	return func(p *Proxy) {
 		p.claude = cfg
+	}
+}
+
+// WithUsageTracker wires a Supabase telemetry client for per-request stats.
+// Nil disables telemetry silently.
+func WithUsageTracker(c *telemetry.SupabaseClient) Option {
+	return func(p *Proxy) {
+		p.usageTracker = c
 	}
 }
 
