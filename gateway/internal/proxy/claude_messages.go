@@ -716,7 +716,7 @@ func (p *Proxy) forwardClaudeMessagesViaBedrock(w http.ResponseWriter, r *http.R
 		errPayload := fmt.Sprintf(`{"type":"error","error":{"type":"stream_error","message":%q}}`, err.Error())
 		_, _ = io.WriteString(w, "event: error\ndata: "+errPayload+"\n\n")
 		_ = rc.Flush()
-		stats.Status = "error"
+		stats.Status = "stream_error" // HTTP 200 already sent; stream terminated abnormally
 		stats.UpstreamErr = err.Error()
 		return stats
 	}
@@ -989,7 +989,7 @@ func proxyAnthropicStream(w http.ResponseWriter, r *http.Request, resp *http.Res
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		stats.Status = "error"
+		stats.Status = "stream_error" // HTTP 200 already sent; stream terminated abnormally
 		stats.UpstreamErr = err.Error()
 		return stats
 	}
@@ -1027,7 +1027,7 @@ func anthropicUsageOutputTokens(payload string) int {
 
 func (p *Proxy) logClaudeRequestComplete(ctx context.Context, requestID, mode, model, sessionKey string, bytesBefore int, opt claudeOptimizerStats, stream claudeStreamStats, dur time.Duration) {
 	level := slog.LevelInfo
-	if stream.Status == "error" {
+	if stream.Status == "error" || stream.Status == "stream_error" {
 		level = slog.LevelError
 	} else if stream.Cancelled {
 		level = slog.LevelWarn

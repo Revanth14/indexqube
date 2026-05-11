@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 )
 
@@ -28,23 +29,43 @@ func GetMachineID() string {
 }
 
 func loadOrCreateMachineID() string {
-	dir := filepath.Join(os.Getenv("HOME"), ".indexqube")
+	homeDir, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(homeDir) == "" {
+		return generateEphemeralMachineID()
+	}
+
+	dir := filepath.Join(homeDir, ".indexqube")
 	path := filepath.Join(dir, "telemetry.json")
 
 	if data, err := os.ReadFile(path); err == nil {
 		var f machineIDFile
-		if json.Unmarshal(data, &f) == nil && f.ID != "" {
+		if json.Unmarshal(data, &f) == nil && strings.TrimSpace(f.ID) != "" {
 			return f.ID
 		}
 	}
 
-	b := make([]byte, 16)
-	rand.Read(b) //nolint:errcheck
-	id := hex.EncodeToString(b)
+	id := generateEphemeralMachineID()
 
-	os.MkdirAll(dir, 0700)  //nolint:errcheck
-	data, _ := json.Marshal(machineIDFile{ID: id})
-	os.WriteFile(path, data, 0600) //nolint:errcheck
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return id
+	}
+
+	data, err := json.Marshal(machineIDFile{ID: id})
+	if err != nil {
+		return id
+	}
+
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		return id
+	}
 
 	return id
+}
+
+func generateEphemeralMachineID() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "unknown"
+	}
+	return hex.EncodeToString(b)
 }

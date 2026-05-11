@@ -42,3 +42,4 @@ tmp/
 build/
 
 commands.txt
+gateway/.claude/

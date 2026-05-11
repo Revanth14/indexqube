@@ -144,9 +144,14 @@ func Run(ctx context.Context) error {
 		)
 	}
 
-	// Optional Supabase usage telemetry (separate from the cache connection).
-	var usageTracker *telemetry.SupabaseClient
-	if cfg.Supabase.URL != "" && cfg.Supabase.ServiceKey != "" {
+	// Optional usage telemetry. Prefer GatewayClient (relay) when
+	// IQ_TELEMETRY_ENDPOINT is set; fall back to direct Supabase writes when
+	// SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY are present (server deployments only).
+	var usageTracker telemetry.Sink
+	if endpoint := os.Getenv("IQ_TELEMETRY_ENDPOINT"); endpoint != "" {
+		usageTracker = telemetry.NewGatewayClient(endpoint)
+		logger.Info("gateway relay telemetry enabled", slog.String("endpoint", endpoint))
+	} else if cfg.Supabase.URL != "" && cfg.Supabase.ServiceKey != "" {
 		usageTracker = telemetry.NewSupabaseClient(cfg.Supabase.URL, cfg.Supabase.ServiceKey)
 		logger.Info("supabase usage telemetry enabled")
 	}

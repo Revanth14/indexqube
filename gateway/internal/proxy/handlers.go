@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/Revanth14/indexqube/gateway/internal/domain"
+	"github.com/Revanth14/indexqube/gateway/internal/telemetry"
 )
 
 const defaultRawContextPath = "indexqube/raw_context.txt"
@@ -571,4 +572,29 @@ func (p *Proxy) writeError(w http.ResponseWriter, r *http.Request, payload error
 	if err := json.NewEncoder(w).Encode(errorEnvelope{Error: payload}); err != nil {
 		p.logger.ErrorContext(r.Context(), "failed to encode error response", slog.Any("err", err))
 	}
+}
+
+// handleTelemetry accepts a UsageEvent from the iq binary and forwards it to
+// the configured telemetry sink (Supabase). This keeps Supabase credentials
+// server-side only — the distributed iq binary never sees them.
+func (p *Proxy) handleTelemetry(w http.ResponseWriter, r *http.Request) {
+	if p.usageTracker == nil {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<16) // 64 KiB max
+	var event telemetry.UsageEvent
+	if err := json.NewDecoder(r.Body).Decode(&event); err != nil {
+		p.writeError(w, r, errorPayload{
+			HTTPStatus: http.StatusBadRequest,
+			Type:       "invalid_request_error",
+			Code:       "invalid_body",
+			Message:    "could not decode telemetry event",
+		})
+		return
+	}
+
+	p.usageTracker.Track(event)
+	w.WriteHeader(http.StatusNoContent)
 }

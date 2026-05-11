@@ -39,7 +39,7 @@ type Proxy struct {
 	metrics         *telemetry.Metrics
 	claude          ClaudeMessagesConfig
 	claudeCooldowns *providerCooldowns
-	usageTracker    *telemetry.SupabaseClient
+	usageTracker    telemetry.Sink
 }
 
 // BedrockConfig routes /v1/messages to AWS Bedrock instead of Anthropic's API.
@@ -128,9 +128,9 @@ func WithClaudeMessages(cfg ClaudeMessagesConfig) Option {
 	}
 }
 
-// WithUsageTracker wires a Supabase telemetry client for per-request stats.
+// WithUsageTracker wires a telemetry sink for per-request stats.
 // Nil disables telemetry silently.
-func WithUsageTracker(c *telemetry.SupabaseClient) Option {
+func WithUsageTracker(c telemetry.Sink) Option {
 	return func(p *Proxy) {
 		p.usageTracker = c
 	}
@@ -171,6 +171,9 @@ func (p *Proxy) Mux() *http.ServeMux {
 
 func (p *Proxy) registerRoutes() {
 	p.mux.HandleFunc("GET /healthz", p.handleHealth)
+	p.mux.HandleFunc("HEAD /healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
 	p.mux.HandleFunc("GET /readyz", p.handleReady)
 	p.mux.HandleFunc("GET /v1/diagnostics", p.handleDiagnostics)
 	p.mux.HandleFunc("GET /v1/models", p.handleModels)
@@ -178,4 +181,5 @@ func (p *Proxy) registerRoutes() {
 	p.mux.HandleFunc("POST /v1/messages", p.handleClaudeMessages)
 	p.mux.HandleFunc("POST /v1/chat/completions", p.handleChatCompletions)
 	p.mux.HandleFunc("POST /v1/optimize", p.handleOptimize)
+	p.mux.HandleFunc("POST /v1/telemetry", p.handleTelemetry)
 }

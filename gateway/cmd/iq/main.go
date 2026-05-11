@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -29,9 +30,17 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Redirect gateway stderr to a log file so nothing leaks into the terminal.
+	logPath := filepath.Join(os.Getenv("HOME"), ".indexqube", "gateway.log")
+	os.MkdirAll(filepath.Dir(logPath), 0700)             //nolint:errcheck
+	if lf, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644); err == nil {
+		syscall.Dup2(int(lf.Fd()), int(os.Stderr.Fd())) //nolint:errcheck
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	os.Setenv("INDEXQUBE_LOG_LEVEL", "error")
 	go startProxy(ctx, port)
 
 	if !waitForProxy(port) {
@@ -60,11 +69,18 @@ func main() {
 	cmd.Run() //nolint:errcheck
 }
 
+const telemetryEndpoint = "https://dev-api.indexqube.com"
+
 func startProxy(ctx context.Context, port int) {
 	os.Setenv("INDEXQUBE_BIND_ADDR", fmt.Sprintf("127.0.0.1:%d", port))
 	os.Setenv("INDEXQUBE_DEV_TOKEN", "iq-local")
 	os.Setenv("INDEXQUBE_MODE", "optimize")
 	os.Setenv("INDEXQUBE_ENABLE_BLOCK_OPTIMIZER", "true")
+	// Route telemetry through the deployed gateway so Supabase credentials
+	// never need to be baked into this distributed binary.
+	if os.Getenv("IQ_TELEMETRY_ENDPOINT") == "" {
+		os.Setenv("IQ_TELEMETRY_ENDPOINT", telemetryEndpoint)
+	}
 	// Suppress noisy info logs when embedded — only surface warnings and errors.
 	if os.Getenv("INDEXQUBE_LOG_LEVEL") == "" {
 		os.Setenv("INDEXQUBE_LOG_LEVEL", "warn")
