@@ -39,6 +39,17 @@ const (
 // Run starts the gateway, reading all config from the environment, and blocks
 // until ctx is cancelled or a fatal startup error occurs.
 func Run(ctx context.Context) error {
+	return run(ctx, nil)
+}
+
+// RunWithPublicListener starts the gateway with an already-bound public
+// listener. This is useful for callers that need to reserve an ephemeral port
+// before startup.
+func RunWithPublicListener(ctx context.Context, publicListener net.Listener) error {
+	return run(ctx, publicListener)
+}
+
+func run(ctx context.Context, publicListener net.Listener) error {
 	bootLogger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 
 	cfg, err := config.Load()
@@ -199,8 +210,19 @@ func Run(ctx context.Context) error {
 
 	serverErr := make(chan error, 2)
 	go func() {
-		logger.Info("public server listening", slog.String("addr", publicServer.Addr))
-		if err := publicServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		listenAddr := publicServer.Addr
+		if publicListener != nil {
+			listenAddr = publicListener.Addr().String()
+		}
+		logger.Info("public server listening", slog.String("addr", listenAddr))
+
+		var err error
+		if publicListener != nil {
+			err = publicServer.Serve(publicListener)
+		} else {
+			err = publicServer.ListenAndServe()
+		}
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			serverErr <- fmt.Errorf("public server: %w", err)
 		}
 	}()

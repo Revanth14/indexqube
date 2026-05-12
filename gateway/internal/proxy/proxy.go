@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Revanth14/indexqube/gateway/internal/domain"
+	"github.com/Revanth14/indexqube/gateway/internal/guard"
 	"github.com/Revanth14/indexqube/gateway/internal/memory"
 	"github.com/Revanth14/indexqube/gateway/internal/telemetry"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
@@ -40,6 +41,7 @@ type Proxy struct {
 	claude          ClaudeMessagesConfig
 	claudeCooldowns *providerCooldowns
 	usageTracker    telemetry.Sink
+	guardManager    *guard.Manager
 }
 
 // BedrockConfig routes /v1/messages to AWS Bedrock instead of Anthropic's API.
@@ -149,6 +151,7 @@ func New(gov Governor, opts ...Option) *Proxy {
 		maxRequestSize:  8 << 20, // default 8 MiB
 		optimizeTimeout: 30 * time.Second,
 		claudeCooldowns: newProviderCooldowns(),
+		guardManager:    guard.NewManager(guard.FromEnv()),
 	}
 	for _, opt := range opts {
 		opt(p)

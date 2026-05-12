@@ -14,9 +14,11 @@ import (
 	"net/http"
 	"net/url"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/Revanth14/indexqube/gateway/internal/guard"
 	"github.com/Revanth14/indexqube/gateway/internal/memory"
 	"github.com/Revanth14/indexqube/gateway/internal/middleware"
 	"github.com/Revanth14/indexqube/gateway/internal/telemetry"
@@ -39,6 +41,14 @@ type anthropicMessagesRequest struct {
 type anthropicMessage struct {
 	Role    string          `json:"role"`
 	Content json.RawMessage `json:"content"`
+}
+
+type claudeRequestShape struct {
+	MessageCount      int
+	ContentBlockCount int
+	ToolResultCount   int
+	LatestUserText    string
+	SystemText        string
 }
 
 // claudeOptimizerStats holds per-request accounting populated by prepareClaudeBody.
@@ -196,10 +206,65 @@ func (p *Proxy) handleClaudeMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	forwardBody, meta, optStats, err := p.prepareClaudeBody(r.Context(), cfg, sessionKey, body)
+	forwardBody, meta, optStats, shape, err := p.prepareClaudeBody(r.Context(), cfg, sessionKey, body)
 	if err != nil {
 		p.writeError(w, r, errorPayload{HTTPStatus: http.StatusBadRequest, Type: "invalid_request_error", Code: "invalid_anthropic_request", Message: err.Error()})
 		return
+	}
+
+	guardDecision := guard.Decision{Allow: true, Reason: "disabled"}
+	if p.guardManager != nil {
+		fingerprint := guard.BuildFingerprint(guard.FingerprintInput{
+			Route:             r.URL.Path,
+			Model:             meta.Model,
+			MessageCount:      shape.MessageCount,
+			ContentBlockCount: shape.ContentBlockCount,
+			ToolResultCount:   shape.ToolResultCount,
+			AttemptedTokens:   optStats.EstimatedTokensBefore,
+			BlocksAnalyzed:    optStats.BlocksSeen,
+			BlocksPruned:      optStats.BlocksPruned,
+			LatestUserText:    shape.LatestUserText,
+			SystemText:        shape.SystemText,
+		})
+		guardDecision = p.guardManager.Check(guard.RequestSignal{
+			MachineID:        telemetry.GetMachineID(),
+			SessionKey:       sessionKey,
+			Route:            r.URL.Path,
+			Model:            meta.Model,
+			Fingerprint:      fingerprint,
+			AttemptedTokens:  optStats.EstimatedTokensBefore,
+			SentTokens:       optStats.EstimatedTokensAfter,
+			TokensSaved:      optStats.EstimatedTokensSaved,
+			ReductionPct:     optStats.ReductionRatio * 100,
+			BlocksAnalyzed:   optStats.BlocksSeen,
+			BlocksPruned:     optStats.BlocksPruned,
+			Now:              time.Now(),
+			EstimatedCostUSD: telemetry.EstimateCost(cfg.Mode, meta.Model, optStats.EstimatedTokensBefore),
+		})
+		if !guardDecision.Allow {
+			p.writeGuardResponse(w, r, guardDecision)
+			duration := time.Since(started)
+			if cfg.SessionStore != nil {
+				cfg.SessionStore.RecordUsage(sessionKey, memory.UsageTotals{
+					Requests: 1,
+					TokensIn: estimateTokens(len(body)),
+					BytesIn:  len(body),
+				})
+			}
+			streamStats := claudeStreamStats{
+				Status:            "error",
+				StatusCode:        http.StatusTooManyRequests,
+				UpstreamErrorCode: "indexqube_guard_blocked",
+				RetryAfter:        guardDecision.RetryAfter,
+			}
+			p.logClaudeRequestComplete(r.Context(), requestID, cfg.Mode, meta.Model, sessionKey, len(body), optStats, streamStats, duration)
+			p.emitClaudeUsageEvent(r, meta.Model, optStats, duration, 0, guardDecision)
+			return
+		}
+		if guardDecision.Warn {
+			w.Header().Set("X-IndexQube-Guard-Warning", guardDecision.Reason)
+			w.Header().Set("X-IndexQube-Guard-Remaining", strconv.Itoa(guardDecision.Remaining))
+		}
 	}
 
 	streamStats := p.forwardClaudeMessages(w, r, cfg, forwardBody)
@@ -219,23 +284,7 @@ func (p *Proxy) handleClaudeMessages(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	p.logClaudeRequestComplete(r.Context(), requestID, cfg.Mode, meta.Model, sessionKey, len(body), optStats, streamStats, duration)
-	if p.usageTracker != nil {
-		p.usageTracker.Track(telemetry.UsageEvent{
-			MachineID:            telemetry.GetMachineID(),
-			OsArch:               runtime.GOOS + "/" + runtime.GOARCH,
-			IqVersion:            Version,
-			CliAgent:             r.Header.Get("User-Agent"),
-			ModelTarget:          meta.Model,
-			InputTokensAttempted: optStats.EstimatedTokensBefore,
-			InputTokensSent:      optStats.EstimatedTokensAfter,
-			TokensSaved:          optStats.EstimatedTokensSaved,
-			ReductionRatio:       optStats.ReductionRatio * 100,
-			BlocksAnalyzed:       optStats.BlocksSeen,
-			BlocksPruned:         optStats.BlocksPruned,
-			TotalLatencyMs:       int(duration.Milliseconds()),
-			UpstreamStatus:       streamStats.StatusCode,
-		})
-	}
+	p.emitClaudeUsageEvent(r, meta.Model, optStats, duration, streamStats.StatusCode, guardDecision)
 }
 
 func (p *Proxy) handleClaudeCountTokens(w http.ResponseWriter, r *http.Request) {
@@ -338,9 +387,9 @@ func (c ClaudeMessagesConfig) validate() error {
 }
 
 func validClaudeDevToken(r *http.Request, want string) bool {
-        auth := strings.TrimSpace(r.Header.Get("Authorization"))
-        token := strings.TrimSpace(strings.TrimPrefix(auth, "Bearer "))
-        return token != ""
+	auth := strings.TrimSpace(r.Header.Get("Authorization"))
+	token := strings.TrimSpace(strings.TrimPrefix(auth, "Bearer "))
+	return token != ""
 }
 
 func claudeSessionKey(r *http.Request, fallback string) string {
@@ -356,17 +405,18 @@ func claudeSessionKey(r *http.Request, fallback string) string {
 	return hex.EncodeToString(sum[:8])
 }
 
-func (p *Proxy) prepareClaudeBody(ctx context.Context, cfg ClaudeMessagesConfig, sessionKey string, body []byte) ([]byte, anthropicMessagesRequest, claudeOptimizerStats, error) {
+func (p *Proxy) prepareClaudeBody(ctx context.Context, cfg ClaudeMessagesConfig, sessionKey string, body []byte) ([]byte, anthropicMessagesRequest, claudeOptimizerStats, claudeRequestShape, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, anthropicMessagesRequest{}, claudeOptimizerStats{}, err
+		return nil, anthropicMessagesRequest{}, claudeOptimizerStats{}, claudeRequestShape{}, err
 	}
 	var root map[string]any
 	if err := json.Unmarshal(body, &root); err != nil {
-		return nil, anthropicMessagesRequest{}, claudeOptimizerStats{}, fmt.Errorf("parse anthropic messages body: %w", err)
+		return nil, anthropicMessagesRequest{}, claudeOptimizerStats{}, claudeRequestShape{}, fmt.Errorf("parse anthropic messages body: %w", err)
 	}
 	req := anthropicMessagesRequest{}
 	req.Model, _ = root["model"].(string)
 	req.Stream, _ = root["stream"].(bool)
+	shape := extractClaudeRequestShape(root)
 	stats := claudeOptimizerStats{
 		BytesBefore:           len(body),
 		BytesAfter:            len(body),
@@ -374,7 +424,7 @@ func (p *Proxy) prepareClaudeBody(ctx context.Context, cfg ClaudeMessagesConfig,
 		EstimatedTokensAfter:  estimateTokens(len(body)),
 	}
 	if cfg.SessionStore == nil {
-		return body, req, stats, nil
+		return body, req, stats, shape, nil
 	}
 
 	minSpanBytes := cfg.Optimizer.MinSpanBytes
@@ -396,7 +446,7 @@ func (p *Proxy) prepareClaudeBody(ctx context.Context, cfg ClaudeMessagesConfig,
 				})
 			}
 		}
-		return body, req, stats, nil
+		return body, req, stats, shape, nil
 	}
 
 	// optimize / dry_run: full span accounting and class-aware pruning.
@@ -462,14 +512,14 @@ func (p *Proxy) prepareClaudeBody(ctx context.Context, cfg ClaudeMessagesConfig,
 	}
 
 	if len(prunableSpans) == 0 {
-		return body, req, stats, nil
+		return body, req, stats, shape, nil
 	}
 
 	// Rewrite on a fresh parse so the original stays intact for dry_run.
 	var rewriteRoot map[string]any
 	if err := json.Unmarshal(body, &rewriteRoot); err != nil {
 		p.logger.WarnContext(ctx, "claude optimize re-parse failed; forwarding original", slog.Any("err", err))
-		return body, req, stats, nil
+		return body, req, stats, shape, nil
 	}
 
 	pruneCount := 0
@@ -491,7 +541,7 @@ func (p *Proxy) prepareClaudeBody(ctx context.Context, cfg ClaudeMessagesConfig,
 	optimized, err := json.Marshal(rewriteRoot)
 	if err != nil {
 		p.logger.WarnContext(ctx, "claude optimize marshal failed; forwarding original", slog.Any("err", err))
-		return body, req, stats, nil
+		return body, req, stats, shape, nil
 	}
 
 	stats.BlocksPruned = pruneCount
@@ -503,10 +553,10 @@ func (p *Proxy) prepareClaudeBody(ctx context.Context, cfg ClaudeMessagesConfig,
 	}
 
 	if cfg.Mode == "optimize" {
-		return optimized, req, stats, nil
+		return optimized, req, stats, shape, nil
 	}
 	// dry_run: report accurate stats but forward the original body.
-	return body, req, stats, nil
+	return body, req, stats, shape, nil
 }
 
 // isEligibleSpanClass returns true if the span class is eligible for pruning
@@ -745,10 +795,10 @@ func bedrockClientFor(ctx context.Context, cfg BedrockConfig) (*bedrockruntime.C
 // (without regional prefix). Package-level to avoid per-request allocation.
 var bedrockKnownModels = map[string]string{
 	// Claude 3 series
-	"claude-3-sonnet-20240229":   "anthropic.claude-3-sonnet-20240229-v1:0",
-	"claude-3-haiku-20240307":    "anthropic.claude-3-haiku-20240307-v1:0",
-	"claude-3-5-haiku-20241022":  "anthropic.claude-3-5-haiku-20241022-v1:0",
-	"claude-3-5-haiku-latest":    "anthropic.claude-3-5-haiku-20241022-v1:0",
+	"claude-3-sonnet-20240229":  "anthropic.claude-3-sonnet-20240229-v1:0",
+	"claude-3-haiku-20240307":   "anthropic.claude-3-haiku-20240307-v1:0",
+	"claude-3-5-haiku-20241022": "anthropic.claude-3-5-haiku-20241022-v1:0",
+	"claude-3-5-haiku-latest":   "anthropic.claude-3-5-haiku-20241022-v1:0",
 	// Claude 4 series (IDs from Bedrock ListFoundationModels)
 	"claude-sonnet-4-20250514":   "anthropic.claude-sonnet-4-20250514-v1:0",
 	"claude-haiku-4-5-20251001":  "anthropic.claude-haiku-4-5-20251001-v1:0",
@@ -1025,6 +1075,210 @@ func anthropicUsageOutputTokens(payload string) int {
 	return ev.Usage.OutputTokens
 }
 
+func (p *Proxy) writeGuardResponse(w http.ResponseWriter, r *http.Request, d guard.Decision) {
+	status := d.StatusCode
+	if status == 0 {
+		status = http.StatusTooManyRequests
+	}
+	
+	w.Header().Set("Content-Type", "application/json")
+	
+	var errType, msg, override string
+	
+	switch d.Reason {
+	case "budget_exceeded":
+		w.Header().Set("X-IndexQube-Guard", "budget")
+		errType = "indexqube_budget_exceeded"
+		msg = "IndexQube stopped this session because it reached the configured budget."
+		override = "Set IQ_ALLOW_OVER_BUDGET=1 to continue."
+		w.WriteHeader(status)
+		if err := json.NewEncoder(w).Encode(map[string]any{
+			"error": map[string]any{
+				"type":                errType,
+				"message":             msg,
+				"budget_usd":          d.BudgetUSD,
+				"estimated_spend_usd": d.ProjectedUSD,
+				"override":            override,
+			},
+		}); err != nil {
+			p.logger.ErrorContext(r.Context(), "failed to encode guard response", slog.Any("err", err))
+		}
+		return
+	case "velocity_exceeded":
+		w.Header().Set("X-IndexQube-Guard", "velocity")
+		errType = "indexqube_velocity_exceeded"
+		msg = "IndexQube stopped this request because spend velocity exceeded the maximum allowed."
+		override = "Set IQ_ALLOW_OVER_BUDGET=1 or IQ_ALLOW_RUNAWAY=1 to continue."
+		w.WriteHeader(status)
+		if err := json.NewEncoder(w).Encode(map[string]any{
+			"error": map[string]any{
+				"type":                errType,
+				"message":             msg,
+				"override":            override,
+			},
+		}); err != nil {
+			p.logger.ErrorContext(r.Context(), "failed to encode guard response", slog.Any("err", err))
+		}
+		return
+	default:
+		// Default to circuit breaker
+		retryAfter := int(d.RetryAfter.Seconds())
+		if retryAfter <= 0 {
+			retryAfter = 60
+		}
+		w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+		w.Header().Set("X-IndexQube-Guard", "circuit-breaker")
+		errType = "indexqube_circuit_breaker"
+		msg = "IndexQube stopped a likely runaway agent loop. This session sent too many similar large requests in a short period."
+		override = "Set IQ_ALLOW_RUNAWAY=1 to disable this protection for the current session."
+		w.WriteHeader(status)
+		if err := json.NewEncoder(w).Encode(map[string]any{
+			"error": map[string]any{
+				"type":                errType,
+				"message":             msg,
+				"reason":              firstNonEmpty(d.Reason, "similar_large_requests"),
+				"retry_after_seconds": retryAfter,
+				"override":            override,
+			},
+		}); err != nil {
+			p.logger.ErrorContext(r.Context(), "failed to encode guard response", slog.Any("err", err))
+		}
+	}
+}
+
+func (p *Proxy) emitClaudeUsageEvent(r *http.Request, model string, optStats claudeOptimizerStats, duration time.Duration, upstreamStatus int, d guard.Decision) {
+	if p.usageTracker == nil {
+		return
+	}
+	event := telemetry.UsageEvent{
+		MachineID:            telemetry.GetMachineID(),
+		OsArch:               runtime.GOOS + "/" + runtime.GOARCH,
+		IqVersion:            Version,
+		CliAgent:             r.Header.Get("User-Agent"),
+		ModelTarget:          model,
+		InputTokensAttempted: optStats.EstimatedTokensBefore,
+		InputTokensSent:      optStats.EstimatedTokensAfter,
+		TokensSaved:          optStats.EstimatedTokensSaved,
+		ReductionRatio:       optStats.ReductionRatio * 100,
+		BlocksAnalyzed:       optStats.BlocksSeen,
+		BlocksPruned:         optStats.BlocksPruned,
+		SkipReasons:          guardSkipReasons(d),
+		TotalLatencyMs:       int(duration.Milliseconds()),
+		UpstreamStatus:       upstreamStatus,
+	}
+	if !d.Allow {
+		event.InputTokensSent = 0
+		event.TokensSaved = 0
+		event.ReductionRatio = 0
+		event.UpstreamStatus = http.StatusTooManyRequests
+	}
+	p.usageTracker.Track(event)
+}
+
+func guardSkipReasons(d guard.Decision) map[string]int {
+	out := map[string]int{}
+	if d.Allow {
+		out["guard_allowed"] = 1
+		if d.Warn {
+			out["guard_warning"] = 1
+			out["guard_warning_similar_large_requests"] = 1
+		}
+	} else {
+		out["guard_blocked"] = 1
+	}
+	reason := strings.ToLower(strings.TrimSpace(d.Reason))
+	if reason != "" {
+		out["guard_reason_"+strings.ReplaceAll(reason, " ", "_")] = 1
+	}
+	return out
+}
+
+func extractClaudeRequestShape(root map[string]any) claudeRequestShape {
+	var shape claudeRequestShape
+	msgs, _ := root["messages"].([]any)
+	shape.MessageCount = len(msgs)
+	for _, raw := range msgs {
+		msg, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		blocks, toolResults, text := summarizeAnthropicContent(msg["content"])
+		shape.ContentBlockCount += blocks
+		shape.ToolResultCount += toolResults
+		role, _ := msg["role"].(string)
+		if strings.EqualFold(role, "user") {
+			trimmed := strings.TrimSpace(text)
+			if trimmed != "" {
+				shape.LatestUserText = trimmed
+			}
+		}
+	}
+	_, _, systemText := summarizeAnthropicContent(root["system"])
+	shape.SystemText = strings.TrimSpace(systemText)
+	return shape
+}
+
+func summarizeAnthropicContent(content any) (blocks int, toolResults int, text string) {
+	switch v := content.(type) {
+	case string:
+		if strings.TrimSpace(v) == "" {
+			return 0, 0, ""
+		}
+		return 1, 0, v
+	case []any:
+		var sb strings.Builder
+		for _, item := range v {
+			blocks++
+			m, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			typ, _ := m["type"].(string)
+			switch typ {
+			case "tool_result":
+				toolResults++
+				appendText(&sb, m["content"])
+			default:
+				appendText(&sb, m["text"])
+			}
+		}
+		return blocks, toolResults, strings.TrimSpace(sb.String())
+	case map[string]any:
+		var sb strings.Builder
+		blocks = 1
+		if typ, _ := v["type"].(string); typ == "tool_result" {
+			toolResults = 1
+			appendText(&sb, v["content"])
+		} else {
+			appendText(&sb, v["text"])
+		}
+		return blocks, toolResults, strings.TrimSpace(sb.String())
+	default:
+		return 0, 0, ""
+	}
+}
+
+func appendText(sb *strings.Builder, value any) {
+	switch v := value.(type) {
+	case string:
+		trimmed := strings.TrimSpace(v)
+		if trimmed == "" {
+			return
+		}
+		if sb.Len() > 0 {
+			sb.WriteByte('\n')
+		}
+		sb.WriteString(trimmed)
+	case []any:
+		for _, item := range v {
+			appendText(sb, item)
+		}
+	case map[string]any:
+		appendText(sb, v["text"])
+		appendText(sb, v["content"])
+	}
+}
+
 func (p *Proxy) logClaudeRequestComplete(ctx context.Context, requestID, mode, model, sessionKey string, bytesBefore int, opt claudeOptimizerStats, stream claudeStreamStats, dur time.Duration) {
 	level := slog.LevelInfo
 	if stream.Status == "error" || stream.Status == "stream_error" {
@@ -1158,4 +1412,3 @@ func estimateTokens(chars int) int {
 	}
 	return (chars + 3) / 4
 }
-

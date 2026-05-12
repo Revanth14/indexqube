@@ -6,6 +6,9 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -21,34 +24,48 @@ import (
 
 var version = "dev"
 
+func generateToken() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		// Fallback if random source fails, though highly unlikely
+		return fmt.Sprintf("iq-fallback-%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b)
+}
+
 func main() {
 	go checkForUpdate()
 
-	port, err := getFreePort()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "iq: failed to find free port: %v\n", err)
+		fmt.Fprintf(os.Stderr, "iq: failed to reserve local port: %v\n", err)
 		os.Exit(1)
 	}
-
-	// Redirect gateway stderr to a log file so nothing leaks into the terminal.
-	logPath := filepath.Join(os.Getenv("HOME"), ".indexqube", "gateway.log")
-	os.MkdirAll(filepath.Dir(logPath), 0700)             //nolint:errcheck
-	if lf, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644); err == nil {
-		syscall.Dup2(int(lf.Fd()), int(os.Stderr.Fd())) //nolint:errcheck
-	}
+	port := ln.Addr().(*net.TCPAddr).Port
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	os.Setenv("INDEXQUBE_LOG_LEVEL", "error")
-	go startProxy(ctx, port)
+	go startProxy(ctx, ln)
 
 	if !waitForProxy(port) {
 		fmt.Fprintf(os.Stderr, "iq: proxy failed to start within 2s\n")
 		os.Exit(1)
 	}
 
-	args := append([]string{"claude"}, os.Args[1:]...)
+	claudePath, err := exec.LookPath("claude")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "iq: could not find 'claude' in PATH: %v\n", err)
+		os.Exit(1)
+	}
+
+	if !filepath.IsAbs(claudePath) {
+		fmt.Fprintf(os.Stderr, "iq: 'claude' path is not absolute: %s\n", claudePath)
+		os.Exit(1)
+	}
+
+	args := append([]string{claudePath}, os.Args[1:]...)
 	cmd := exec.Command(args[0], args[1:]...)
 	cmd.Env = append(os.Environ(),
 		fmt.Sprintf("ANTHROPIC_BASE_URL=http://127.0.0.1:%d", port),
@@ -59,6 +76,7 @@ func main() {
 
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sigs)
 	go func() {
 		sig := <-sigs
 		if cmd.Process != nil {
@@ -66,14 +84,23 @@ func main() {
 		}
 	}()
 
-	cmd.Run() //nolint:errcheck
+	if err := cmd.Run(); err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			os.Exit(exitErr.ExitCode())
+		}
+		fmt.Fprintf(os.Stderr, "iq: failed to run claude: %v\n", err)
+		os.Exit(1)
+	}
 }
 
 const telemetryEndpoint = "https://dev-api.indexqube.com"
 
-func startProxy(ctx context.Context, port int) {
-	os.Setenv("INDEXQUBE_BIND_ADDR", fmt.Sprintf("127.0.0.1:%d", port))
-	os.Setenv("INDEXQUBE_DEV_TOKEN", "iq-local")
+func startProxy(ctx context.Context, ln net.Listener) {
+	os.Setenv("INDEXQUBE_BIND_ADDR", ln.Addr().String())
+	if os.Getenv("INDEXQUBE_DEV_TOKEN") == "" {
+		os.Setenv("INDEXQUBE_DEV_TOKEN", generateToken())
+	}
 	os.Setenv("INDEXQUBE_MODE", "optimize")
 	os.Setenv("INDEXQUBE_ENABLE_BLOCK_OPTIMIZER", "true")
 	// Route telemetry through the deployed gateway so Supabase credentials
@@ -85,16 +112,7 @@ func startProxy(ctx context.Context, port int) {
 	if os.Getenv("INDEXQUBE_LOG_LEVEL") == "" {
 		os.Setenv("INDEXQUBE_LOG_LEVEL", "warn")
 	}
-	server.Run(ctx) //nolint:errcheck
-}
-
-func getFreePort() (int, error) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return 0, err
-	}
-	defer ln.Close()
-	return ln.Addr().(*net.TCPAddr).Port, nil
+	server.RunWithPublicListener(ctx, ln) //nolint:errcheck
 }
 
 func waitForProxy(port int) bool {
