@@ -164,6 +164,11 @@ func (p *Proxy) handleClaudeMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// overheadStart marks the beginning of pure IndexQube processing time.
+	// It stops just before dispatching to upstream so ProxyOverheadMs
+	// reflects only the optimizer + guard work, not the model round-trip.
+	overheadStart := time.Now()
+
 	sessionKey := claudeSessionKey(r, cfg.DevToken)
 	var earlyMeta struct {
 		Model string `json:"model"`
@@ -259,7 +264,7 @@ func (p *Proxy) handleClaudeMessages(w http.ResponseWriter, r *http.Request) {
 				RetryAfter:        guardDecision.RetryAfter,
 			}
 			p.logClaudeRequestComplete(r.Context(), requestID, cfg.Mode, meta.Model, sessionKey, len(body), optStats, streamStats, duration)
-			p.emitClaudeUsageEvent(r, meta.Model, optStats, duration, 0, guardDecision)
+			p.emitClaudeUsageEvent(r, sessionKey, meta.Model, optStats, duration, 0, guardDecision, time.Since(overheadStart).Milliseconds())
 			return
 		}
 		if guardDecision.Warn {
@@ -268,6 +273,7 @@ func (p *Proxy) handleClaudeMessages(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	overheadMs := time.Since(overheadStart).Milliseconds()
 	streamStats := p.forwardClaudeMessages(w, r, cfg, forwardBody)
 	if streamStats.StatusCode == http.StatusTooManyRequests {
 		entry := p.claudeCooldowns.Open("anthropic", meta.Model, http.StatusTooManyRequests, streamStats.upstreamMeta(), cfg.RateLimitCooldown, time.Now())
@@ -285,7 +291,7 @@ func (p *Proxy) handleClaudeMessages(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	p.logClaudeRequestComplete(r.Context(), requestID, cfg.Mode, meta.Model, sessionKey, len(body), optStats, streamStats, duration)
-	p.emitClaudeUsageEvent(r, meta.Model, optStats, duration, streamStats.StatusCode, guardDecision)
+	p.emitClaudeUsageEvent(r, sessionKey, meta.Model, optStats, duration, streamStats.StatusCode, guardDecision, overheadMs)
 }
 
 func (p *Proxy) handleClaudeCountTokens(w http.ResponseWriter, r *http.Request) {
@@ -1087,11 +1093,11 @@ func (p *Proxy) writeGuardResponse(w http.ResponseWriter, r *http.Request, d gua
 	if status == 0 {
 		status = http.StatusTooManyRequests
 	}
-	
+
 	w.Header().Set("Content-Type", "application/json")
-	
+
 	var errType, msg, override string
-	
+
 	switch d.Reason {
 	case "budget_exceeded":
 		w.Header().Set("X-IndexQube-Guard", "budget")
@@ -1119,9 +1125,9 @@ func (p *Proxy) writeGuardResponse(w http.ResponseWriter, r *http.Request, d gua
 		w.WriteHeader(status)
 		if err := json.NewEncoder(w).Encode(map[string]any{
 			"error": map[string]any{
-				"type":                errType,
-				"message":             msg,
-				"override":            override,
+				"type":     errType,
+				"message":  msg,
+				"override": override,
 			},
 		}); err != nil {
 			p.logger.ErrorContext(r.Context(), "failed to encode guard response", slog.Any("err", err))
@@ -1153,33 +1159,45 @@ func (p *Proxy) writeGuardResponse(w http.ResponseWriter, r *http.Request, d gua
 	}
 }
 
-func (p *Proxy) emitClaudeUsageEvent(r *http.Request, model string, optStats claudeOptimizerStats, duration time.Duration, upstreamStatus int, d guard.Decision) {
-	if p.usageTracker == nil {
-		return
+func (p *Proxy) emitClaudeUsageEvent(r *http.Request, sessionKey, model string, optStats claudeOptimizerStats, duration time.Duration, upstreamStatus int, d guard.Decision, overheadMs int64) {
+	if p.usageTracker != nil {
+		event := telemetry.UsageEvent{
+			MachineID:            telemetry.GetMachineID(),
+			OsArch:               runtime.GOOS + "/" + runtime.GOARCH,
+			IqVersion:            Version,
+			CliAgent:             r.Header.Get("User-Agent"),
+			ModelTarget:          model,
+			InputTokensAttempted: optStats.EstimatedTokensBefore,
+			InputTokensSent:      optStats.EstimatedTokensAfter,
+			TokensSaved:          optStats.EstimatedTokensSaved,
+			ReductionRatio:       optStats.ReductionRatio * 100,
+			BlocksAnalyzed:       optStats.BlocksSeen,
+			BlocksPruned:         optStats.BlocksPruned,
+			SkipReasons:          guardSkipReasons(d),
+			TotalLatencyMs:       int(duration.Milliseconds()),
+			ProxyOverheadMs:      float64(overheadMs),
+			UpstreamStatus:       upstreamStatus,
+		}
+		if !d.Allow {
+			event.InputTokensSent = 0
+			event.TokensSaved = 0
+			event.ReductionRatio = 0
+			event.UpstreamStatus = http.StatusTooManyRequests
+		}
+		p.usageTracker.Track(event)
 	}
-	event := telemetry.UsageEvent{
-		MachineID:            telemetry.GetMachineID(),
-		OsArch:               runtime.GOOS + "/" + runtime.GOARCH,
-		IqVersion:            Version,
-		CliAgent:             r.Header.Get("User-Agent"),
-		ModelTarget:          model,
-		InputTokensAttempted: optStats.EstimatedTokensBefore,
-		InputTokensSent:      optStats.EstimatedTokensAfter,
-		TokensSaved:          optStats.EstimatedTokensSaved,
-		ReductionRatio:       optStats.ReductionRatio * 100,
-		BlocksAnalyzed:       optStats.BlocksSeen,
-		BlocksPruned:         optStats.BlocksPruned,
-		SkipReasons:          guardSkipReasons(d),
-		TotalLatencyMs:       int(duration.Milliseconds()),
-		UpstreamStatus:       upstreamStatus,
+
+	if p.sessionTracker != nil {
+		p.sessionTracker.Record(sessionKey, telemetry.RequestOutcome{
+			TokensAttempted: optStats.EstimatedTokensBefore,
+			TokensSent:      optStats.EstimatedTokensAfter,
+			TokensSaved:     optStats.EstimatedTokensSaved,
+			DollarsSaved:    telemetry.EstimateCostSaved("optimize", model, optStats.EstimatedTokensSaved),
+			GuardReason:     d.Reason,
+			Killed:          !d.Allow,
+			Warned:          d.Warn,
+		})
 	}
-	if !d.Allow {
-		event.InputTokensSent = 0
-		event.TokensSaved = 0
-		event.ReductionRatio = 0
-		event.UpstreamStatus = http.StatusTooManyRequests
-	}
-	p.usageTracker.Track(event)
 }
 
 func guardSkipReasons(d guard.Decision) map[string]int {

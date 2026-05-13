@@ -167,12 +167,15 @@ func run(ctx context.Context, publicListener net.Listener) error {
 		logger.Info("supabase usage telemetry enabled")
 	}
 
+	agentSessions := telemetry.NewAgentSessionStore(0) // 4 h TTL default
+
 	p := proxy.New(gov,
 		proxy.WithLogger(logger),
 		proxy.WithMaxRequestSize(cfg.Governor.MaxRequestSize),
 		proxy.WithMetrics(tp.Metrics),
 		proxy.WithOptimizeTimeout(cfg.Governor.OptimizeTimeout),
 		proxy.WithUsageTracker(usageTracker),
+		proxy.WithAgentSessionStore(agentSessions),
 		proxy.WithClaudeMessages(proxy.ClaudeMessagesConfig{
 			Mode:                 cfg.ClaudeCode.Mode,
 			DevToken:             cfg.ClaudeCode.DevToken,
@@ -234,7 +237,7 @@ func run(ctx context.Context, publicListener net.Listener) error {
 	}()
 
 	janitorCtx, stopJanitor := context.WithCancel(context.Background())
-	go runMemoryJanitor(janitorCtx, claudeStore, memoryJanitorInterval, logger)
+	go runMemoryJanitor(janitorCtx, claudeStore, agentSessions, memoryJanitorInterval, logger)
 
 	// Block until ctx is cancelled or a server fails fatally.
 	var runErr error
@@ -275,7 +278,7 @@ func newUpstreamTransport() *http.Transport {
 	}
 }
 
-func runMemoryJanitor(ctx context.Context, store *memory.Store, interval time.Duration, logger *slog.Logger) {
+func runMemoryJanitor(ctx context.Context, store *memory.Store, sessions *telemetry.AgentSessionStore, interval time.Duration, logger *slog.Logger) {
 	if store == nil || interval <= 0 {
 		return
 	}
@@ -287,6 +290,9 @@ func runMemoryJanitor(ctx context.Context, store *memory.Store, interval time.Du
 			return
 		case <-t.C:
 			store.CleanupExpired()
+			if sessions != nil {
+				sessions.CleanupExpired()
+			}
 		}
 	}
 }

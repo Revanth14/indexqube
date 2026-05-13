@@ -17,6 +17,7 @@ import (
 	"github.com/Revanth14/indexqube/gateway/internal/domain"
 	govpkg "github.com/Revanth14/indexqube/gateway/internal/governor"
 	"github.com/Revanth14/indexqube/gateway/internal/memory"
+	"github.com/Revanth14/indexqube/gateway/internal/telemetry"
 )
 
 // fakeGovernor lets tests script the governor's streaming behavior.
@@ -495,6 +496,66 @@ func TestClaudeMessages_MissingAuth(t *testing.T) {
 	if resp.StatusCode != http.StatusUnauthorized {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("status=%d body=%s, want 401", resp.StatusCode, body)
+	}
+}
+
+func TestClaudeMessages_AgentSessionsRecordWithoutUsageTracker(t *testing.T) {
+	t.Parallel()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "event: message_stop\n")
+		_, _ = io.WriteString(w, `data: {"type":"message_stop"}`+"\n\n")
+	}))
+	t.Cleanup(upstream.Close)
+
+	p := New(&fakeGovernor{},
+		WithAgentSessionStore(telemetry.NewAgentSessionStore(time.Hour)),
+		WithClaudeMessages(ClaudeMessagesConfig{
+			Mode:             "observe",
+			DevToken:         "iq-dev-local",
+			AnthropicAPIKey:  "sk-ant-test",
+			AnthropicBaseURL: upstream.URL,
+			AnthropicVersion: "2023-06-01",
+			SessionStore:     memory.NewStore(time.Hour),
+		}),
+	)
+	srv := httptest.NewServer(p.Handler())
+	t.Cleanup(srv.Close)
+
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/v1/messages", strings.NewReader(`{"model":"claude-sonnet-4-6","stream":true,"messages":[{"role":"user","content":"hi"}]}`))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer iq-dev-local")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST /v1/messages: %v", err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d, want 200", resp.StatusCode)
+	}
+
+	resp, err = http.Get(srv.URL + "/v1/agent-sessions")
+	if err != nil {
+		t.Fatalf("GET /v1/agent-sessions: %v", err)
+	}
+	defer resp.Body.Close()
+	var body struct {
+		TotalSessions int `json:"total_sessions"`
+		Sessions      []struct {
+			RequestsTotal int `json:"requests_total"`
+		} `json:"sessions"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.TotalSessions != 1 || len(body.Sessions) != 1 {
+		t.Fatalf("sessions=%d len=%d, want one session", body.TotalSessions, len(body.Sessions))
+	}
+	if body.Sessions[0].RequestsTotal != 1 {
+		t.Fatalf("requests_total=%d, want 1", body.Sessions[0].RequestsTotal)
 	}
 }
 
