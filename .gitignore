@@ -47,3 +47,4 @@ gateway/.claude/
 # Local planning & Claude config — never commit
 CONTEXT.md
 .claudeignore
+CLAUDE.md
