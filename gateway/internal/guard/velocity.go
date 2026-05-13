@@ -31,6 +31,9 @@ func (vg *VelocityGuard) Check(sig RequestSignal) Decision {
 	if !vg.cfg.SpendVelocityEnabled {
 		return Decision{Allow: true, Reason: "disabled"}
 	}
+	if os.Getenv(envDevMode) == "1" {
+		return Decision{Allow: true, Reason: "dev_mode"}
+	}
 	if os.Getenv(envAllowOverBudget) == "1" || os.Getenv(envAllowRunaway) == "1" {
 		return Decision{Allow: true, Reason: "override"}
 	}

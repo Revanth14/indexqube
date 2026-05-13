@@ -25,6 +25,9 @@ const (
 	envSpendVelocityWindowSecs  = "INDEXQUBE_SPEND_VELOCITY_WINDOW_SECONDS"
 	envSpendVelocityWarnUSD     = "INDEXQUBE_SPEND_VELOCITY_WARN_USD"
 	envSpendVelocityBlockUSD    = "INDEXQUBE_SPEND_VELOCITY_BLOCK_USD"
+
+	// Dev mode: set by `iq claude --dev` — disables velocity guard entirely.
+	envDevMode = "IQ_DEV_MODE"
 )
 
 type Config struct {
@@ -56,10 +59,10 @@ func DefaultConfig() Config {
 		BudgetWarnRatio:  0.80,
 		BudgetHardRatio:  1.00,
 
-		SpendVelocityEnabled: true,
-		SpendVelocityWindow:  60 * time.Second,
-		SpendVelocityWarnUSD: 0.25,
-		SpendVelocityBlockUSD: 0.75,
+		SpendVelocityEnabled:  true,
+		SpendVelocityWindow:   120 * time.Second,
+		SpendVelocityWarnUSD:  0.75,
+		SpendVelocityBlockUSD: 2.00,
 	}
 }
 

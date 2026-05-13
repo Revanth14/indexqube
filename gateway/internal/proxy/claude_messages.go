@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
 	"runtime"
 	"strconv"
 	"strings"
@@ -399,7 +400,13 @@ func claudeSessionKey(r *http.Request, fallback string) string {
 	auth := strings.TrimSpace(r.Header.Get("Authorization"))
 	if auth != "" {
 		sum := sha256.Sum256([]byte(auth))
-		return hex.EncodeToString(sum[:8])
+		key := hex.EncodeToString(sum[:8])
+		// Suffix with the per-invocation session ID so the circuit breaker
+		// scopes similar-request counts to this iq session, not across sessions.
+		if sid := os.Getenv("IQ_SESSION_ID"); sid != "" {
+			return key + "-" + sid[:8]
+		}
+		return key
 	}
 	sum := sha256.Sum256([]byte(fallback))
 	return hex.EncodeToString(sum[:8])

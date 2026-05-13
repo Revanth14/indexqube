@@ -27,7 +27,6 @@ var version = "dev"
 func generateToken() string {
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
-		// Fallback if random source fails, though highly unlikely
 		return fmt.Sprintf("iq-fallback-%d", time.Now().UnixNano())
 	}
 	return hex.EncodeToString(b)
@@ -35,6 +34,52 @@ func generateToken() string {
 
 func main() {
 	go checkForUpdate()
+
+	if len(os.Args) < 2 {
+		// iq alone → run claude (backward compat, no subcommand)
+		runClaude([]string{}, false)
+		return
+	}
+
+	switch os.Args[1] {
+	case "claude":
+		devMode, claudeArgs := parseDevFlag(os.Args[2:])
+		runClaude(claudeArgs, devMode)
+	case "gemini":
+		fmt.Println("  iq gemini — coming soon")
+	case "codex":
+		fmt.Println("  iq codex  — coming soon")
+	case "help", "--help", "-h":
+		printHelp()
+	default:
+		// Unknown subcommand → pass everything to claude (backward compat).
+		// Ensures `iq somefile.go` and `iq --resume` still work as before.
+		runClaude(os.Args[1:], false)
+	}
+}
+
+func parseDevFlag(args []string) (bool, []string) {
+	dev := false
+	filtered := make([]string, 0, len(args))
+	for _, a := range args {
+		if a == "--dev" {
+			dev = true
+		} else {
+			filtered = append(filtered, a)
+		}
+	}
+	return dev, filtered
+}
+
+func runClaude(args []string, devMode bool) {
+	if devMode {
+		os.Setenv("IQ_DEV_MODE", "1")
+		fmt.Fprintln(os.Stderr, "  [iq] dev mode — relaxed guards, full telemetry")
+	}
+
+	// Generate a per-invocation session ID so the circuit breaker scopes
+	// similarity checks within this iq session, not across sessions.
+	os.Setenv("IQ_SESSION_ID", generateToken())
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -65,8 +110,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	args := append([]string{claudePath}, os.Args[1:]...)
-	cmd := exec.Command(args[0], args[1:]...)
+	cmdArgs := append([]string{claudePath}, args...)
+	cmd := exec.Command(cmdArgs[0], cmdArgs[1:]...)
 	cmd.Env = append(os.Environ(),
 		fmt.Sprintf("ANTHROPIC_BASE_URL=http://127.0.0.1:%d", port),
 	)
@@ -92,6 +137,25 @@ func main() {
 		fmt.Fprintf(os.Stderr, "iq: failed to run claude: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func printHelp() {
+	fmt.Print(`
+  iq — IndexQube CLI
+
+  USAGE
+    iq                   Start Claude Code (default)
+    iq claude            Start Claude Code via IndexQube
+    iq claude --dev      Start Claude Code, dev mode (relaxed guards)
+    iq gemini            Gemini via IndexQube (coming soon)
+    iq codex             Codex via IndexQube  (coming soon)
+    iq help              Show this help
+
+  DEV MODE
+    --dev disables velocity guard, enables verbose logging.
+    Use when building IndexQube with IndexQube.
+
+`)
 }
 
 const telemetryEndpoint = "https://dev-api.indexqube.com"
