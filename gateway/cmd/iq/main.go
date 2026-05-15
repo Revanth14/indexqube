@@ -91,7 +91,7 @@ func runClaude(args []string, devMode bool) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	os.Setenv("INDEXQUBE_LOG_LEVEL", "error")
+	os.Setenv("INDEXQUBE_LOG_LEVEL", "off")
 	go startProxy(ctx, ln)
 
 	if !waitForProxy(port) {

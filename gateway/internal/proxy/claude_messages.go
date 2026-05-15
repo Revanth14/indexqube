@@ -174,42 +174,44 @@ func (p *Proxy) handleClaudeMessages(w http.ResponseWriter, r *http.Request) {
 		Model string `json:"model"`
 	}
 	_ = json.Unmarshal(body, &earlyMeta)
-	if cooldown, ok := p.claudeCooldowns.Get("anthropic", earlyMeta.Model, time.Now()); ok {
-		remaining := time.Until(cooldown.Until)
-		if value := retryAfterSeconds(remaining); value != "" {
-			w.Header().Set("Retry-After", value)
-		}
-		p.writeError(w, r, errorPayload{
-			HTTPStatus: http.StatusTooManyRequests,
-			Type:       "upstream_error",
-			Code:       "provider_rate_limited",
-			Message:    "Provider is cooling down after a recent rate limit. Retry shortly or switch model.",
-		})
-		streamStats := claudeStreamStats{
-			Status:            "error",
-			StatusCode:        http.StatusTooManyRequests,
-			UpstreamErrorCode: firstNonEmpty(cooldown.UpstreamCode, "provider_rate_limited"),
-			UpstreamErrorType: cooldown.UpstreamType,
-			UpstreamRequestID: cooldown.UpstreamRequestID,
-			RetryAfter:        remaining,
-			CircuitOpen:       true,
-			CircuitCooldown:   remaining,
-		}
-		duration := time.Since(started)
-		if cfg.SessionStore != nil {
-			cfg.SessionStore.RecordUsage(sessionKey, memory.UsageTotals{
-				Requests: 1,
-				TokensIn: estimateTokens(len(body)),
-				BytesIn:  len(body),
+	if os.Getenv("IQ_DEV_MODE") != "1" {
+		if cooldown, ok := p.claudeCooldowns.Get("anthropic", earlyMeta.Model, time.Now()); ok {
+			remaining := time.Until(cooldown.Until)
+			if value := retryAfterSeconds(remaining); value != "" {
+				w.Header().Set("Retry-After", value)
+			}
+			p.writeError(w, r, errorPayload{
+				HTTPStatus: http.StatusTooManyRequests,
+				Type:       "upstream_error",
+				Code:       "provider_rate_limited",
+				Message:    "Provider is cooling down after a recent rate limit. Retry shortly or switch model.",
 			})
+			streamStats := claudeStreamStats{
+				Status:            "error",
+				StatusCode:        http.StatusTooManyRequests,
+				UpstreamErrorCode: firstNonEmpty(cooldown.UpstreamCode, "provider_rate_limited"),
+				UpstreamErrorType: cooldown.UpstreamType,
+				UpstreamRequestID: cooldown.UpstreamRequestID,
+				RetryAfter:        remaining,
+				CircuitOpen:       true,
+				CircuitCooldown:   remaining,
+			}
+			duration := time.Since(started)
+			if cfg.SessionStore != nil {
+				cfg.SessionStore.RecordUsage(sessionKey, memory.UsageTotals{
+					Requests: 1,
+					TokensIn: estimateTokens(len(body)),
+					BytesIn:  len(body),
+				})
+			}
+			p.logClaudeRequestComplete(r.Context(), requestID, cfg.Mode, earlyMeta.Model, sessionKey, len(body), claudeOptimizerStats{
+				BytesBefore:           len(body),
+				BytesAfter:            len(body),
+				EstimatedTokensBefore: estimateTokens(len(body)),
+				EstimatedTokensAfter:  estimateTokens(len(body)),
+			}, streamStats, duration)
+			return
 		}
-		p.logClaudeRequestComplete(r.Context(), requestID, cfg.Mode, earlyMeta.Model, sessionKey, len(body), claudeOptimizerStats{
-			BytesBefore:           len(body),
-			BytesAfter:            len(body),
-			EstimatedTokensBefore: estimateTokens(len(body)),
-			EstimatedTokensAfter:  estimateTokens(len(body)),
-		}, streamStats, duration)
-		return
 	}
 
 	forwardBody, meta, optStats, shape, err := p.prepareClaudeBody(r.Context(), cfg, sessionKey, body)
@@ -365,7 +367,11 @@ func (p *Proxy) claudeDefaults() ClaudeMessagesConfig {
 		cfg.HTTPClient = http.DefaultClient
 	}
 	if cfg.RateLimitCooldown <= 0 {
-		cfg.RateLimitCooldown = 30 * time.Second
+		if os.Getenv("IQ_DEV_MODE") == "1" {
+			cfg.RateLimitCooldown = 1 * time.Second
+		} else {
+			cfg.RateLimitCooldown = 30 * time.Second
+		}
 	}
 	// Apply optimizer defaults when not explicitly configured.
 	if cfg.Optimizer.MinSpanBytes <= 0 {

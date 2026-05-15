@@ -20,7 +20,7 @@ func NewBudgetGuard(cfg Config) *BudgetGuard {
 }
 
 func (bg *BudgetGuard) Check(sig RequestSignal) Decision {
-	if os.Getenv(envAllowOverBudget) == "1" || os.Getenv(envAllowRunaway) == "1" {
+	if os.Getenv(envDevMode) == "1" || os.Getenv(envAllowOverBudget) == "1" || os.Getenv(envAllowRunaway) == "1" {
 		return Decision{Allow: true, Reason: "override"}
 	}
 
