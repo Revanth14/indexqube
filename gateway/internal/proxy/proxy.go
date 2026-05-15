@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/Revanth14/indexqube/gateway/internal/domain"
-	"github.com/Revanth14/indexqube/gateway/internal/guard"
 	"github.com/Revanth14/indexqube/gateway/internal/memory"
 	"github.com/Revanth14/indexqube/gateway/internal/telemetry"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
@@ -39,10 +38,8 @@ type Proxy struct {
 	optimizeTimeout time.Duration
 	metrics         *telemetry.Metrics
 	claude          ClaudeMessagesConfig
-	claudeCooldowns *providerCooldowns
-	usageTracker    telemetry.Sink
-	guardManager    *guard.Manager
-	sessionTracker  *telemetry.AgentSessionStore
+	usageTracker   telemetry.Sink
+	sessionTracker *telemetry.AgentSessionStore
 }
 
 // BedrockConfig routes /v1/messages to AWS Bedrock instead of Anthropic's API.
@@ -80,9 +77,8 @@ type ClaudeMessagesConfig struct {
 	EnableBlockOptimizer bool
 	Optimizer            OptimizerConfig
 	Bedrock              BedrockConfig
-	SessionStore         *memory.Store
-	HTTPClient           *http.Client
-	RateLimitCooldown    time.Duration
+	SessionStore *memory.Store
+	HTTPClient   *http.Client
 }
 
 // Option configures a Proxy at construction time.
@@ -159,8 +155,6 @@ func New(gov Governor, opts ...Option) *Proxy {
 		mux:             http.NewServeMux(),
 		maxRequestSize:  8 << 20, // default 8 MiB
 		optimizeTimeout: 30 * time.Second,
-		claudeCooldowns: newProviderCooldowns(),
-		guardManager:    guard.NewManager(guard.FromEnv()),
 	}
 	for _, opt := range opts {
 		opt(p)

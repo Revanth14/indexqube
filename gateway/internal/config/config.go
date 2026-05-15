@@ -95,7 +95,6 @@ type ClaudeCodeConfig struct {
 	EnableLogPruner      bool
 	EnableBlockOptimizer bool
 	SessionTTL           time.Duration
-	RateLimitCooldown    time.Duration
 
 	// Bedrock backend for /v1/messages (replaces direct Anthropic calls).
 	BedrockEnabled       bool
@@ -203,8 +202,7 @@ func Load() (*AppConfig, error) {
 			AnthropicVersion:     getEnvWithDefault("ANTHROPIC_VERSION", "2023-06-01"),
 			EnableLogPruner:      getEnvAsBool("INDEXQUBE_ENABLE_LOG_PRUNER", false),
 			EnableBlockOptimizer: getEnvAsBool("INDEXQUBE_ENABLE_BLOCK_OPTIMIZER", false),
-			SessionTTL:           getSessionTTL(),
-			RateLimitCooldown:    getEnvAsDuration("INDEXQUBE_RATE_LIMIT_COOLDOWN", 30*time.Second),
+			SessionTTL: getSessionTTL(),
 
 			BedrockEnabled:       getEnvAsBool("INDEXQUBE_BEDROCK_ENABLED", false),
 			BedrockRegion:        getEnvWithDefault("INDEXQUBE_BEDROCK_REGION", "us-east-1"),

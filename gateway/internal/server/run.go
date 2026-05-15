@@ -202,9 +202,8 @@ func run(ctx context.Context, publicListener net.Listener) error {
 				Client:        bedrockClient,
 				Models:        bedrockModels,
 			},
-			SessionStore:      claudeStore,
-			HTTPClient:        upstreamClient,
-			RateLimitCooldown: cfg.ClaudeCode.RateLimitCooldown,
+			SessionStore: claudeStore,
+			HTTPClient:   upstreamClient,
 		}),
 	)
 

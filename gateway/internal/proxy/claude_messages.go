@@ -19,7 +19,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Revanth14/indexqube/gateway/internal/guard"
 	"github.com/Revanth14/indexqube/gateway/internal/memory"
 	"github.com/Revanth14/indexqube/gateway/internal/middleware"
 	"github.com/Revanth14/indexqube/gateway/internal/telemetry"
@@ -106,9 +105,7 @@ type claudeStreamStats struct {
 	UpstreamErrorCode string
 	UpstreamErrorType string
 	UpstreamRequestID string
-	RetryAfter        time.Duration
-	CircuitOpen       bool
-	CircuitCooldown   time.Duration
+	RetryAfter time.Duration
 }
 
 type claudeUpstreamErrorMeta struct {
@@ -174,113 +171,16 @@ func (p *Proxy) handleClaudeMessages(w http.ResponseWriter, r *http.Request) {
 		Model string `json:"model"`
 	}
 	_ = json.Unmarshal(body, &earlyMeta)
-	if os.Getenv("IQ_DEV_MODE") != "1" {
-		if cooldown, ok := p.claudeCooldowns.Get("anthropic", earlyMeta.Model, time.Now()); ok {
-			remaining := time.Until(cooldown.Until)
-			if value := retryAfterSeconds(remaining); value != "" {
-				w.Header().Set("Retry-After", value)
-			}
-			p.writeError(w, r, errorPayload{
-				HTTPStatus: http.StatusTooManyRequests,
-				Type:       "upstream_error",
-				Code:       "provider_rate_limited",
-				Message:    "Provider is cooling down after a recent rate limit. Retry shortly or switch model.",
-			})
-			streamStats := claudeStreamStats{
-				Status:            "error",
-				StatusCode:        http.StatusTooManyRequests,
-				UpstreamErrorCode: firstNonEmpty(cooldown.UpstreamCode, "provider_rate_limited"),
-				UpstreamErrorType: cooldown.UpstreamType,
-				UpstreamRequestID: cooldown.UpstreamRequestID,
-				RetryAfter:        remaining,
-				CircuitOpen:       true,
-				CircuitCooldown:   remaining,
-			}
-			duration := time.Since(started)
-			if cfg.SessionStore != nil {
-				cfg.SessionStore.RecordUsage(sessionKey, memory.UsageTotals{
-					Requests: 1,
-					TokensIn: estimateTokens(len(body)),
-					BytesIn:  len(body),
-				})
-			}
-			p.logClaudeRequestComplete(r.Context(), requestID, cfg.Mode, earlyMeta.Model, sessionKey, len(body), claudeOptimizerStats{
-				BytesBefore:           len(body),
-				BytesAfter:            len(body),
-				EstimatedTokensBefore: estimateTokens(len(body)),
-				EstimatedTokensAfter:  estimateTokens(len(body)),
-			}, streamStats, duration)
-			return
-		}
-	}
 
 	forwardBody, meta, optStats, shape, err := p.prepareClaudeBody(r.Context(), cfg, sessionKey, body)
 	if err != nil {
 		p.writeError(w, r, errorPayload{HTTPStatus: http.StatusBadRequest, Type: "invalid_request_error", Code: "invalid_anthropic_request", Message: err.Error()})
 		return
 	}
-
-	guardDecision := guard.Decision{Allow: true, Reason: "disabled"}
-	if p.guardManager != nil {
-		fingerprint := guard.BuildFingerprint(guard.FingerprintInput{
-			Route:             r.URL.Path,
-			Model:             meta.Model,
-			MessageCount:      shape.MessageCount,
-			ContentBlockCount: shape.ContentBlockCount,
-			ToolResultCount:   shape.ToolResultCount,
-			AttemptedTokens:   optStats.EstimatedTokensBefore,
-			BlocksAnalyzed:    optStats.BlocksSeen,
-			BlocksPruned:      optStats.BlocksPruned,
-			LatestUserText:    shape.LatestUserText,
-			SystemText:        shape.SystemText,
-		})
-		guardDecision = p.guardManager.Check(guard.RequestSignal{
-			MachineID:        telemetry.GetMachineID(),
-			SessionKey:       sessionKey,
-			Route:            r.URL.Path,
-			Model:            meta.Model,
-			Fingerprint:      fingerprint,
-			AttemptedTokens:  optStats.EstimatedTokensBefore,
-			SentTokens:       optStats.EstimatedTokensAfter,
-			TokensSaved:      optStats.EstimatedTokensSaved,
-			ReductionPct:     optStats.ReductionRatio * 100,
-			BlocksAnalyzed:   optStats.BlocksSeen,
-			BlocksPruned:     optStats.BlocksPruned,
-			Now:              time.Now(),
-			EstimatedCostUSD: telemetry.EstimateCost(cfg.Mode, meta.Model, optStats.EstimatedTokensBefore),
-		})
-		if !guardDecision.Allow {
-			p.writeGuardResponse(w, r, guardDecision)
-			duration := time.Since(started)
-			if cfg.SessionStore != nil {
-				cfg.SessionStore.RecordUsage(sessionKey, memory.UsageTotals{
-					Requests: 1,
-					TokensIn: estimateTokens(len(body)),
-					BytesIn:  len(body),
-				})
-			}
-			streamStats := claudeStreamStats{
-				Status:            "error",
-				StatusCode:        http.StatusTooManyRequests,
-				UpstreamErrorCode: "indexqube_guard_blocked",
-				RetryAfter:        guardDecision.RetryAfter,
-			}
-			p.logClaudeRequestComplete(r.Context(), requestID, cfg.Mode, meta.Model, sessionKey, len(body), optStats, streamStats, duration)
-			p.emitClaudeUsageEvent(r, sessionKey, meta.Model, optStats, duration, 0, guardDecision, time.Since(overheadStart).Milliseconds())
-			return
-		}
-		if guardDecision.Warn {
-			w.Header().Set("X-IndexQube-Guard-Warning", guardDecision.Reason)
-			w.Header().Set("X-IndexQube-Guard-Remaining", strconv.Itoa(guardDecision.Remaining))
-		}
-	}
+	_ = shape
 
 	overheadMs := time.Since(overheadStart).Milliseconds()
 	streamStats := p.forwardClaudeMessages(w, r, cfg, forwardBody)
-	if streamStats.StatusCode == http.StatusTooManyRequests {
-		entry := p.claudeCooldowns.Open("anthropic", meta.Model, http.StatusTooManyRequests, streamStats.upstreamMeta(), cfg.RateLimitCooldown, time.Now())
-		streamStats.CircuitCooldown = time.Until(entry.Until)
-	}
 	duration := time.Since(started)
 	if cfg.SessionStore != nil {
 		cfg.SessionStore.RecordUsage(sessionKey, memory.UsageTotals{
@@ -293,7 +193,7 @@ func (p *Proxy) handleClaudeMessages(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	p.logClaudeRequestComplete(r.Context(), requestID, cfg.Mode, meta.Model, sessionKey, len(body), optStats, streamStats, duration)
-	p.emitClaudeUsageEvent(r, sessionKey, meta.Model, optStats, duration, streamStats.StatusCode, guardDecision, overheadMs)
+	p.emitClaudeUsageEvent(r, sessionKey, meta.Model, optStats, duration, streamStats.StatusCode, overheadMs)
 }
 
 func (p *Proxy) handleClaudeCountTokens(w http.ResponseWriter, r *http.Request) {
@@ -365,13 +265,6 @@ func (p *Proxy) claudeDefaults() ClaudeMessagesConfig {
 	}
 	if cfg.HTTPClient == nil {
 		cfg.HTTPClient = http.DefaultClient
-	}
-	if cfg.RateLimitCooldown <= 0 {
-		if os.Getenv("IQ_DEV_MODE") == "1" {
-			cfg.RateLimitCooldown = 1 * time.Second
-		} else {
-			cfg.RateLimitCooldown = 30 * time.Second
-		}
 	}
 	// Apply optimizer defaults when not explicitly configured.
 	if cfg.Optimizer.MinSpanBytes <= 0 {
@@ -1094,80 +987,9 @@ func anthropicUsageOutputTokens(payload string) int {
 	return ev.Usage.OutputTokens
 }
 
-func (p *Proxy) writeGuardResponse(w http.ResponseWriter, r *http.Request, d guard.Decision) {
-	status := d.StatusCode
-	if status == 0 {
-		status = http.StatusTooManyRequests
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-
-	var errType, msg, override string
-
-	switch d.Reason {
-	case "budget_exceeded":
-		w.Header().Set("X-IndexQube-Guard", "budget")
-		errType = "indexqube_budget_exceeded"
-		msg = "IndexQube stopped this session because it reached the configured budget."
-		override = "Set IQ_ALLOW_OVER_BUDGET=1 to continue."
-		w.WriteHeader(status)
-		if err := json.NewEncoder(w).Encode(map[string]any{
-			"error": map[string]any{
-				"type":                errType,
-				"message":             msg,
-				"budget_usd":          d.BudgetUSD,
-				"estimated_spend_usd": d.ProjectedUSD,
-				"override":            override,
-			},
-		}); err != nil {
-			p.logger.ErrorContext(r.Context(), "failed to encode guard response", slog.Any("err", err))
-		}
-		return
-	case "velocity_exceeded":
-		w.Header().Set("X-IndexQube-Guard", "velocity")
-		errType = "indexqube_velocity_exceeded"
-		msg = "IndexQube stopped this request because spend velocity exceeded the maximum allowed."
-		override = "Set IQ_ALLOW_OVER_BUDGET=1 or IQ_ALLOW_RUNAWAY=1 to continue."
-		w.WriteHeader(status)
-		if err := json.NewEncoder(w).Encode(map[string]any{
-			"error": map[string]any{
-				"type":     errType,
-				"message":  msg,
-				"override": override,
-			},
-		}); err != nil {
-			p.logger.ErrorContext(r.Context(), "failed to encode guard response", slog.Any("err", err))
-		}
-		return
-	default:
-		// Default to circuit breaker
-		retryAfter := int(d.RetryAfter.Seconds())
-		if retryAfter <= 0 {
-			retryAfter = 60
-		}
-		w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
-		w.Header().Set("X-IndexQube-Guard", "circuit-breaker")
-		errType = "indexqube_circuit_breaker"
-		msg = "IndexQube stopped a likely runaway agent loop. This session sent too many similar large requests in a short period."
-		override = "Set IQ_ALLOW_RUNAWAY=1 to disable this protection for the current session."
-		w.WriteHeader(status)
-		if err := json.NewEncoder(w).Encode(map[string]any{
-			"error": map[string]any{
-				"type":                errType,
-				"message":             msg,
-				"reason":              firstNonEmpty(d.Reason, "similar_large_requests"),
-				"retry_after_seconds": retryAfter,
-				"override":            override,
-			},
-		}); err != nil {
-			p.logger.ErrorContext(r.Context(), "failed to encode guard response", slog.Any("err", err))
-		}
-	}
-}
-
-func (p *Proxy) emitClaudeUsageEvent(r *http.Request, sessionKey, model string, optStats claudeOptimizerStats, duration time.Duration, upstreamStatus int, d guard.Decision, overheadMs int64) {
+func (p *Proxy) emitClaudeUsageEvent(r *http.Request, sessionKey, model string, optStats claudeOptimizerStats, duration time.Duration, upstreamStatus int, overheadMs int64) {
 	if p.usageTracker != nil {
-		event := telemetry.UsageEvent{
+		p.usageTracker.Track(telemetry.UsageEvent{
 			MachineID:            telemetry.GetMachineID(),
 			OsArch:               runtime.GOOS + "/" + runtime.GOARCH,
 			IqVersion:            Version,
@@ -1179,18 +1001,10 @@ func (p *Proxy) emitClaudeUsageEvent(r *http.Request, sessionKey, model string, 
 			ReductionRatio:       optStats.ReductionRatio * 100,
 			BlocksAnalyzed:       optStats.BlocksSeen,
 			BlocksPruned:         optStats.BlocksPruned,
-			SkipReasons:          guardSkipReasons(d),
 			TotalLatencyMs:       int(duration.Milliseconds()),
 			ProxyOverheadMs:      float64(overheadMs),
 			UpstreamStatus:       upstreamStatus,
-		}
-		if !d.Allow {
-			event.InputTokensSent = 0
-			event.TokensSaved = 0
-			event.ReductionRatio = 0
-			event.UpstreamStatus = http.StatusTooManyRequests
-		}
-		p.usageTracker.Track(event)
+		})
 	}
 
 	if p.sessionTracker != nil {
@@ -1199,29 +1013,8 @@ func (p *Proxy) emitClaudeUsageEvent(r *http.Request, sessionKey, model string, 
 			TokensSent:      optStats.EstimatedTokensAfter,
 			TokensSaved:     optStats.EstimatedTokensSaved,
 			DollarsSaved:    telemetry.EstimateCostSaved("optimize", model, optStats.EstimatedTokensSaved),
-			GuardReason:     d.Reason,
-			Killed:          !d.Allow,
-			Warned:          d.Warn,
 		})
 	}
-}
-
-func guardSkipReasons(d guard.Decision) map[string]int {
-	out := map[string]int{}
-	if d.Allow {
-		out["guard_allowed"] = 1
-		if d.Warn {
-			out["guard_warning"] = 1
-			out["guard_warning_similar_large_requests"] = 1
-		}
-	} else {
-		out["guard_blocked"] = 1
-	}
-	reason := strings.ToLower(strings.TrimSpace(d.Reason))
-	if reason != "" {
-		out["guard_reason_"+strings.ReplaceAll(reason, " ", "_")] = 1
-	}
-	return out
 }
 
 func extractClaudeRequestShape(root map[string]any) claudeRequestShape {
@@ -1397,12 +1190,6 @@ func (p *Proxy) logClaudeRequestComplete(ctx context.Context, requestID, mode, m
 	if stream.RetryAfter > 0 {
 		attrs = append(attrs, slog.Int64("retry_after_ms", stream.RetryAfter.Milliseconds()))
 	}
-	if stream.CircuitOpen {
-		attrs = append(attrs, slog.Bool("circuit_open", true))
-	}
-	if stream.CircuitCooldown > 0 {
-		attrs = append(attrs, slog.Int64("circuit_cooldown_ms", stream.CircuitCooldown.Milliseconds()))
-	}
 	p.logger.LogAttrs(ctx, level, "claude request complete", attrs...)
 }
 
@@ -1411,16 +1198,6 @@ func (s claudeStreamStats) estimatedOutputTokens() int {
 		return s.OutputTokens
 	}
 	return estimateTokens(s.OutputText)
-}
-
-func (s claudeStreamStats) upstreamMeta() claudeUpstreamErrorMeta {
-	return claudeUpstreamErrorMeta{
-		StatusCode: s.StatusCode,
-		Code:       s.UpstreamErrorCode,
-		Type:       s.UpstreamErrorType,
-		RequestID:  s.UpstreamRequestID,
-		RetryAfter: s.RetryAfter,
-	}
 }
 
 func firstNonEmpty(values ...string) string {
@@ -1442,4 +1219,36 @@ func estimateTokens(chars int) int {
 		return 0
 	}
 	return (chars + 3) / 4
+}
+
+func retryAfterSeconds(d time.Duration) string {
+	if d <= 0 {
+		return ""
+	}
+	seconds := int((d + time.Second - 1) / time.Second)
+	if seconds < 1 {
+		seconds = 1
+	}
+	return fmt.Sprintf("%d", seconds)
+}
+
+func retryAfterDuration(value string, now time.Time) time.Duration {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0
+	}
+	if seconds, err := strconv.Atoi(value); err == nil {
+		if seconds <= 0 {
+			return 0
+		}
+		return time.Duration(seconds) * time.Second
+	}
+	when, err := http.ParseTime(value)
+	if err != nil {
+		return 0
+	}
+	if !when.After(now) {
+		return 0
+	}
+	return when.Sub(now)
 }
