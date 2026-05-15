@@ -1,388 +1,469 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>IndexQube — touch less grass</title>
-  <meta name="description" content="Your Claude Pro limits last 3x longer. IndexQube strips redundant context before it reaches Anthropic, so you stop hitting the wall mid-session." />
-  <meta property="og:title" content="IndexQube — touch less grass" />
-  <meta property="og:description" content="Your Claude Pro limits last 3x longer. IndexQube strips redundant context before it reaches Anthropic." />
-  <meta property="og:type" content="website" />
-  <style>
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>IndexQube — touch less grass</title>
+    <meta
+      name="description"
+      content="Your AI coding agent re-reads the same files on every turn. IndexQube strips the redundant context before it hits the API — so your limits go 2–3× further."
+    />
+    <meta property="og:title" content="IndexQube — touch less grass" />
+    <meta
+      property="og:description"
+      content="Your AI coding agent re-reads the same files on every turn. IndexQube strips the redundant context before it hits the API — so your limits go 2–3× further."
+    />
+    <meta property="og:type" content="website" />
+    <style>
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
 
-    :root {
-      --bg:       #0a0a0a;
-      --surface:  #111111;
-      --border:   #222222;
-      --text:     #e8e8e8;
-      --muted:    #666666;
-      --green:    #00ff88;
-      --green-dim: #00cc6a;
-      --red:      #ff4455;
-    }
+      :root {
+        --bg: #0d0f0d;
+        --surface: #121612;
+        --border: #1e261e;
+        --text: #cccccc;
+        --muted: #aaaaaa;
+        --green: #00ff88;
+        --green-dim: #00cc6a;
+        --red: #ff4455;
+      }
 
-    html { scroll-behavior: smooth; }
+      html {
+        scroll-behavior: smooth;
+      }
 
-    body {
-      background: var(--bg);
-      color: var(--text);
-      font-family: 'Courier New', Courier, monospace;
-      min-height: 100vh;
-      display: flex;
-      flex-direction: column;
-    }
+      body {
+        background: var(--bg);
+        color: var(--text);
+        font-family: "Courier New", Courier, monospace;
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+      }
 
-    /* ── NAV ── */
-    nav {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      padding: 1.25rem 2rem;
-      border-bottom: 1px solid var(--border);
-    }
+      /* ── NAV ── */
+      nav {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 1.25rem 2rem;
+        border-bottom: 1px solid var(--border);
+      }
 
-    .logo {
-      font-size: 1rem;
-      font-weight: 700;
-      color: var(--green);
-      letter-spacing: -0.5px;
-    }
+      .logo {
+        font-size: 1rem;
+        font-weight: 700;
+        color: var(--green);
+        letter-spacing: -0.5px;
+      }
 
-    .logo span { color: var(--text); }
+      .logo span {
+        color: var(--text);
+      }
 
-    nav a {
-      color: var(--muted);
-      text-decoration: none;
-      font-size: 0.8rem;
-      transition: color 0.15s;
-    }
+      .nav-links {
+        display: flex;
+        align-items: center;
+        gap: 1.75rem;
+      }
 
-    nav a:hover { color: var(--text); }
+      nav a {
+        color: var(--muted);
+        text-decoration: none;
+        font-size: 0.8rem;
+        transition: color 0.15s;
+      }
 
-    /* ── HERO ── */
-    .hero {
-      flex: 1;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      padding: 5rem 2rem 4rem;
-      text-align: center;
-      gap: 2rem;
-    }
+      nav a:hover {
+        color: var(--text);
+      }
 
-    .badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.5rem;
-      background: #0d1f16;
-      border: 1px solid #1a3d2a;
-      color: var(--green);
-      font-size: 0.72rem;
-      padding: 0.35rem 0.85rem;
-      border-radius: 999px;
-      letter-spacing: 0.05em;
-    }
+      /* ── HERO ── */
+      .hero {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: flex-start;
+        padding: 2rem 2rem 3rem;
+        text-align: center;
+        gap: 2rem;
+      }
 
-    .badge::before {
-      content: '';
-      display: block;
-      width: 6px;
-      height: 6px;
-      background: var(--green);
-      border-radius: 50%;
-      animation: pulse 2s ease-in-out infinite;
-    }
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        background: #0d1f16;
+        border: 1px solid #1a3d2a;
+        color: var(--green);
+        font-size: 0.72rem;
+        padding: 0.35rem 0.85rem;
+        border-radius: 999px;
+        letter-spacing: 0.05em;
+      }
 
-    @keyframes pulse {
-      0%, 100% { opacity: 1; }
-      50%       { opacity: 0.3; }
-    }
+      .badge::before {
+        content: "";
+        display: block;
+        width: 6px;
+        height: 6px;
+        background: var(--green);
+        border-radius: 50%;
+        animation: pulse 2s ease-in-out infinite;
+      }
 
-    h1 {
-      font-size: clamp(2.2rem, 6vw, 4.2rem);
-      font-weight: 700;
-      line-height: 1.05;
-      letter-spacing: -1.5px;
-      max-width: 720px;
-    }
+      @keyframes pulse {
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.3;
+        }
+      }
 
-    h1 .green { color: var(--green); }
+      h1 {
+        font-size: clamp(2.2rem, 6vw, 4.2rem);
+        font-weight: 700;
+        line-height: 1.05;
+        letter-spacing: -1.5px;
+        max-width: 720px;
+      }
 
-    .sub {
-      font-size: clamp(0.9rem, 2vw, 1.05rem);
-      color: var(--muted);
-      max-width: 520px;
-      line-height: 1.7;
-    }
+      h1 .green {
+        color: var(--green);
+      }
 
-    /* ── TERMINAL CARD ── */
-    .terminal {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      width: 100%;
-      max-width: 560px;
-      overflow: hidden;
-      text-align: left;
-    }
+      .hero-text {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 0.75rem;
+      }
 
-    .terminal-bar {
-      background: #1a1a1a;
-      padding: 0.6rem 1rem;
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
-      border-bottom: 1px solid var(--border);
-    }
+      .sub {
+        font-size: clamp(0.9rem, 2vw, 1.05rem);
+        color: var(--muted);
+        max-width: 520px;
+        line-height: 1.7;
+      }
 
-    .dot {
-      width: 10px; height: 10px;
-      border-radius: 50%;
-    }
-    .dot.red    { background: #ff5f57; }
-    .dot.yellow { background: #febc2e; }
-    .dot.green  { background: #28c840; }
+      /* ── TERMINAL CARD ── */
+      .terminal {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        width: 100%;
+        max-width: 560px;
+        overflow: hidden;
+        text-align: left;
+      }
 
-    .terminal-title {
-      font-size: 0.72rem;
-      color: var(--muted);
-      margin-left: auto;
-      margin-right: auto;
-    }
+      .terminal-bar {
+        background: #1a1a1a;
+        padding: 0.6rem 1rem;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        border-bottom: 1px solid var(--border);
+      }
 
-    .terminal-body {
-      padding: 1.25rem 1.5rem;
-      font-size: 0.82rem;
-      line-height: 1.8;
-    }
+      .dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+      }
+      .dot.red {
+        background: #ff5f57;
+      }
+      .dot.yellow {
+        background: #febc2e;
+      }
+      .dot.green {
+        background: #28c840;
+      }
 
-    .line-before { color: var(--red); }
-    .line-after  { color: var(--green); }
-    .line-dim    { color: var(--muted); }
-    .line-label  {
-      display: inline-block;
-      width: 7ch;
-      color: var(--muted);
-    }
+      .terminal-title {
+        font-size: 0.72rem;
+        color: var(--muted);
+        margin-left: auto;
+        margin-right: auto;
+      }
 
-    .savings-row {
-      margin-top: 1rem;
-      padding-top: 1rem;
-      border-top: 1px solid var(--border);
-      display: flex;
-      justify-content: space-between;
-    }
+      .terminal-body {
+        padding: 1.25rem 1.5rem;
+        font-size: 0.82rem;
+        line-height: 1.8;
+      }
 
-    .stat { text-align: center; }
-    .stat-value { font-size: 1.2rem; font-weight: 700; color: var(--green); }
-    .stat-label { font-size: 0.68rem; color: var(--muted); margin-top: 0.15rem; }
+      .line-before {
+        color: var(--red);
+      }
+      .line-after {
+        color: var(--green);
+      }
+      .line-dim {
+        color: var(--muted);
+      }
+      .line-label {
+        display: inline-block;
+        width: 7ch;
+        color: var(--muted);
+      }
 
-    /* ── FEATURES ── */
-    .features {
-      display: flex;
-      flex-wrap: wrap;
-      justify-content: center;
-      gap: 1rem;
-      max-width: 720px;
-      width: 100%;
-    }
+      .savings-row {
+        margin-top: 1rem;
+        padding-top: 1rem;
+        border-top: 1px solid var(--border);
+        display: flex;
+        justify-content: space-between;
+      }
 
-    .chip {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 0.6rem 1rem;
-      font-size: 0.78rem;
-      color: var(--muted);
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
-    }
+      .stat {
+        text-align: center;
+      }
+      .stat-value {
+        font-size: 1.2rem;
+        font-weight: 700;
+        color: var(--green);
+      }
+      .stat-label {
+        font-size: 0.68rem;
+        color: var(--muted);
+        margin-top: 0.15rem;
+      }
 
-    .chip .icon { color: var(--green); font-size: 0.9rem; }
+      /* ── FEATURES ── */
+      .features {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: center;
+        gap: 1rem;
+        max-width: 720px;
+        width: 100%;
+      }
 
-    /* ── WAITLIST ── */
-    .waitlist {
-      width: 100%;
-      max-width: 440px;
-    }
+      .chip {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 0.6rem 1rem;
+        font-size: 0.78rem;
+        color: var(--muted);
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+      }
 
-    .waitlist h2 {
-      font-size: 0.85rem;
-      color: var(--muted);
-      margin-bottom: 0.75rem;
-      text-align: center;
-      letter-spacing: 0.05em;
-    }
+      .chip .icon {
+        color: var(--green);
+        font-size: 0.9rem;
+      }
 
-    .form-row {
-      display: flex;
-      gap: 0.5rem;
-    }
+      /* ── INSTALL BOX ── */
+      .install {
+        width: 100%;
+        max-width: 560px;
+        text-align: left;
+      }
 
-    input[type="email"] {
-      flex: 1;
-      background: var(--surface);
-      border: 1px solid var(--border);
-      color: var(--text);
-      font-family: inherit;
-      font-size: 0.85rem;
-      padding: 0.7rem 1rem;
-      border-radius: 6px;
-      outline: none;
-      transition: border-color 0.15s;
-    }
+      .install-title {
+        font-size: 0.85rem;
+        color: var(--muted);
+        margin-bottom: 0.75rem;
+        letter-spacing: 0.05em;
+      }
 
-    input[type="email"]::placeholder { color: var(--muted); }
-    input[type="email"]:focus { border-color: var(--green); }
+      .install-cmd {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 0.85rem 1.2rem;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        cursor: pointer;
+        transition: border-color 0.15s;
+        gap: 1rem;
+      }
 
-    button[type="submit"] {
-      background: var(--green);
-      color: #000;
-      font-family: inherit;
-      font-size: 0.82rem;
-      font-weight: 700;
-      padding: 0.7rem 1.2rem;
-      border: none;
-      border-radius: 6px;
-      cursor: pointer;
-      white-space: nowrap;
-      transition: background 0.15s, transform 0.1s;
-    }
+      .install-cmd:hover {
+        border-color: var(--green);
+      }
 
-    button[type="submit"]:hover { background: var(--green-dim); }
-    button[type="submit"]:active { transform: scale(0.97); }
+      .cmd-text {
+        color: var(--green);
+        font-size: 0.82rem;
+      }
 
-    .form-note {
-      text-align: center;
-      font-size: 0.7rem;
-      color: var(--muted);
-      margin-top: 0.6rem;
-    }
+      .cmd-copy {
+        font-size: 0.7rem;
+        color: var(--muted);
+        white-space: nowrap;
+        flex-shrink: 0;
+        transition: color 0.15s;
+      }
 
-    /* ── SUCCESS STATE ── */
-    .success-msg {
-      display: none;
-      text-align: center;
-      color: var(--green);
-      font-size: 0.85rem;
-      padding: 0.8rem;
-      border: 1px solid #1a3d2a;
-      background: #0d1f16;
-      border-radius: 6px;
-    }
+      .install-next {
+        margin-top: 0.75rem;
+        font-size: 0.78rem;
+        color: var(--muted);
+        padding-left: 0.2rem;
+      }
 
-    /* ── FOOTER ── */
-    footer {
-      padding: 1.5rem 2rem;
-      border-top: 1px solid var(--border);
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      font-size: 0.72rem;
-      color: var(--muted);
-    }
+      /* ── FOOTER ── */
+      footer {
+        padding: 1.5rem 2rem;
+        border-top: 1px solid var(--border);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        font-size: 0.72rem;
+        color: var(--muted);
+      }
 
-    footer a { color: var(--muted); text-decoration: none; }
-    footer a:hover { color: var(--text); }
+      footer a {
+        color: var(--muted);
+        text-decoration: none;
+      }
+      footer a:hover {
+        color: var(--text);
+      }
 
-    @media (max-width: 540px) {
-      nav { padding: 1rem; }
-      .form-row { flex-direction: column; }
-      footer { flex-direction: column; gap: 0.5rem; text-align: center; }
-    }
-  </style>
-</head>
-<body>
+      @media (max-width: 540px) {
+        nav {
+          padding: 1rem;
+        }
+        footer {
+          flex-direction: column;
+          gap: 0.5rem;
+          text-align: center;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <nav>
+      <div class="logo">index<span>qube</span></div>
+      <div class="nav-links">
+        <a href="#install">install</a>
+        <a href="#features">features</a>
+        <a
+          href="https://github.com/Revanth14/indexqube"
+          target="_blank"
+          rel="noopener"
+          >github</a
+        >
+      </div>
+    </nav>
 
-<nav>
-  <div class="logo">index<span>qube</span></div>
-  <a href="mailto:revanthcse1@gmail.com">contact</a>
-</nav>
+    <main class="hero">
+      <div class="badge">v0.0.2 — available now</div>
 
-<main class="hero">
+      <div class="hero-text">
+        <h1>will make you<br /><span class="green">touch less grass</span></h1>
+        <p class="sub">
+          Claude Code, Codex, Gemini — every AI coding agent re-reads the same
+          files on every turn. IndexQube sits in between and strips the
+          redundant context before it hits the API, so you stop hitting limits
+          mid-session, regardless of which agent you use.
+        </p>
+      </div>
 
-  <div class="badge">early access open</div>
-
-  <h1>we make you<br/><span class="green">touch less grass</span></h1>
-
-  <p class="sub">
-    Your Claude Pro limits run out because Claude Code re-reads the same files on every turn.
-    IndexQube sits between Claude Code and Anthropic and strips the redundant context —
-    so your $20/month goes 2–3× further.
-  </p>
-
-  <!-- terminal mockup -->
-  <div class="terminal">
-    <div class="terminal-bar">
-      <div class="dot red"></div>
-      <div class="dot yellow"></div>
-      <div class="dot green"></div>
-      <div class="terminal-title">session log</div>
-    </div>
-    <div class="terminal-body">
-      <div><span class="line-label line-dim">before</span> <span class="line-before">↑ 14,400 tokens</span>  <span class="line-dim">— full codebase, again</span></div>
-      <div><span class="line-label line-dim">after &nbsp;</span> <span class="line-after">↑ &nbsp;2,100 tokens</span>  <span class="line-dim">— only what changed</span></div>
-      <div class="savings-row">
-        <div class="stat">
-          <div class="stat-value">85%</div>
-          <div class="stat-label">tokens saved</div>
+      <!-- install box -->
+      <div class="install" id="install">
+        <div class="install-title">// one command install</div>
+        <div class="install-cmd" onclick="copyInstall()" title="click to copy">
+          <span class="cmd-text"
+            >curl -fsSL https://indexqube.com/install | bash</span
+          >
+          <span class="cmd-copy" id="copy-label">copy</span>
         </div>
-        <div class="stat">
-          <div class="stat-value">3×</div>
-          <div class="stat-label">longer sessions</div>
-        </div>
-        <div class="stat">
-          <div class="stat-value">$0</div>
-          <div class="stat-label">extra to Anthropic</div>
+        <div class="install-next">
+          then run: <span class="line-after">iq claude</span>
+          <span class="line-dim">/</span>
+          <span class="line-after">iq codex</span>
+          <span class="line-dim">/</span>
+          <span class="line-after">iq gemini</span>
         </div>
       </div>
-    </div>
-  </div>
 
-  <!-- chips -->
-  <div class="features">
-    <div class="chip"><span class="icon">⚡</span> works with your existing Claude Pro</div>
-    <div class="chip"><span class="icon">🔑</span> no API key needed</div>
-    <div class="chip"><span class="icon">🔒</span> your credentials never leave you</div>
-    <div class="chip"><span class="icon">🔌</span> one URL change in Claude Code settings</div>
-  </div>
-
-  <!-- waitlist form -->
-  <div class="waitlist">
-    <h2>// get early access</h2>
-    <form id="waitlist-form" action="https://formsubmit.co/revanthcse1@gmail.com" method="POST">
-      <input type="hidden" name="_subject" value="IndexQube early access request" />
-      <input type="hidden" name="_captcha" value="false" />
-      <input type="hidden" name="_next" value="https://indexqube.com?joined=1" />
-      <div class="form-row">
-        <input type="email" name="email" placeholder="you@example.com" required autocomplete="email" />
-        <button type="submit">get access →</button>
+      <!-- terminal mockup -->
+      <div class="terminal">
+        <div class="terminal-bar">
+          <div class="dot red"></div>
+          <div class="dot yellow"></div>
+          <div class="dot green"></div>
+          <div class="terminal-title">session log</div>
+        </div>
+        <div class="terminal-body">
+          <div>
+            <span class="line-label line-dim">before</span>
+            <span class="line-before">↑ 14,400 tokens</span>
+            <span class="line-dim">— full codebase, again</span>
+          </div>
+          <div>
+            <span class="line-label line-dim">after &nbsp;</span>
+            <span class="line-after">↑ &nbsp;2,100 tokens</span>
+            <span class="line-dim">— only what changed</span>
+          </div>
+          <div class="savings-row">
+            <div class="stat">
+              <div class="stat-value">65%</div>
+              <div class="stat-label">tokens saved</div>
+            </div>
+            <div class="stat">
+              <div class="stat-value">2×</div>
+              <div class="stat-label">longer sessions</div>
+            </div>
+            <div class="stat">
+              <div class="stat-value">$0</div>
+              <div class="stat-label">extra to Anthropic</div>
+            </div>
+          </div>
+        </div>
       </div>
-    </form>
-    <p class="form-note">no spam. we'll ping you when it's ready.</p>
-  </div>
 
-</main>
+      <!-- chips -->
+      <div class="features" id="features">
+        <div class="chip">
+          <span class="icon">⚡</span> works with Claude, Codex &amp; Gemini
+        </div>
+        <div class="chip"><span class="icon">🔑</span> no API key needed</div>
+        <div class="chip">
+          <span class="icon">🔒</span> your credentials never leave you
+        </div>
+        <div class="chip">
+          <span class="icon">🖥️</span> works on Mac and Linux
+        </div>
+      </div>
+    </main>
 
-<footer>
-  <span>© 2025 indexqube</span>
-  <span>built for devs who bill by the hour, not the token</span>
-</footer>
+    <footer>
+      <span>© 2026 indexqube</span>
+      <span>built for devs!</span>
+    </footer>
 
-<script>
-  // Show success message if redirected back with ?joined=1
-  if (new URLSearchParams(location.search).get('joined') === '1') {
-    const form = document.getElementById('waitlist-form');
-    const msg = document.createElement('div');
-    msg.className = 'success-msg';
-    msg.style.display = 'block';
-    msg.textContent = '✓ you\'re on the list. we\'ll be in touch.';
-    form.replaceWith(msg);
-  }
-</script>
-
-</body>
+    <script>
+      function copyInstall() {
+        navigator.clipboard.writeText(
+          "curl -fsSL https://indexqube.com/install | bash",
+        );
+        const label = document.getElementById("copy-label");
+        label.textContent = "copied!";
+        label.style.color = "var(--green)";
+        setTimeout(() => {
+          label.textContent = "copy";
+          label.style.color = "";
+        }, 2000);
+      }
+    </script>
+  </body>
 </html>
