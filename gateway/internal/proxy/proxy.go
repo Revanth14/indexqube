@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Revanth14/indexqube/gateway/internal/domain"
+	"github.com/Revanth14/indexqube/gateway/internal/guard"
 	"github.com/Revanth14/indexqube/gateway/internal/memory"
 	"github.com/Revanth14/indexqube/gateway/internal/telemetry"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
@@ -40,6 +41,8 @@ type Proxy struct {
 	claude          ClaudeMessagesConfig
 	claudeCooldowns *providerCooldowns
 	usageTracker    telemetry.Sink
+	guardManager    *guard.Manager
+	sessionTracker  *telemetry.AgentSessionStore
 }
 
 // BedrockConfig routes /v1/messages to AWS Bedrock instead of Anthropic's API.
@@ -136,6 +139,14 @@ func WithUsageTracker(c telemetry.Sink) Option {
 	}
 }
 
+// WithAgentSessionStore wires the in-memory agent session tracker.
+// Nil disables session aggregation silently.
+func WithAgentSessionStore(s *telemetry.AgentSessionStore) Option {
+	return func(p *Proxy) {
+		p.sessionTracker = s
+	}
+}
+
 // New returns a wired Proxy. A nil governor is a programmer error and
 // panics fast at boot rather than 5xx-ing every request in production.
 func New(gov Governor, opts ...Option) *Proxy {
@@ -149,6 +160,7 @@ func New(gov Governor, opts ...Option) *Proxy {
 		maxRequestSize:  8 << 20, // default 8 MiB
 		optimizeTimeout: 30 * time.Second,
 		claudeCooldowns: newProviderCooldowns(),
+		guardManager:    guard.NewManager(guard.FromEnv()),
 	}
 	for _, opt := range opts {
 		opt(p)
@@ -175,6 +187,7 @@ func (p *Proxy) registerRoutes() {
 		w.WriteHeader(http.StatusOK)
 	})
 	p.mux.HandleFunc("GET /readyz", p.handleReady)
+	p.mux.HandleFunc("GET /v1/agent-sessions", p.handleAgentSessions)
 	p.mux.HandleFunc("GET /v1/diagnostics", p.handleDiagnostics)
 	p.mux.HandleFunc("GET /v1/models", p.handleModels)
 	p.mux.HandleFunc("POST /v1/messages/count_tokens", p.handleClaudeCountTokens)

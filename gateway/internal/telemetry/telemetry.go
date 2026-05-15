@@ -211,6 +211,8 @@ func parseLogLevel(s string) slog.Level {
 		return slog.LevelWarn
 	case "error", "ERROR":
 		return slog.LevelError
+	case "off", "OFF", "none", "NONE":
+		return slog.Level(100) // above all standard levels — effectively silent
 	default:
 		return slog.LevelInfo
 	}

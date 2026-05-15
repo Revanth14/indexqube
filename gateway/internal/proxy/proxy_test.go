@@ -17,6 +17,7 @@ import (
 	"github.com/Revanth14/indexqube/gateway/internal/domain"
 	govpkg "github.com/Revanth14/indexqube/gateway/internal/governor"
 	"github.com/Revanth14/indexqube/gateway/internal/memory"
+	"github.com/Revanth14/indexqube/gateway/internal/telemetry"
 )
 
 // fakeGovernor lets tests script the governor's streaming behavior.
@@ -498,6 +499,66 @@ func TestClaudeMessages_MissingAuth(t *testing.T) {
 	}
 }
 
+func TestClaudeMessages_AgentSessionsRecordWithoutUsageTracker(t *testing.T) {
+	t.Parallel()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "event: message_stop\n")
+		_, _ = io.WriteString(w, `data: {"type":"message_stop"}`+"\n\n")
+	}))
+	t.Cleanup(upstream.Close)
+
+	p := New(&fakeGovernor{},
+		WithAgentSessionStore(telemetry.NewAgentSessionStore(time.Hour)),
+		WithClaudeMessages(ClaudeMessagesConfig{
+			Mode:             "observe",
+			DevToken:         "iq-dev-local",
+			AnthropicAPIKey:  "sk-ant-test",
+			AnthropicBaseURL: upstream.URL,
+			AnthropicVersion: "2023-06-01",
+			SessionStore:     memory.NewStore(time.Hour),
+		}),
+	)
+	srv := httptest.NewServer(p.Handler())
+	t.Cleanup(srv.Close)
+
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/v1/messages", strings.NewReader(`{"model":"claude-sonnet-4-6","stream":true,"messages":[{"role":"user","content":"hi"}]}`))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer iq-dev-local")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST /v1/messages: %v", err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d, want 200", resp.StatusCode)
+	}
+
+	resp, err = http.Get(srv.URL + "/v1/agent-sessions")
+	if err != nil {
+		t.Fatalf("GET /v1/agent-sessions: %v", err)
+	}
+	defer resp.Body.Close()
+	var body struct {
+		TotalSessions int `json:"total_sessions"`
+		Sessions      []struct {
+			RequestsTotal int `json:"requests_total"`
+		} `json:"sessions"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.TotalSessions != 1 || len(body.Sessions) != 1 {
+		t.Fatalf("sessions=%d len=%d, want one session", body.TotalSessions, len(body.Sessions))
+	}
+	if body.Sessions[0].RequestsTotal != 1 {
+		t.Fatalf("requests_total=%d, want 1", body.Sessions[0].RequestsTotal)
+	}
+}
+
 func TestClaudeCountTokens_Passthrough(t *testing.T) {
 	t.Parallel()
 	var gotPath, gotKey string
@@ -579,6 +640,95 @@ func TestClaudeMessages_RateLimitOpensModelCooldown(t *testing.T) {
 
 	if calls != 1 {
 		t.Fatalf("upstream calls=%d, want 1; second request should be served by cooldown", calls)
+	}
+}
+
+func TestClaudeMessages_CircuitBreakerBlocksRepeatedRequests(t *testing.T) {
+	t.Setenv("INDEXQUBE_CIRCUIT_BREAKER_ENABLED", "true")
+	t.Setenv("INDEXQUBE_CIRCUIT_MIN_TOKENS", "1")
+	t.Setenv("INDEXQUBE_CIRCUIT_MAX_SIMILAR", "1")
+	t.Setenv("INDEXQUBE_CIRCUIT_WINDOW_SECONDS", "60")
+	t.Setenv("INDEXQUBE_CIRCUIT_RETRY_AFTER_SECONDS", "60")
+
+	var calls int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "event: message_stop\n")
+		_, _ = io.WriteString(w, `data: {"type":"message_stop"}`+"\n\n")
+	}))
+	t.Cleanup(upstream.Close)
+	srv := newClaudeTestServer(t, upstream.URL, memory.NewStore(time.Hour), "optimize", true)
+
+	body := `{"model":"claude-sonnet-4-6","stream":true,"messages":[{"role":"user","content":"repeat me"}]}`
+	for i := 0; i < 2; i++ {
+		req, err := http.NewRequest(http.MethodPost, srv.URL+"/v1/messages", strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		req.Header.Set("Authorization", "Bearer iq-dev-local")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("POST /v1/messages: %v", err)
+		}
+		gotBody, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if i == 0 && resp.StatusCode != http.StatusOK {
+			t.Fatalf("first request status=%d body=%s, want 200", resp.StatusCode, gotBody)
+		}
+		if i == 1 {
+			if resp.StatusCode != http.StatusTooManyRequests {
+				t.Fatalf("second request status=%d body=%s, want 429", resp.StatusCode, gotBody)
+			}
+			if guard := resp.Header.Get("X-IndexQube-Guard"); guard != "circuit-breaker" {
+				t.Fatalf("X-IndexQube-Guard=%q, want circuit-breaker", guard)
+			}
+			if retry := resp.Header.Get("Retry-After"); retry != "60" {
+				t.Fatalf("Retry-After=%q, want 60", retry)
+			}
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("upstream calls=%d, want 1", calls)
+	}
+}
+
+func TestClaudeMessages_CircuitBreakerOverrideBypassesBlock(t *testing.T) {
+	t.Setenv("INDEXQUBE_CIRCUIT_BREAKER_ENABLED", "true")
+	t.Setenv("INDEXQUBE_CIRCUIT_MIN_TOKENS", "1")
+	t.Setenv("INDEXQUBE_CIRCUIT_MAX_SIMILAR", "1")
+	t.Setenv("INDEXQUBE_CIRCUIT_WINDOW_SECONDS", "60")
+	t.Setenv("IQ_ALLOW_RUNAWAY", "1")
+
+	var calls int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "event: message_stop\n")
+		_, _ = io.WriteString(w, `data: {"type":"message_stop"}`+"\n\n")
+	}))
+	t.Cleanup(upstream.Close)
+	srv := newClaudeTestServer(t, upstream.URL, memory.NewStore(time.Hour), "optimize", true)
+
+	body := `{"model":"claude-sonnet-4-6","stream":true,"messages":[{"role":"user","content":"repeat me"}]}`
+	for i := 0; i < 2; i++ {
+		req, err := http.NewRequest(http.MethodPost, srv.URL+"/v1/messages", strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		req.Header.Set("Authorization", "Bearer iq-dev-local")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("POST /v1/messages: %v", err)
+		}
+		gotBody, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("request %d status=%d body=%s, want 200", i+1, resp.StatusCode, gotBody)
+		}
+	}
+	if calls != 2 {
+		t.Fatalf("upstream calls=%d, want 2", calls)
 	}
 }
 

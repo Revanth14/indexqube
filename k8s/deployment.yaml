@@ -1,0 +1,168 @@
+# IndexQube Gateway - Kubernetes manifests
+#
+# Includes:
+#   Deployment   - 2 replicas, liveness + readiness probes, resource limits,
+#                  graceful SIGTERM drain (15 s, handled in Go signal handler)
+#   Service      - ClusterIP on 8080 (proxy) and 9100 (metrics/admin)
+#
+# Deploy:
+#   kubectl apply -f k8s/deployment.yaml
+#
+# Customise:
+#   - Set image.tag to a pinned SHA or semver in CI
+#   - Tune replicas and resource limits for your node class
+#   - Set ANTHROPIC_BASE_URL to a real upstream if not using the default
+# ---
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: indexqube-gateway
+  labels:
+    app: indexqube-gateway
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: indexqube-gateway
+  # Rolling update: bring up one new pod before taking down an old one.
+  # maxUnavailable=0 ensures the Service always has a healthy pod during deploys.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: indexqube-gateway
+      annotations:
+        # Prometheus scrape annotations - works with kube-prometheus and most
+        # Prometheus Operator setups without a separate ServiceMonitor.
+        prometheus.io/scrape: "true"
+        prometheus.io/port:   "9100"
+        prometheus.io/path:   "/metrics"
+    spec:
+      # Allow up to 45 s for graceful drain (15 s server shutdown plus
+      # kube-proxy/readiness propagation buffer). Must exceed the
+      # shutdownGrace constant in internal/server/run.go.
+      terminationGracePeriodSeconds: 45
+
+      containers:
+        - name: gateway
+          image: indexqube/gateway:latest
+          imagePullPolicy: IfNotPresent
+
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+            - name: admin
+              containerPort: 9100
+              protocol: TCP
+
+          env:
+            - name: PORT
+              value: "8080"
+            # Expose admin server on all interfaces so the readiness probe and
+            # Prometheus can reach /healthz, /readyz, and /metrics on port 9100.
+            - name: ADMIN_BIND_ADDR
+              value: "0.0.0.0"
+            - name: ADMIN_PORT
+              value: "9100"
+            # Structured JSON logging - required for log aggregators.
+            - name: INDEXQUBE_LOG_LEVEL
+              value: "info"
+            # Embed the pod name in logs for per-replica tracing.
+            - name: INDEXQUBE_INSTANCE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+
+          resources:
+            requests:
+              cpu:    "100m"
+              memory: "64Mi"
+            limits:
+              cpu:    "500m"
+              memory: "256Mi"
+
+          # Liveness probe - "is the process alive?"
+          # Hits /healthz on the public port (8080). Returns 200 unconditionally
+          # as long as the Go runtime is healthy. A failed liveness probe causes
+          # k8s to restart the container.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds:       10
+            timeoutSeconds:      2
+            failureThreshold:    3
+
+          # Readiness probe - "is the gateway ready to serve traffic?"
+          # Hits /readyz on the public port. Returns 503 during startup or
+          # after SIGTERM (server.Shutdown drains in-flight SSE streams).
+          # A failed readiness probe removes the pod from the Service endpoints
+          # - k8s stops routing new requests to it without restarting it.
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds:       5
+            timeoutSeconds:      2
+            failureThreshold:    2
+
+          # No preStop hook - rationale:
+          # The standard pattern is `preStop: exec: sleep 5` to give kube-proxy
+          # time to drain iptables before SIGTERM hits the process. However,
+          # distroless/static has no shell or sleep binary. Two paths forward:
+          #   (a) Switch Dockerfile final stage to distroless/base-debian12
+          #       (adds busybox ~3 MiB) and add: lifecycle.preStop.exec: ["/bin/sleep","5"]
+          #   (b) Keep distroless/static - acceptable because:
+          #       - terminationGracePeriodSeconds=45 gives kube-proxy ample time
+          #       - the Go server's 15 s shutdownGrace (server/run.go) drains
+          #         in-flight SSE streams before exit
+          #       - readiness probe fails on SIGTERM -> k8s stops routing new
+          #         requests within one probe period (5 s) anyway
+          # Current choice: (b). Switch to (a) if you observe 5xx spikes during
+          # rolling deploys in a high-QPS environment.
+
+          securityContext:
+            # Matches the UID baked into distroless/static-debian12:nonroot.
+            runAsUser:               65532
+            runAsGroup:              65532
+            runAsNonRoot:            true
+            readOnlyRootFilesystem:  true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+
+      # Pod-level security: no privilege escalation at the pod level either.
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: indexqube-gateway
+  labels:
+    app: indexqube-gateway
+spec:
+  type: ClusterIP
+  selector:
+    app: indexqube-gateway
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP
+    - name: admin
+      port: 9100
+      targetPort: admin
+      protocol: TCP

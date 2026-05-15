@@ -1,9 +1,8 @@
 package telemetry
 
-// EstimateCostSaved calculates the saved USD amount based on token counts.
-// Prices are estimated per 1M input tokens as of early 2024.
-func EstimateCostSaved(provider, model string, tokensSaved int) float64 {
-	if tokensSaved <= 0 {
+// EstimateCost calculates the estimated USD amount based on input token counts.
+func EstimateCost(provider, model string, tokens int) float64 {
+	if tokens <= 0 {
 		return 0
 	}
 
@@ -26,5 +25,11 @@ func EstimateCostSaved(provider, model string, tokensSaved int) float64 {
 		pricePerMillion = 3.0
 	}
 
-	return (float64(tokensSaved) / 1000000.0) * pricePerMillion
+	return (float64(tokens) / 1000000.0) * pricePerMillion
+}
+
+// EstimateCostSaved calculates the saved USD amount based on token counts.
+// Prices are estimated per 1M input tokens as of early 2024.
+func EstimateCostSaved(provider, model string, tokensSaved int) float64 {
+	return EstimateCost(provider, model, tokensSaved)
 }

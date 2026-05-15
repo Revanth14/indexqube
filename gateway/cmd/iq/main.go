@@ -6,6 +6,9 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -21,35 +24,94 @@ import (
 
 var version = "dev"
 
+func generateToken() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Sprintf("iq-fallback-%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b)
+}
+
 func main() {
 	go checkForUpdate()
 
-	port, err := getFreePort()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "iq: failed to find free port: %v\n", err)
-		os.Exit(1)
+	if len(os.Args) < 2 {
+		// iq alone → run claude (backward compat, no subcommand)
+		runClaude([]string{}, false)
+		return
 	}
 
-	// Redirect gateway stderr to a log file so nothing leaks into the terminal.
-	logPath := filepath.Join(os.Getenv("HOME"), ".indexqube", "gateway.log")
-	os.MkdirAll(filepath.Dir(logPath), 0700)             //nolint:errcheck
-	if lf, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644); err == nil {
-		syscall.Dup2(int(lf.Fd()), int(os.Stderr.Fd())) //nolint:errcheck
+	switch os.Args[1] {
+	case "claude":
+		devMode, claudeArgs := parseDevFlag(os.Args[2:])
+		runClaude(claudeArgs, devMode)
+	case "gemini":
+		fmt.Println("  iq gemini — coming soon")
+	case "codex":
+		fmt.Println("  iq codex  — coming soon")
+	case "help", "--help", "-h":
+		printHelp()
+	default:
+		// Unknown subcommand → pass everything to claude (backward compat).
+		// Ensures `iq somefile.go` and `iq --resume` still work as before.
+		runClaude(os.Args[1:], false)
 	}
+}
+
+func parseDevFlag(args []string) (bool, []string) {
+	dev := false
+	filtered := make([]string, 0, len(args))
+	for _, a := range args {
+		if a == "--dev" {
+			dev = true
+		} else {
+			filtered = append(filtered, a)
+		}
+	}
+	return dev, filtered
+}
+
+func runClaude(args []string, devMode bool) {
+	if devMode {
+		os.Setenv("IQ_DEV_MODE", "1")
+		fmt.Fprintln(os.Stderr, "  [iq] dev mode — relaxed guards, full telemetry")
+	}
+
+	// Generate a per-invocation session ID so the circuit breaker scopes
+	// similarity checks within this iq session, not across sessions.
+	os.Setenv("IQ_SESSION_ID", generateToken())
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "iq: failed to reserve local port: %v\n", err)
+		os.Exit(1)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	os.Setenv("INDEXQUBE_LOG_LEVEL", "error")
-	go startProxy(ctx, port)
+	os.Setenv("INDEXQUBE_LOG_LEVEL", "off")
+	go startProxy(ctx, ln)
 
 	if !waitForProxy(port) {
 		fmt.Fprintf(os.Stderr, "iq: proxy failed to start within 2s\n")
 		os.Exit(1)
 	}
 
-	args := append([]string{"claude"}, os.Args[1:]...)
-	cmd := exec.Command(args[0], args[1:]...)
+	claudePath, err := exec.LookPath("claude")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "iq: could not find 'claude' in PATH: %v\n", err)
+		os.Exit(1)
+	}
+
+	if !filepath.IsAbs(claudePath) {
+		fmt.Fprintf(os.Stderr, "iq: 'claude' path is not absolute: %s\n", claudePath)
+		os.Exit(1)
+	}
+
+	cmdArgs := append([]string{claudePath}, args...)
+	cmd := exec.Command(cmdArgs[0], cmdArgs[1:]...)
 	cmd.Env = append(os.Environ(),
 		fmt.Sprintf("ANTHROPIC_BASE_URL=http://127.0.0.1:%d", port),
 	)
@@ -59,6 +121,7 @@ func main() {
 
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sigs)
 	go func() {
 		sig := <-sigs
 		if cmd.Process != nil {
@@ -66,14 +129,42 @@ func main() {
 		}
 	}()
 
-	cmd.Run() //nolint:errcheck
+	if err := cmd.Run(); err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			os.Exit(exitErr.ExitCode())
+		}
+		fmt.Fprintf(os.Stderr, "iq: failed to run claude: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func printHelp() {
+	fmt.Print(`
+  iq — IndexQube CLI
+
+  USAGE
+    iq                   Start Claude Code (default)
+    iq claude            Start Claude Code via IndexQube
+    iq claude --dev      Start Claude Code, dev mode (relaxed guards)
+    iq gemini            Gemini via IndexQube (coming soon)
+    iq codex             Codex via IndexQube  (coming soon)
+    iq help              Show this help
+
+  DEV MODE
+    --dev disables velocity guard, enables verbose logging.
+    Use when building IndexQube with IndexQube.
+
+`)
 }
 
 const telemetryEndpoint = "https://dev-api.indexqube.com"
 
-func startProxy(ctx context.Context, port int) {
-	os.Setenv("INDEXQUBE_BIND_ADDR", fmt.Sprintf("127.0.0.1:%d", port))
-	os.Setenv("INDEXQUBE_DEV_TOKEN", "iq-local")
+func startProxy(ctx context.Context, ln net.Listener) {
+	os.Setenv("INDEXQUBE_BIND_ADDR", ln.Addr().String())
+	if os.Getenv("INDEXQUBE_DEV_TOKEN") == "" {
+		os.Setenv("INDEXQUBE_DEV_TOKEN", generateToken())
+	}
 	os.Setenv("INDEXQUBE_MODE", "optimize")
 	os.Setenv("INDEXQUBE_ENABLE_BLOCK_OPTIMIZER", "true")
 	// Route telemetry through the deployed gateway so Supabase credentials
@@ -85,16 +176,7 @@ func startProxy(ctx context.Context, port int) {
 	if os.Getenv("INDEXQUBE_LOG_LEVEL") == "" {
 		os.Setenv("INDEXQUBE_LOG_LEVEL", "warn")
 	}
-	server.Run(ctx) //nolint:errcheck
-}
-
-func getFreePort() (int, error) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return 0, err
-	}
-	defer ln.Close()
-	return ln.Addr().(*net.TCPAddr).Port, nil
+	server.RunWithPublicListener(ctx, ln) //nolint:errcheck
 }
 
 func waitForProxy(port int) bool {

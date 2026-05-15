@@ -39,6 +39,17 @@ const (
 // Run starts the gateway, reading all config from the environment, and blocks
 // until ctx is cancelled or a fatal startup error occurs.
 func Run(ctx context.Context) error {
+	return run(ctx, nil)
+}
+
+// RunWithPublicListener starts the gateway with an already-bound public
+// listener. This is useful for callers that need to reserve an ephemeral port
+// before startup.
+func RunWithPublicListener(ctx context.Context, publicListener net.Listener) error {
+	return run(ctx, publicListener)
+}
+
+func run(ctx context.Context, publicListener net.Listener) error {
 	bootLogger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 
 	cfg, err := config.Load()
@@ -156,12 +167,15 @@ func Run(ctx context.Context) error {
 		logger.Info("supabase usage telemetry enabled")
 	}
 
+	agentSessions := telemetry.NewAgentSessionStore(0) // 4 h TTL default
+
 	p := proxy.New(gov,
 		proxy.WithLogger(logger),
 		proxy.WithMaxRequestSize(cfg.Governor.MaxRequestSize),
 		proxy.WithMetrics(tp.Metrics),
 		proxy.WithOptimizeTimeout(cfg.Governor.OptimizeTimeout),
 		proxy.WithUsageTracker(usageTracker),
+		proxy.WithAgentSessionStore(agentSessions),
 		proxy.WithClaudeMessages(proxy.ClaudeMessagesConfig{
 			Mode:                 cfg.ClaudeCode.Mode,
 			DevToken:             cfg.ClaudeCode.DevToken,
@@ -199,8 +213,19 @@ func Run(ctx context.Context) error {
 
 	serverErr := make(chan error, 2)
 	go func() {
-		logger.Info("public server listening", slog.String("addr", publicServer.Addr))
-		if err := publicServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		listenAddr := publicServer.Addr
+		if publicListener != nil {
+			listenAddr = publicListener.Addr().String()
+		}
+		logger.Info("public server listening", slog.String("addr", listenAddr))
+
+		var err error
+		if publicListener != nil {
+			err = publicServer.Serve(publicListener)
+		} else {
+			err = publicServer.ListenAndServe()
+		}
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			serverErr <- fmt.Errorf("public server: %w", err)
 		}
 	}()
@@ -212,7 +237,7 @@ func Run(ctx context.Context) error {
 	}()
 
 	janitorCtx, stopJanitor := context.WithCancel(context.Background())
-	go runMemoryJanitor(janitorCtx, claudeStore, memoryJanitorInterval, logger)
+	go runMemoryJanitor(janitorCtx, claudeStore, agentSessions, memoryJanitorInterval, logger)
 
 	// Block until ctx is cancelled or a server fails fatally.
 	var runErr error
@@ -253,7 +278,7 @@ func newUpstreamTransport() *http.Transport {
 	}
 }
 
-func runMemoryJanitor(ctx context.Context, store *memory.Store, interval time.Duration, logger *slog.Logger) {
+func runMemoryJanitor(ctx context.Context, store *memory.Store, sessions *telemetry.AgentSessionStore, interval time.Duration, logger *slog.Logger) {
 	if store == nil || interval <= 0 {
 		return
 	}
@@ -265,6 +290,9 @@ func runMemoryJanitor(ctx context.Context, store *memory.Store, interval time.Du
 			return
 		case <-t.C:
 			store.CleanupExpired()
+			if sessions != nil {
+				sessions.CleanupExpired()
+			}
 		}
 	}
 }

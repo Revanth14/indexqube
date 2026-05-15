@@ -31,7 +31,7 @@ func checkForUpdate() {
 
 	fmt.Fprintf(os.Stderr,
 		"\niq: new version available %s → %s\n"+
-			"    Run: curl -sSL https://raw.githubusercontent.com/Revanth14/indexqube/main/install.sh | bash\n\n",
+			"    Download the latest release from: https://github.com/Revanth14/indexqube/releases/latest\n\n",
 		version, release.TagName,
 	)
 }

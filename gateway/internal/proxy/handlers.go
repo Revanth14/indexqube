@@ -574,6 +574,40 @@ func (p *Proxy) writeError(w http.ResponseWriter, r *http.Request, payload error
 	}
 }
 
+// handleAgentSessions returns a snapshot of all in-memory agent sessions and
+// the recent kill log. This is the data source for the iq ui dashboard's
+// "Agent Sessions" panel and the interview story around agentic observability.
+func (p *Proxy) handleAgentSessions(w http.ResponseWriter, _ *http.Request) {
+	type response struct {
+		Sessions          []telemetry.AgentSession `json:"sessions"`
+		KillLog           []telemetry.KillEvent    `json:"kill_log"`
+		TotalSessions     int                      `json:"total_sessions"`
+		TotalKills        int                      `json:"total_kills"`
+		TotalDollarsSaved float64                  `json:"total_dollars_saved"`
+	}
+
+	var resp response
+	if p.sessionTracker != nil {
+		resp.Sessions = p.sessionTracker.Snapshot()
+		resp.KillLog = p.sessionTracker.KillLog()
+	}
+	if resp.Sessions == nil {
+		resp.Sessions = []telemetry.AgentSession{}
+	}
+	if resp.KillLog == nil {
+		resp.KillLog = []telemetry.KillEvent{}
+	}
+	resp.TotalSessions = len(resp.Sessions)
+	for _, s := range resp.Sessions {
+		resp.TotalKills += s.KillEvents
+		resp.TotalDollarsSaved += s.DollarsSaved
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
 // handleTelemetry accepts a UsageEvent from the iq binary and forwards it to
 // the configured telemetry sink (Supabase). This keeps Supabase credentials
 // server-side only — the distributed iq binary never sees them.
