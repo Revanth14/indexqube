@@ -262,11 +262,6 @@
         gap: 0.5rem;
       }
 
-      .chip .icon {
-        color: var(--green);
-        font-size: 0.9rem;
-      }
-
       /* ── INSTALL BOX ── */
       .install {
         width: 100%;
@@ -318,6 +313,168 @@
         padding-left: 0.2rem;
       }
 
+      /* ── HOW IT WORKS ── */
+      .how-it-works {
+        padding: 4rem 2rem 5rem;
+        border-top: 1px solid var(--border);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 2.5rem;
+      }
+
+      .section-label {
+        font-size: 0.82rem;
+        color: var(--muted);
+        letter-spacing: 0.08em;
+        width: 100%;
+        max-width: 860px;
+      }
+
+      .pipeline {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        width: 100%;
+        max-width: 860px;
+        overflow: hidden;
+      }
+
+      .pipeline-body {
+        padding: 1.5rem;
+        font-size: 0.76rem;
+        line-height: 2.1;
+        overflow-x: auto;
+      }
+
+      .pipeline-row {
+        display: grid;
+        grid-template-columns: 1.5rem 18ch 1fr 1fr;
+        gap: 0.5rem 1.5rem;
+        align-items: baseline;
+      }
+
+      .p-step {
+        color: var(--muted);
+      }
+      .p-name {
+        color: var(--text);
+      }
+      .p-algo {
+        color: var(--green);
+      }
+      .p-note {
+        color: var(--muted);
+      }
+
+      .tech-cards {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 1rem;
+        width: 100%;
+        max-width: 860px;
+      }
+
+      .tech-card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 1.5rem;
+        display: flex;
+        flex-direction: column;
+        gap: 1rem;
+      }
+
+      .tc-title {
+        color: var(--green);
+        font-size: 0.82rem;
+        font-weight: 700;
+        padding-bottom: 0.75rem;
+        border-bottom: 1px solid var(--border);
+      }
+
+      .tc-path {
+        font-size: 0.68rem;
+        color: var(--muted);
+        margin-top: -0.5rem;
+      }
+
+      .tc-body {
+        font-size: 0.74rem;
+        color: var(--muted);
+        line-height: 2;
+      }
+
+      .tc-body .hi {
+        color: var(--text);
+      }
+      .tc-body .accent {
+        color: var(--green);
+      }
+
+      .bench {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        width: 100%;
+        max-width: 860px;
+        overflow: hidden;
+      }
+
+      .bench-body {
+        padding: 1.5rem;
+        font-size: 0.76rem;
+        line-height: 2;
+        overflow-x: auto;
+      }
+
+      .bench-head {
+        display: grid;
+        grid-template-columns: 21ch 6ch 12ch 12ch 1fr;
+        gap: 0 1.5rem;
+        color: var(--muted);
+        padding-bottom: 0.5rem;
+        border-bottom: 1px solid var(--border);
+        margin-bottom: 0.5rem;
+      }
+
+      .bench-row {
+        display: grid;
+        grid-template-columns: 21ch 6ch 12ch 12ch 1fr;
+        gap: 0 1.5rem;
+        color: var(--text);
+      }
+
+      .bench-row .win {
+        color: var(--green);
+      }
+
+      @media (max-width: 860px) {
+        .tech-cards {
+          grid-template-columns: 1fr;
+        }
+        .pipeline-row {
+          grid-template-columns: 1.5rem 1fr;
+        }
+        .p-algo,
+        .p-note {
+          display: none;
+        }
+        /* bench: show operation + LSM only */
+        .bench-head,
+        .bench-row {
+          grid-template-columns: 1fr 10ch;
+        }
+        .bench-head > *:nth-child(2),
+        .bench-head > *:nth-child(4),
+        .bench-head > *:nth-child(5),
+        .bench-row > *:nth-child(2),
+        .bench-row > *:nth-child(4),
+        .bench-row > *:nth-child(5) {
+          display: none;
+        }
+      }
+
       /* ── FOOTER ── */
       footer {
         padding: 1.5rem 2rem;
@@ -337,10 +494,47 @@
         color: var(--text);
       }
 
-      @media (max-width: 540px) {
+      @media (max-width: 640px) {
+        .nav-links {
+          gap: 1rem;
+        }
+        nav a {
+          font-size: 0.72rem;
+        }
+        .how-it-works {
+          padding: 2.5rem 1rem 3rem;
+        }
+      }
+
+      @media (max-width: 480px) {
+        /* hide "how it works" nav link — too long, logo + 3 links fit */
+        .nav-links a[href="#how-it-works"] {
+          display: none;
+        }
         nav {
           padding: 1rem;
         }
+        .hero {
+          padding: 1.25rem 1rem 2rem;
+          gap: 1.5rem;
+        }
+        h1 {
+          letter-spacing: -0.5px;
+        }
+        .terminal-body {
+          font-size: 0.74rem;
+        }
+        .stat-value {
+          font-size: 1rem;
+        }
+        footer {
+          flex-direction: column;
+          gap: 0.5rem;
+          text-align: center;
+        }
+      }
+
+      @media (max-width: 540px) {
         footer {
           flex-direction: column;
           gap: 0.5rem;
@@ -355,6 +549,7 @@
       <div class="nav-links">
         <a href="#install">install</a>
         <a href="#features">features</a>
+        <a href="#how-it-works">how it works</a>
         <a
           href="https://github.com/Revanth14/indexqube"
           target="_blank"
@@ -433,18 +628,191 @@
 
       <!-- chips -->
       <div class="features" id="features">
-        <div class="chip">
-          <span class="icon">⚡</span> works with Claude, Codex &amp; Gemini
-        </div>
-        <div class="chip"><span class="icon">🔑</span> no API key needed</div>
-        <div class="chip">
-          <span class="icon">🔒</span> your credentials never leave you
-        </div>
-        <div class="chip">
-          <span class="icon">🖥️</span> works on Mac and Linux
-        </div>
+        <div class="chip">d</div>
+        <div class="chip">custom LSM storage engine</div>
+        <div class="chip">works with most agentic CLIs</div>
+        <div class="chip">credentials never leave your machine</div>
       </div>
     </main>
+
+    <section class="how-it-works" id="how-it-works">
+      <div class="section-label">// HOW IT WORKS</div>
+
+      <!-- pipeline -->
+      <div class="pipeline">
+        <div class="terminal-bar">
+          <div class="dot red"></div>
+          <div class="dot yellow"></div>
+          <div class="dot green"></div>
+          <div class="terminal-title">request pipeline — per turn</div>
+        </div>
+        <div class="pipeline-body">
+          <div class="pipeline-row">
+            <span class="p-step">1</span>
+            <span class="p-name">buffer + bound</span>
+            <span class="p-algo">http.MaxBytesReader — 8 MiB cap</span>
+            <span class="p-note">protects against OOM on large prompts</span>
+          </div>
+          <div class="pipeline-row">
+            <span class="p-step">2</span>
+            <span class="p-name">Rabin-Karp chunk</span>
+            <span class="p-algo">64-byte window, ~4 KB chunks</span>
+            <span class="p-note"
+              >content-defined boundaries — same algo as rsync + Git</span
+            >
+          </div>
+          <div class="pipeline-row">
+            <span class="p-step">3</span>
+            <span class="p-name">SHA-256 → LSM lookup</span>
+            <span class="p-algo">Bloom filter gate, skiplist MemTable</span>
+            <span class="p-note"
+              >O(1) negative lookup — avoids disk on cache miss</span
+            >
+          </div>
+          <div class="pipeline-row">
+            <span class="p-step">4</span>
+            <span class="p-name">strip known blocks</span>
+            <span class="p-algo">re-marshal JSON, pointer swap</span>
+            <span class="p-note"
+              >190 K → 47 K tokens typical on warm session</span
+            >
+          </div>
+          <div class="pipeline-row">
+            <span class="p-step">5</span>
+            <span class="p-name">forward upstream</span>
+            <span class="p-algo">TLS 1.3, HTTP/2, keep-alive pool</span>
+            <span class="p-note">your API key, your account — no relay</span>
+          </div>
+          <div class="pipeline-row">
+            <span class="p-step">6</span>
+            <span class="p-name">SSE stream back</span>
+            <span class="p-algo">http.Flusher, sub-ms flush</span>
+            <span class="p-note">zero added latency on streaming tokens</span>
+          </div>
+          <div class="pipeline-row">
+            <span class="p-step">7</span>
+            <span class="p-name">Prometheus record</span>
+            <span class="p-algo">histogram — p50 / p90 / p95 / p99</span>
+            <span class="p-note"
+              >tail latency tracked per session, no sampling loss</span
+            >
+          </div>
+        </div>
+      </div>
+
+      <!-- tech cards -->
+      <div class="tech-cards">
+        <div class="tech-card">
+          <div>
+            <div class="tc-title">Rabin-Karp Chunker</div>
+            <div class="tc-path">internal/chunker/</div>
+          </div>
+          <div class="tc-body">
+            <div><span class="hi">window</span> 64 bytes, rolling hash</div>
+            <div>
+              <span class="hi">boundary</span> hash &amp; mask == 0 → split
+            </div>
+            <div>
+              <span class="hi">chunk size</span>
+              <span class="accent">~4 KB</span> target, variable
+            </div>
+            <div><span class="hi">identity</span> SHA-256 content address</div>
+            <div><span class="hi">prior art</span> rsync, Git pack objects</div>
+            <div>
+              <span class="hi">allocs</span>
+              <span class="accent">zero</span> per rolling step
+            </div>
+          </div>
+        </div>
+
+        <div class="tech-card">
+          <div>
+            <div class="tc-title">Custom LSM Engine</div>
+            <div class="tc-path">internal/store/lsm/</div>
+          </div>
+          <div class="tc-body">
+            <div>
+              <span class="hi">MemTable</span> Go skiplist, flush @ 4 MB
+            </div>
+            <div><span class="hi">SSTable</span> 4 KB page-aligned blocks</div>
+            <div><span class="hi">index</span> binary search on read path</div>
+            <div><span class="hi">filter</span> Bloom — double FNV-1a hash</div>
+            <div>
+              <span class="hi">compaction</span> leveled, background goroutine
+            </div>
+            <div>
+              <span class="hi">writes</span>
+              <span class="accent">16×</span> SQLite B-tree throughput
+            </div>
+          </div>
+        </div>
+
+        <div class="tech-card">
+          <div>
+            <div class="tc-title">L7 Proxy + SSE</div>
+            <div class="tc-path">internal/proxy/</div>
+          </div>
+          <div class="tc-body">
+            <div>
+              <span class="hi">model</span> net/http goroutine per request
+            </div>
+            <div>
+              <span class="hi">backpressure</span> io.LimitReader at ingress
+            </div>
+            <div>
+              <span class="hi">streaming</span> http.Flusher, no buffering
+            </div>
+            <div>
+              <span class="hi">telemetry</span> Prometheus histogram p50 → p99
+            </div>
+            <div>
+              <span class="hi">overhead</span>
+              <span class="accent">&lt; 15 ms</span> typical proxy tax
+            </div>
+            <div>
+              <span class="hi">concurrency</span> RWMutex concurrent reads
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- benchmark -->
+      <div class="section-label">
+        // BENCHMARK — LSM vs SQLite (go test -bench, 100K ops each)
+      </div>
+      <div class="bench">
+        <div class="bench-body">
+          <div class="bench-head">
+            <span>operation</span>
+            <span>n</span>
+            <span>LSM</span>
+            <span>SQLite</span>
+            <span>delta</span>
+          </div>
+          <div class="bench-row">
+            <span>sequential write</span>
+            <span>100 K</span>
+            <span class="win">2,557 ns/op</span>
+            <span>42,498 ns/op</span>
+            <span class="win">16× faster</span>
+          </div>
+          <div class="bench-row">
+            <span>write amplification</span>
+            <span>—</span>
+            <span class="win">0.277×</span>
+            <span>6.92×</span>
+            <span class="win">25× lower</span>
+          </div>
+          <div class="bench-row">
+            <span>Bloom lookup</span>
+            <span>—</span>
+            <span class="win">32 ns/op</span>
+            <span>n/a</span>
+            <span>0 B/op, 0 allocs</span>
+          </div>
+        </div>
+      </div>
+    </section>
 
     <footer>
       <span>© 2026 indexqube</span>
