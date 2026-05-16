@@ -10,6 +10,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -746,6 +748,193 @@ func TestClaudeMessages_OptimizePreservesLatestTurnWhilePruningOldContent(t *tes
 	// Body must have shrunk since the large repeated block was removed.
 	if len(bodies[1]) >= len(bodies[0]) {
 		t.Fatalf("second request did not shrink: first=%d second=%d", len(bodies[0]), len(bodies[1]))
+	}
+}
+
+func TestClaudeMessages_OptimizeNeverPrunesSystemText(t *testing.T) {
+	t.Parallel()
+	p := New(&fakeGovernor{})
+	cfg := ClaudeMessagesConfig{
+		Mode:                 "optimize",
+		EnableBlockOptimizer: true,
+		SessionStore:         memory.NewStore(time.Hour),
+		Optimizer: OptimizerConfig{
+			MinSpanBytes:            512,
+			EnableToolResultPruning: true,
+			EnableSystemPruning:     true,
+		},
+	}
+	systemText := strings.Repeat("system instruction must stay intact\n", 80)
+	body := []byte(fmt.Sprintf(
+		`{"model":"claude-sonnet-4-6","system":[{"type":"text","text":%q}],"messages":[{"role":"user","content":"old turn"},{"role":"user","content":"latest turn"}]}`,
+		systemText,
+	))
+
+	if _, _, _, _, err := p.prepareClaudeBody(context.Background(), cfg, "system-test", body); err != nil {
+		t.Fatalf("first prepare: %v", err)
+	}
+	forward, _, stats, _, err := p.prepareClaudeBody(context.Background(), cfg, "system-test", body)
+	if err != nil {
+		t.Fatalf("second prepare: %v", err)
+	}
+
+	if strings.Contains(string(forward), "[iq:ref") {
+		t.Fatalf("system text must not be replaced, body=%s", forward)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(forward, &got); err != nil {
+		t.Fatalf("unmarshal forward body: %v", err)
+	}
+	gotSystem := got["system"].([]any)[0].(map[string]any)["text"].(string)
+	if gotSystem != systemText {
+		t.Fatalf("system text changed after optimize")
+	}
+	if stats.PreservedSystemCount != 1 {
+		t.Fatalf("preserved_system_count=%d, want 1; stats=%+v", stats.PreservedSystemCount, stats)
+	}
+}
+
+func TestClaudeMessages_OptimizePreservesProtectedInstructionToolResult(t *testing.T) {
+	t.Parallel()
+	p := New(&fakeGovernor{})
+	cfg := ClaudeMessagesConfig{
+		Mode:                 "optimize",
+		EnableBlockOptimizer: true,
+		SessionStore:         memory.NewStore(time.Hour),
+		Optimizer: OptimizerConfig{
+			MinSpanBytes:            512,
+			EnableToolResultPruning: true,
+		},
+	}
+	instructionBody := strings.Repeat("project instruction line that must remain visible\n", 80)
+	body := []byte(fmt.Sprintf(
+		`{"model":"claude-sonnet-4-6","messages":[{"role":"assistant","content":[{"type":"tool_use","id":"toolu_read_claude","name":"Read","input":{"file_path":"/repo/CLAUDE.md"}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_read_claude","content":%q}]},{"role":"user","content":"latest turn"}]}`,
+		instructionBody,
+	))
+
+	if _, _, _, _, err := p.prepareClaudeBody(context.Background(), cfg, "protected-test", body); err != nil {
+		t.Fatalf("first prepare: %v", err)
+	}
+	forward, _, stats, _, err := p.prepareClaudeBody(context.Background(), cfg, "protected-test", body)
+	if err != nil {
+		t.Fatalf("second prepare: %v", err)
+	}
+
+	if strings.Contains(string(forward), "[iq:ref") {
+		t.Fatalf("protected instruction file result must not be replaced, body=%s", forward)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(forward, &got); err != nil {
+		t.Fatalf("unmarshal forward body: %v", err)
+	}
+	gotMessages := got["messages"].([]any)
+	gotContent := gotMessages[1].(map[string]any)["content"].([]any)
+	gotToolResult := gotContent[0].(map[string]any)["content"].(string)
+	if gotToolResult != instructionBody {
+		t.Fatalf("protected instruction body changed after optimize")
+	}
+	if stats.PreservedInstructionCount != 1 {
+		t.Fatalf("preserved_instruction_count=%d, want 1; stats=%+v", stats.PreservedInstructionCount, stats)
+	}
+}
+
+func TestClaudeMessages_OptimizeStillPrunesOrdinaryToolResult(t *testing.T) {
+	t.Parallel()
+	p := New(&fakeGovernor{})
+	cfg := ClaudeMessagesConfig{
+		Mode:                 "optimize",
+		EnableBlockOptimizer: true,
+		SessionStore:         memory.NewStore(time.Hour),
+		Optimizer: OptimizerConfig{
+			MinSpanBytes:            512,
+			EnableToolResultPruning: true,
+		},
+	}
+	fileBody := strings.Repeat("ordinary source code output line\n", 80)
+	body := []byte(fmt.Sprintf(
+		`{"model":"claude-sonnet-4-6","messages":[{"role":"assistant","content":[{"type":"tool_use","id":"toolu_read_go","name":"Read","input":{"file_path":"/repo/src/main.go"}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_read_go","content":%q}]},{"role":"user","content":"latest turn"}]}`,
+		fileBody,
+	))
+
+	if _, _, _, _, err := p.prepareClaudeBody(context.Background(), cfg, "ordinary-test", body); err != nil {
+		t.Fatalf("first prepare: %v", err)
+	}
+	forward, _, stats, _, err := p.prepareClaudeBody(context.Background(), cfg, "ordinary-test", body)
+	if err != nil {
+		t.Fatalf("second prepare: %v", err)
+	}
+
+	if !strings.Contains(string(forward), "[iq:ref") {
+		t.Fatalf("ordinary repeated tool result should still be replaced, body=%s", forward)
+	}
+	if stats.BlocksPruned != 1 {
+		t.Fatalf("blocks_pruned=%d, want 1; stats=%+v", stats.BlocksPruned, stats)
+	}
+}
+
+func TestProtectedInstructionSpanDetection(t *testing.T) {
+	t.Parallel()
+	if !isProtectedInstructionSpan(TextSpan{SourcePath: `/repo/.cursor/rules/backend.mdc`}) {
+		t.Fatal("expected .cursor/rules path to be protected")
+	}
+	if !isProtectedInstructionSpan(TextSpan{Text: `Read /repo/CONTEXT.md before editing.`}) {
+		t.Fatal("expected CONTEXT.md mention to be protected")
+	}
+	if isProtectedInstructionSpan(TextSpan{SourcePath: `/repo/src/main.go`, Text: `package main`}) {
+		t.Fatal("ordinary source file should not be protected")
+	}
+}
+
+func TestDumpClaudePayloadsAppendsSessionFile(t *testing.T) {
+	dumpDir := t.TempDir()
+	sessionFile := filepath.Join(dumpDir, "iq-session-test.jsonl")
+	t.Setenv("IQ_DUMP_SESSION_FILE", sessionFile)
+
+	dumpClaudePayloads("dump-test", []byte(`{"before":true}`), []byte(`{"after":true}`))
+	dumpClaudePayloads("dump-test-2", []byte(`{"before":2}`), []byte(`{"after":2}`))
+
+	raw, err := os.ReadFile(sessionFile)
+	if err != nil {
+		t.Fatalf("read session dump: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("dump lines=%d, want 2; dump=%s", len(lines), raw)
+	}
+	var first payloadDumpRecord
+	if err := json.Unmarshal([]byte(lines[0]), &first); err != nil {
+		t.Fatalf("unmarshal first dump line: %v", err)
+	}
+	if first.RequestID != "dump-test" || first.BeforeBytes != 15 || first.AfterBytes != 14 || first.SavedBytes != 1 {
+		t.Fatalf("unexpected first dump record: %+v", first)
+	}
+	if !strings.Contains(string(first.Before), `"before":true`) {
+		t.Fatalf("before payload missing from first record: %s", first.Before)
+	}
+	if _, err := os.Stat(filepath.Join(dumpDir, "iq-before-dump-test.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("session dumps should not create per-request before file, err=%v", err)
+	}
+}
+
+func TestDumpClaudePayloadsFallsBackToPairFiles(t *testing.T) {
+	dumpDir := t.TempDir()
+	t.Setenv("IQ_DUMP_DIR", dumpDir)
+
+	dumpClaudePayloads("dump-test", []byte(`{"before":true}`), []byte(`{"after":true}`))
+
+	before, err := os.ReadFile(filepath.Join(dumpDir, "iq-before-dump-test.json"))
+	if err != nil {
+		t.Fatalf("read before dump: %v", err)
+	}
+	after, err := os.ReadFile(filepath.Join(dumpDir, "iq-after-dump-test.json"))
+	if err != nil {
+		t.Fatalf("read after dump: %v", err)
+	}
+	if !strings.Contains(string(before), `"before": true`) {
+		t.Fatalf("before dump was not pretty printed: %s", before)
+	}
+	if !strings.Contains(string(after), `"after": true`) {
+		t.Fatalf("after dump was not pretty printed: %s", after)
 	}
 }
 

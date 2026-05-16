@@ -14,9 +14,11 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Revanth14/indexqube/gateway/internal/memory"
@@ -30,6 +32,8 @@ import (
 const (
 	claudeDefaultMode = "observe"
 )
+
+var dumpPayloadMu sync.Mutex
 
 type anthropicMessagesRequest struct {
 	Model    string             `json:"model"`
@@ -78,14 +82,16 @@ type claudeOptimizerStats struct {
 	ClassSpansPruned   map[string]int `json:"class_spans_pruned,omitempty"`
 
 	// Preserve-reason counters.
-	PreservedLatestTurnBytes int `json:"preserved_latest_turn_bytes"`
-	PreservedLatestTurnCount int `json:"preserved_latest_turn_count"`
-	PreservedSmallBytes      int `json:"preserved_small_bytes"`
-	PreservedSmallCount      int `json:"preserved_small_count"`
-	PreservedSystemBytes     int `json:"preserved_system_bytes"`
-	PreservedSystemCount     int `json:"preserved_system_count"`
-	PreservedToolUseBytes    int `json:"preserved_tool_use_bytes"`
-	PreservedToolUseCount    int `json:"preserved_tool_use_count"`
+	PreservedLatestTurnBytes  int `json:"preserved_latest_turn_bytes"`
+	PreservedLatestTurnCount  int `json:"preserved_latest_turn_count"`
+	PreservedSmallBytes       int `json:"preserved_small_bytes"`
+	PreservedSmallCount       int `json:"preserved_small_count"`
+	PreservedSystemBytes      int `json:"preserved_system_bytes"`
+	PreservedSystemCount      int `json:"preserved_system_count"`
+	PreservedToolUseBytes     int `json:"preserved_tool_use_bytes"`
+	PreservedToolUseCount     int `json:"preserved_tool_use_count"`
+	PreservedInstructionBytes int `json:"preserved_instruction_bytes"`
+	PreservedInstructionCount int `json:"preserved_instruction_count"`
 
 	// Size tracking.
 	LargestSpanBytes   int `json:"largest_span_bytes"`
@@ -105,7 +111,7 @@ type claudeStreamStats struct {
 	UpstreamErrorCode string
 	UpstreamErrorType string
 	UpstreamRequestID string
-	RetryAfter time.Duration
+	RetryAfter        time.Duration
 }
 
 type claudeUpstreamErrorMeta struct {
@@ -176,6 +182,9 @@ func (p *Proxy) handleClaudeMessages(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		p.writeError(w, r, errorPayload{HTTPStatus: http.StatusBadRequest, Type: "invalid_request_error", Code: "invalid_anthropic_request", Message: err.Error()})
 		return
+	}
+	if os.Getenv("IQ_DUMP_PAYLOADS") == "1" {
+		dumpClaudePayloads(requestID, body, forwardBody)
 	}
 	_ = shape
 
@@ -273,7 +282,6 @@ func (p *Proxy) claudeDefaults() ClaudeMessagesConfig {
 		cfg.Optimizer.MaxChunkBytes = 8192
 		cfg.Optimizer.MinSavedTokens = 10
 		cfg.Optimizer.EnableToolResultPruning = true
-		cfg.Optimizer.EnableSystemPruning = true
 	}
 	return cfg
 }
@@ -296,6 +304,94 @@ func validClaudeDevToken(r *http.Request, want string) bool {
 	auth := strings.TrimSpace(r.Header.Get("Authorization"))
 	token := strings.TrimSpace(strings.TrimPrefix(auth, "Bearer "))
 	return token != ""
+}
+
+func dumpClaudePayloads(requestID string, before, after []byte) {
+	if sessionFile := os.Getenv("IQ_DUMP_SESSION_FILE"); sessionFile != "" {
+		if err := appendSessionDump(sessionFile, requestID, before, after); err != nil {
+			fmt.Fprintf(os.Stderr, "[iq] failed to append payload dump: %v\n", err)
+		}
+		return
+	}
+
+	dumpDir := os.Getenv("IQ_DUMP_DIR")
+	if dumpDir == "" {
+		dumpDir = "/tmp"
+	}
+	if err := os.MkdirAll(dumpDir, 0o700); err != nil {
+		fmt.Fprintf(os.Stderr, "[iq] failed to dump payload pair: %v\n", err)
+		return
+	}
+	beforePath := filepath.Join(dumpDir, "iq-before-"+requestID+".json")
+	afterPath := filepath.Join(dumpDir, "iq-after-"+requestID+".json")
+	if err := os.WriteFile(beforePath, prettyJSON(before), 0o600); err != nil {
+		fmt.Fprintf(os.Stderr, "[iq] failed to dump payload pair: %v\n", err)
+		return
+	}
+	if err := os.WriteFile(afterPath, prettyJSON(after), 0o600); err != nil {
+		fmt.Fprintf(os.Stderr, "[iq] failed to dump payload pair: %v\n", err)
+		return
+	}
+	appendDumpLog(dumpDir, beforePath, afterPath)
+}
+
+type payloadDumpRecord struct {
+	Timestamp   string          `json:"ts"`
+	RequestID   string          `json:"request_id"`
+	BeforeBytes int             `json:"before_bytes"`
+	AfterBytes  int             `json:"after_bytes"`
+	SavedBytes  int             `json:"saved_bytes"`
+	Before      json.RawMessage `json:"before"`
+	After       json.RawMessage `json:"after"`
+}
+
+func appendSessionDump(sessionFile, requestID string, before, after []byte) error {
+	if err := os.MkdirAll(filepath.Dir(sessionFile), 0o700); err != nil {
+		return err
+	}
+	record := payloadDumpRecord{
+		Timestamp:   time.Now().Format(time.RFC3339),
+		RequestID:   requestID,
+		BeforeBytes: len(before),
+		AfterBytes:  len(after),
+		SavedBytes:  len(before) - len(after),
+		Before:      json.RawMessage(before),
+		After:       json.RawMessage(after),
+	}
+	line, err := json.Marshal(record)
+	if err != nil {
+		return err
+	}
+	line = append(line, '\n')
+
+	dumpPayloadMu.Lock()
+	defer dumpPayloadMu.Unlock()
+	f, err := os.OpenFile(sessionFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = f.Write(line)
+	return err
+}
+
+func appendDumpLog(dumpDir, beforePath, afterPath string) {
+	logPath := filepath.Join(dumpDir, "dump.log")
+	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	fmt.Fprintf(f, "%s dumped payload pair -> %s %s\n", time.Now().Format(time.RFC3339), beforePath, afterPath)
+}
+
+func prettyJSON(raw []byte) []byte {
+	var out bytes.Buffer
+	if err := json.Indent(&out, raw, "", "  "); err != nil {
+		return raw
+	}
+	out.WriteByte('\n')
+	return out.Bytes()
 }
 
 func claudeSessionKey(r *http.Request, fallback string) string {
@@ -418,6 +514,12 @@ func (p *Proxy) prepareClaudeBody(ctx context.Context, cfg ClaudeMessagesConfig,
 			continue
 		}
 
+		if isProtectedInstructionSpan(span) {
+			stats.PreservedInstructionBytes += span.Bytes
+			stats.PreservedInstructionCount++
+			continue
+		}
+
 		stats.ClassBytesEligible[span.Class] += span.Bytes
 		stats.BytesEligible += span.Bytes
 		prunableSpans = append(prunableSpans, span)
@@ -482,10 +584,36 @@ func isEligibleSpanClass(class string, cfg OptimizerConfig) bool {
 	case SpanClassAssistantTextOld:
 		return cfg.EnableAssistantPruning
 	case SpanClassSystemText:
-		return cfg.EnableSystemPruning
+		return false
 	default:
 		return false
 	}
+}
+
+var protectedInstructionPathFragments = [...]string{
+	"claude.md",
+	"context.md",
+	"agents.md",
+	".cursorrules",
+	".cursor/rules/",
+	".github/copilot-instructions.md",
+}
+
+func isProtectedInstructionSpan(span TextSpan) bool {
+	return containsProtectedInstructionPath(span.SourcePath) || containsProtectedInstructionPath(span.Text)
+}
+
+func containsProtectedInstructionPath(s string) bool {
+	s = strings.ToLower(strings.ReplaceAll(s, "\\", "/"))
+	if strings.TrimSpace(s) == "" {
+		return false
+	}
+	for _, fragment := range protectedInstructionPathFragments {
+		if strings.Contains(s, fragment) {
+			return true
+		}
+	}
+	return false
 }
 
 // classSpecificReplacement returns a compact replacement marker for a pruned
@@ -1159,6 +1287,10 @@ func (p *Proxy) logClaudeRequestComplete(ctx context.Context, requestID, mode, m
 	}
 	if opt.PreservedToolUseCount > 0 {
 		attrs = append(attrs, slog.Int("preserved_tool_use_count", opt.PreservedToolUseCount))
+	}
+	if opt.PreservedInstructionCount > 0 {
+		attrs = append(attrs, slog.Int("preserved_instruction_count", opt.PreservedInstructionCount))
+		attrs = append(attrs, slog.Int("preserved_instruction_bytes", opt.PreservedInstructionBytes))
 	}
 	for class, bytes := range opt.ClassBytesSeen {
 		if bytes > 0 {

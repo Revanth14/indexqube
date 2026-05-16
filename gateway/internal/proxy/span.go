@@ -24,6 +24,7 @@ const (
 // It carries location, classification, and hash — but never persisted raw text.
 type TextSpan struct {
 	Path            string // dot-path for diagnostics (e.g. "messages[2].content[0].text")
+	SourcePath      string // source file path when known from a paired tool_use
 	Role            string // "user", "assistant", "system"
 	BlockType       string // "text", "tool_result", "tool_use", or ""
 	Class           string // one of SpanClass* constants
@@ -64,6 +65,10 @@ func extractSpans(root map[string]any) []TextSpan {
 			}
 		}
 	}
+	toolUsePaths := map[string]string{}
+	if messages, ok := root["messages"].([]any); ok {
+		toolUsePaths = collectToolUsePaths(messages)
+	}
 
 	if sys := root["system"]; sys != nil {
 		spans = append(spans, extractSystemSpans(sys)...)
@@ -78,11 +83,54 @@ func extractSpans(root map[string]any) []TextSpan {
 			role, _ := msg["role"].(string)
 			role = strings.ToLower(strings.TrimSpace(role))
 			isLatest := i == latestUserIdx || i == latestAssistantIdx
-			spans = append(spans, extractMessageSpans(msg["content"], role, i, isLatest)...)
+			spans = append(spans, extractMessageSpans(msg["content"], role, i, isLatest, toolUsePaths)...)
 		}
 	}
 
 	return spans
+}
+
+func collectToolUsePaths(messages []any) map[string]string {
+	paths := make(map[string]string)
+	for _, rawMsg := range messages {
+		msg, ok := rawMsg.(map[string]any)
+		if !ok {
+			continue
+		}
+		content, ok := msg["content"].([]any)
+		if !ok {
+			continue
+		}
+		for _, rawItem := range content {
+			item, ok := rawItem.(map[string]any)
+			if !ok {
+				continue
+			}
+			typ, _ := item["type"].(string)
+			if typ != "tool_use" {
+				continue
+			}
+			id, _ := item["id"].(string)
+			path := toolUseInputPath(item)
+			if id != "" && path != "" {
+				paths[id] = path
+			}
+		}
+	}
+	return paths
+}
+
+func toolUseInputPath(item map[string]any) string {
+	input, ok := item["input"].(map[string]any)
+	if !ok {
+		return ""
+	}
+	for _, key := range []string{"file_path", "path", "notebook_path"} {
+		if path, ok := input[key].(string); ok && strings.TrimSpace(path) != "" {
+			return path
+		}
+	}
+	return ""
 }
 
 func extractSystemSpans(sys any) []TextSpan {
@@ -130,7 +178,7 @@ func extractSystemSpans(sys any) []TextSpan {
 	return nil
 }
 
-func extractMessageSpans(content any, role string, msgIdx int, isLatest bool) []TextSpan {
+func extractMessageSpans(content any, role string, msgIdx int, isLatest bool, toolUsePaths map[string]string) []TextSpan {
 	var spans []TextSpan
 	switch c := content.(type) {
 	case string:
@@ -175,7 +223,8 @@ func extractMessageSpans(content any, role string, msgIdx int, isLatest bool) []
 					})
 				}
 			case "tool_result":
-				spans = append(spans, extractToolResultSpans(item["content"], role, msgIdx, i, isLatest)...)
+				toolUseID, _ := item["tool_use_id"].(string)
+				spans = append(spans, extractToolResultSpans(item["content"], role, msgIdx, i, isLatest, toolUsePaths[toolUseID])...)
 			case "tool_use":
 				b, _ := json.Marshal(item)
 				spans = append(spans, TextSpan{
@@ -196,13 +245,14 @@ func extractMessageSpans(content any, role string, msgIdx int, isLatest bool) []
 	return spans
 }
 
-func extractToolResultSpans(content any, role string, msgIdx, contentIdx int, isLatest bool) []TextSpan {
+func extractToolResultSpans(content any, role string, msgIdx, contentIdx int, isLatest bool, sourcePath string) []TextSpan {
 	class := classifyTextSpan(role, "tool_result", isLatest)
 	switch c := content.(type) {
 	case string:
 		if strings.TrimSpace(c) != "" {
 			return []TextSpan{{
 				Path:            fmt.Sprintf("messages[%d].content[%d].content", msgIdx, contentIdx),
+				SourcePath:      sourcePath,
 				Role:            role,
 				BlockType:       "tool_result",
 				Class:           class,
@@ -227,6 +277,7 @@ func extractToolResultSpans(content any, role string, msgIdx, contentIdx int, is
 				if text, ok := item["text"].(string); ok && strings.TrimSpace(text) != "" {
 					spans = append(spans, TextSpan{
 						Path:            fmt.Sprintf("messages[%d].content[%d].content[%d].text", msgIdx, contentIdx, i),
+						SourcePath:      sourcePath,
 						Role:            role,
 						BlockType:       "tool_result",
 						Class:           class,

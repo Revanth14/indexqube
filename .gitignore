@@ -33,6 +33,7 @@ coverage.out
 
 # Logs/build/cache
 .cache/
+.indexqube/
 *.log
 *.jsonl
 logs/

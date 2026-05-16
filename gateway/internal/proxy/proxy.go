@@ -38,8 +38,8 @@ type Proxy struct {
 	optimizeTimeout time.Duration
 	metrics         *telemetry.Metrics
 	claude          ClaudeMessagesConfig
-	usageTracker   telemetry.Sink
-	sessionTracker *telemetry.AgentSessionStore
+	usageTracker    telemetry.Sink
+	sessionTracker  *telemetry.AgentSessionStore
 }
 
 // BedrockConfig routes /v1/messages to AWS Bedrock instead of Anthropic's API.
@@ -63,7 +63,7 @@ type OptimizerConfig struct {
 	MinSavedTokens          int  // skip rewrite if savings below this threshold (default 10)
 	EnableToolResultPruning bool // prune old tool_result spans (default true via claudeDefaults)
 	EnableAssistantPruning  bool // prune old assistant text spans (default false)
-	EnableSystemPruning     bool // prune system text spans (default true via claudeDefaults)
+	EnableSystemPruning     bool // deprecated; system text spans are never pruned
 	Diagnostics             bool // emit verbose per-class diagnostics in logs
 }
 
@@ -77,8 +77,8 @@ type ClaudeMessagesConfig struct {
 	EnableBlockOptimizer bool
 	Optimizer            OptimizerConfig
 	Bedrock              BedrockConfig
-	SessionStore *memory.Store
-	HTTPClient   *http.Client
+	SessionStore         *memory.Store
+	HTTPClient           *http.Client
 }
 
 // Option configures a Proxy at construction time.

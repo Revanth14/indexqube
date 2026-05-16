@@ -202,7 +202,7 @@ func Load() (*AppConfig, error) {
 			AnthropicVersion:     getEnvWithDefault("ANTHROPIC_VERSION", "2023-06-01"),
 			EnableLogPruner:      getEnvAsBool("INDEXQUBE_ENABLE_LOG_PRUNER", false),
 			EnableBlockOptimizer: getEnvAsBool("INDEXQUBE_ENABLE_BLOCK_OPTIMIZER", false),
-			SessionTTL: getSessionTTL(),
+			SessionTTL:           getSessionTTL(),
 
 			BedrockEnabled:       getEnvAsBool("INDEXQUBE_BEDROCK_ENABLED", false),
 			BedrockRegion:        getEnvWithDefault("INDEXQUBE_BEDROCK_REGION", "us-east-1"),
@@ -215,7 +215,7 @@ func Load() (*AppConfig, error) {
 			OptMinSavedTokens:          getEnvAsInt("INDEXQUBE_OPT_MIN_SAVED_TOKENS", 0),
 			OptEnableToolResultPruning: getEnvAsBool("INDEXQUBE_OPT_ENABLE_TOOL_RESULT_PRUNING", true),
 			OptEnableAssistantPruning:  getEnvAsBool("INDEXQUBE_OPT_ENABLE_ASSISTANT_PRUNING", false),
-			OptEnableSystemPruning:     getEnvAsBool("INDEXQUBE_OPT_ENABLE_SYSTEM_PRUNING", true),
+			OptEnableSystemPruning:     getEnvAsBool("INDEXQUBE_OPT_ENABLE_SYSTEM_PRUNING", false),
 			OptDiagnostics:             getEnvAsBool("INDEXQUBE_OPT_DIAGNOSTICS", false),
 		},
 		Cache: CacheConfig{

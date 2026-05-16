@@ -33,18 +33,16 @@ func generateToken() string {
 }
 
 func main() {
-	go checkForUpdate()
-
 	if len(os.Args) < 2 {
 		// iq alone → run claude (backward compat, no subcommand)
-		runClaude([]string{}, false)
+		runClaude([]string{}, false, false)
 		return
 	}
 
 	switch os.Args[1] {
 	case "claude":
-		devMode, claudeArgs := parseDevFlag(os.Args[2:])
-		runClaude(claudeArgs, devMode)
+		devMode, dumpPayloads, claudeArgs := parseClaudeFlags(os.Args[2:])
+		runClaude(claudeArgs, devMode, dumpPayloads)
 	case "gemini":
 		fmt.Println("  iq gemini — coming soon")
 	case "codex":
@@ -54,32 +52,54 @@ func main() {
 	default:
 		// Unknown subcommand → pass everything to claude (backward compat).
 		// Ensures `iq somefile.go` and `iq --resume` still work as before.
-		runClaude(os.Args[1:], false)
+		runClaude(os.Args[1:], false, false)
 	}
 }
 
-func parseDevFlag(args []string) (bool, []string) {
+func parseClaudeFlags(args []string) (bool, bool, []string) {
 	dev := false
+	dumpPayloads := false
 	filtered := make([]string, 0, len(args))
 	for _, a := range args {
-		if a == "--dev" {
+		switch a {
+		case "--dev":
 			dev = true
-		} else {
+		case "--dump-payloads":
+			dumpPayloads = true
+		default:
 			filtered = append(filtered, a)
 		}
 	}
-	return dev, filtered
+	return dev, dumpPayloads, filtered
 }
 
-func runClaude(args []string, devMode bool) {
+func runClaude(args []string, devMode, dumpPayloads bool) {
 	if devMode {
 		os.Setenv("IQ_DEV_MODE", "1")
 		fmt.Fprintln(os.Stderr, "  [iq] dev mode — relaxed guards, full telemetry")
 	}
+	sessionID := generateToken()
+	if dumpPayloads {
+		os.Setenv("IQ_DUMP_PAYLOADS", "1")
+		cwd, err := os.Getwd()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "iq: failed to resolve dump directory: %v\n", err)
+			os.Exit(1)
+		}
+		dumpDir := filepath.Join(cwd, ".indexqube", "dumps")
+		shortSessionID := sessionID
+		if len(shortSessionID) > 8 {
+			shortSessionID = shortSessionID[:8]
+		}
+		sessionFile := filepath.Join(dumpDir, "iq-session-"+time.Now().Format("20060102-150405")+"-"+shortSessionID+".jsonl")
+		os.Setenv("IQ_DUMP_DIR", dumpDir)
+		os.Setenv("IQ_DUMP_SESSION_FILE", sessionFile)
+		fmt.Fprintf(os.Stderr, "  [iq] dumping payloads to %s\n", sessionFile)
+	}
 
 	// Generate a per-invocation session ID so the circuit breaker scopes
 	// similarity checks within this iq session, not across sessions.
-	os.Setenv("IQ_SESSION_ID", generateToken())
+	os.Setenv("IQ_SESSION_ID", sessionID)
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -147,6 +167,8 @@ func printHelp() {
     iq                   Start Claude Code (default)
     iq claude            Start Claude Code via IndexQube
     iq claude --dev      Start Claude Code, dev mode (relaxed guards)
+    iq claude --dump-payloads
+                         Dump Anthropic payloads to .indexqube/dumps/iq-session-*.jsonl
     iq gemini            Gemini via IndexQube (coming soon)
     iq codex             Codex via IndexQube  (coming soon)
     iq help              Show this help
