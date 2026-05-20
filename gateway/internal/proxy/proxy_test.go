@@ -872,6 +872,43 @@ func TestClaudeMessages_OptimizeStillPrunesOrdinaryToolResult(t *testing.T) {
 	}
 }
 
+func TestClaudeMessages_OptimizeDoesNotHTMLEscapePayload(t *testing.T) {
+	t.Parallel()
+	p := New(&fakeGovernor{})
+	cfg := ClaudeMessagesConfig{
+		Mode:                 "optimize",
+		EnableBlockOptimizer: true,
+		SessionStore:         memory.NewStore(time.Hour),
+		Optimizer: OptimizerConfig{
+			MinSpanBytes:            512,
+			EnableToolResultPruning: true,
+		},
+	}
+	fileBody := strings.Repeat("<system-reminder>ordinary & repeated output</system-reminder>\n", 80)
+	body := []byte(fmt.Sprintf(
+		`{"model":"claude-sonnet-4-6","messages":[{"role":"assistant","content":[{"type":"tool_use","id":"toolu_html","name":"Bash","input":{"command":"printf output"}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_html","content":%q}]},{"role":"user","content":"latest turn"}]}`,
+		fileBody,
+	))
+
+	if _, _, _, _, err := p.prepareClaudeBody(context.Background(), cfg, "html-test", body); err != nil {
+		t.Fatalf("first prepare: %v", err)
+	}
+	forward, _, stats, _, err := p.prepareClaudeBody(context.Background(), cfg, "html-test", body)
+	if err != nil {
+		t.Fatalf("second prepare: %v", err)
+	}
+
+	if !strings.Contains(string(forward), "[iq:ref") {
+		t.Fatalf("ordinary repeated tool result should be replaced, body=%s", forward)
+	}
+	if bytes.Contains(forward, []byte(`\u003c`)) || bytes.Contains(forward, []byte(`\u003e`)) || bytes.Contains(forward, []byte(`\u0026`)) {
+		t.Fatalf("optimized payload should not HTML-escape unrelated content: %s", forward)
+	}
+	if stats.EstimatedTokensSaved <= 0 {
+		t.Fatalf("expected positive token savings, stats=%+v", stats)
+	}
+}
+
 func TestProtectedInstructionSpanDetection(t *testing.T) {
 	t.Parallel()
 	if !isProtectedInstructionSpan(TextSpan{SourcePath: `/repo/.cursor/rules/backend.mdc`}) {

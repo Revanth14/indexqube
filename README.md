@@ -9,17 +9,15 @@ A stateless L7 proxy written in Go that sits between Claude Code and Anthropic's
 ```mermaid
 graph LR
     A[Claude Code] -->|POST /v1/messages| B[iq proxy :8080]
-    B --> C{Governor}
-    C -->|velocity exceeded| D[HTTP 429]
-    C -->|ok| E[Optimizer]
-    E --> F[Rabin-Karp Chunker]
-    F --> G[LSM / SQLite Cache]
-    G -->|cache hit: strip block| E
-    E -->|compressed request| H[Anthropic API]
-    H -->|SSE stream| B
+    B --> C[Optimizer]
+    C --> D[Rabin-Karp Chunker]
+    D --> E[LSM / SQLite Cache]
+    E -->|cache hit: strip block| C
+    C -->|compressed request| F[Anthropic API]
+    F -->|SSE stream| B
     B -->|zero-copy flush| A
-    B --> I[HDR Histogram]
-    B --> J[Supabase telemetry]
+    B --> G[HDR Histogram]
+    B --> H[Supabase telemetry]
 ```
 
 **Request reduction:** a 190,000-token payload with repeated file reads compresses to ~47,000 tokens after deduplication — 75% fewer tokens forwarded upstream.
@@ -48,16 +46,17 @@ B-trees do random I/O on every write — each insert updates a node in place on 
 
 ```
 Workload: 70% writes / 30% reads  (IndexQube actual ratio)
+go test -bench=BenchmarkLSM_70w30r -benchtime=5s  (Apple M1 Pro)
 
 Scale       LSM (ns/op)     SQLite B-tree (ns/op)   Speedup
 ─────────────────────────────────────────────────────────────
-1K          640             12,612                  19.7×
-10K         1,321           16,956                  12.8×
-100K        2,692           49,744                  18.5×
+1K            755              15,364                 20.3×
+10K         1,599              19,836                 12.4×
+100K        2,804              50,578                 18.0×
 
 Write amplification at 100K entries:
-  LSM:     0.15×
-  SQLite:  2.80×   →  19× less write amplification
+  LSM:     0.085×
+  SQLite:  1.94×   →  23× less write amplification
 ```
 
 ### MemTable — skiplist
@@ -99,8 +98,8 @@ Optimal number of hash functions:
 At 1% FPR with 10,000 keys: `m = 95,851 bits (≈12 KB)`, `k = 7` hash functions. Double hashing (`h1 + i×h2`) avoids the cost of k independent hash computations.
 
 ```
-BenchmarkBloom_MayContain    24 ns/op
-BenchmarkBloom_Add          138 ns/op
+BenchmarkBloom_MayContain    31.79 ns/op    0 B/op    0 allocs
+BenchmarkBloom_Add          162.0  ns/op    0 B/op    0 allocs
 ```
 
 ### Leveled compaction
@@ -304,8 +303,23 @@ Disabling system pruning entirely leaves tokens on the table for sessions with l
 
 ---
 
-- **CGO dependency:** `go-sqlite3` requires CGO, losing native cross-compilation. CI uses `zig cc` as the C compiler per target OS. Resolution path: migrate the receipts cache to the LSM engine, which is pure Go — enabling `CGO_ENABLED=0`.
-- **LSM not yet in critical path:** The LSM engine is built and benchmarked (see above). The production request path currently uses SQLite for the receipts cache while the LSM is validated under real load.
-- **sync.RWMutex contention:** golang/go [#17973](https://github.com/golang/go/issues/17973) and [#38813](https://github.com/golang/go/issues/38813) document cache-line contention on `readerCount` at high goroutine counts. Acceptable at current load; mitigation path is sharding or `sync.Map`.
+## Known Limitations and Future Work
 
----
+### Velocity guard and circuit breaker deleted
+
+The governor package's velocity guard and circuit breaker exist in the codebase (`internal/governor/`) but the proxy no longer invokes them (removed in `c9214ca`). Two bugs made them fire on legitimate sessions rather than only runaway loops:
+
+1. **Session key collapse** — sessions without the expected `x-session-id` header fell back to the literal key `"no-session"`, collapsing all such sessions into one velocity bucket. One heavy session would block all others sharing the fallback key.
+2. **Token estimation overcounting** — `len(body)/4` counted JSON structural overhead (keys, brackets, nesting) as billable token content, inflating estimates by 30–40% and making normal large sessions appear to exceed the block threshold.
+
+The correct fix: (1) derive session key from a stable client fingerprint that never collapses multiple real sessions, (2) estimate tokens from message content only — not raw body size, (3) make guards opt-in via `INDEXQUBE_GUARDS_ENABLED=1` so they never fire in default deployments.
+
+### LSM engine not yet in the critical path
+
+The LSM engine (`internal/store/lsm/`) is fully built and benchmarked but the production request path still uses SQLite (via `go-sqlite3`) for the receipts cache. This is a deliberate deferral: the LSM engine needs production traffic validation before replacing a working component.
+
+**Consequence:** the Dockerfile requires `CGO_ENABLED=1` and a C compiler (`zig cc`) for cross-compilation targets. Migrating the receipts cache from SQLite to the LSM engine eliminates the CGO dependency entirely, producing a pure-Go binary.
+
+### System pruning disabled
+
+`EnableSystemPruning` defaults to `false` (see Debugging section 2). Sessions with genuinely large, redundant system content pay the full token cost for that content on every turn. Semantic classification of instruction files vs. generic system text would recover these tokens safely.

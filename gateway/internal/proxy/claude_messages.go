@@ -394,6 +394,16 @@ func prettyJSON(raw []byte) []byte {
 	return out.Bytes()
 }
 
+func marshalJSONNoHTMLEscape(v any) ([]byte, error) {
+	var out bytes.Buffer
+	enc := json.NewEncoder(&out)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return bytes.TrimSuffix(out.Bytes(), []byte{'\n'}), nil
+}
+
 func claudeSessionKey(r *http.Request, fallback string) string {
 	if sk := strings.TrimSpace(r.Header.Get(headerSessionKey)); sk != "" {
 		return sk
@@ -552,7 +562,7 @@ func (p *Proxy) prepareClaudeBody(ctx context.Context, cfg ClaudeMessagesConfig,
 		}
 	}
 
-	optimized, err := json.Marshal(rewriteRoot)
+	optimized, err := marshalJSONNoHTMLEscape(rewriteRoot)
 	if err != nil {
 		p.logger.WarnContext(ctx, "claude optimize marshal failed; forwarding original", slog.Any("err", err))
 		return body, req, stats, shape, nil
