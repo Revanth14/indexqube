@@ -6,12 +6,12 @@
     <title>IndexQube — touch less grass</title>
     <meta
       name="description"
-      content="Your AI coding agent re-reads the same files on every turn. IndexQube strips the redundant context before it hits the API — so your limits go 2–3× further."
+      content="Your AI coding agent re-reads the same files on every turn. IndexQube strips the redundant context before it hits the API — 15–17% fewer tokens, measured on real sessions."
     />
     <meta property="og:title" content="IndexQube — touch less grass" />
     <meta
       property="og:description"
-      content="Your AI coding agent re-reads the same files on every turn. IndexQube strips the redundant context before it hits the API — so your limits go 2–3× further."
+      content="Your AI coding agent re-reads the same files on every turn. IndexQube strips the redundant context before it hits the API — 15–17% fewer tokens, measured on real sessions."
     />
     <meta property="og:type" content="website" />
     <style>
@@ -238,6 +238,88 @@
         font-size: 0.68rem;
         color: var(--muted);
         margin-top: 0.15rem;
+      }
+
+      /* ── LIVE STATS BAND ── */
+      .live-stats {
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: var(--surface);
+        padding: 1.25rem 1rem;
+        display: flex;
+        justify-content: center;
+        gap: 0;
+        width: 100%;
+        max-width: 560px;
+      }
+
+      .ls-item {
+        flex: 1;
+        max-width: 220px;
+        text-align: center;
+        padding: 0 1.5rem;
+        position: relative;
+      }
+
+      .ls-item + .ls-item::before {
+        content: "";
+        position: absolute;
+        left: 0;
+        top: 15%;
+        height: 70%;
+        width: 1px;
+        background: var(--border);
+      }
+
+      .ls-value {
+        font-size: clamp(1.5rem, 3vw, 2.2rem);
+        font-weight: 700;
+        color: var(--green);
+        letter-spacing: -1px;
+        transition: color 0.3s;
+        font-variant-numeric: tabular-nums;
+      }
+
+      .ls-label {
+        font-size: 0.7rem;
+        color: var(--muted);
+        margin-top: 0.3rem;
+        letter-spacing: 0.06em;
+      }
+
+      .ls-live {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.35rem;
+        font-size: 0.65rem;
+        color: var(--muted);
+        margin-top: 0.2rem;
+      }
+
+      .ls-live::before {
+        content: "";
+        display: block;
+        width: 5px;
+        height: 5px;
+        background: var(--green);
+        border-radius: 50%;
+        animation: pulse 2s ease-in-out infinite;
+      }
+
+      @media (max-width: 600px) {
+        .live-stats {
+          flex-wrap: wrap;
+          gap: 1.5rem;
+          padding: 1.5rem 1rem;
+        }
+        .ls-item {
+          flex: 0 0 calc(50% - 0.75rem);
+          max-width: none;
+          padding: 0;
+        }
+        .ls-item + .ls-item::before {
+          display: none;
+        }
       }
 
       /* ── FEATURES ── */
@@ -475,6 +557,32 @@
         }
       }
 
+      /* ── BOTTOM CTA ── */
+      .bottom-cta {
+        padding: 4rem 2rem;
+        border-top: 1px solid var(--border);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 1.5rem;
+        text-align: center;
+      }
+
+      .bottom-cta h2 {
+        font-size: clamp(1.4rem, 4vw, 2.2rem);
+        font-weight: 700;
+        letter-spacing: -0.5px;
+      }
+
+      .bottom-cta h2 .green {
+        color: var(--green);
+      }
+
+      .bottom-cta .sub {
+        font-size: 0.85rem;
+        color: var(--muted);
+      }
+
       /* ── FOOTER ── */
       footer {
         padding: 1.5rem 2rem;
@@ -563,12 +671,11 @@
       <div class="badge">v0.0.2 — available now</div>
 
       <div class="hero-text">
-        <h1>will make you<br /><span class="green">touch less grass</span></h1>
+        <h1>stop hitting limits<br /><span class="green">mid-session</span></h1>
+        <p style="font-size:0.78rem;color:var(--muted);margin-top:-0.25rem;letter-spacing:0.03em;">// touch less grass</p>
         <p class="sub">
-          Claude Code, Codex, Gemini — every AI coding agent re-reads the same
-          files on every turn. IndexQube sits in between and strips the
-          redundant context before it hits the API, so you stop hitting limits
-          mid-session, regardless of which agent you use.
+          IndexQube sits between your terminal and Claude, deduplicating tokens
+          before they're sent — 15–17% fewer tokens, measured on real sessions.
         </p>
       </div>
 
@@ -590,37 +697,61 @@
         </div>
       </div>
 
+      <!-- live stats -->
+      <div class="live-stats" aria-label="Live gateway stats">
+        <div class="ls-item">
+          <div class="ls-value" id="ls-tokens-processed">—</div>
+          <div class="ls-label">tokens processed</div>
+          <div class="ls-live">live</div>
+        </div>
+        <div class="ls-item">
+          <div class="ls-value" id="ls-tokens-saved">—</div>
+          <div class="ls-label">tokens deduplicated</div>
+          <div class="ls-live">live</div>
+        </div>
+        <div class="ls-item">
+          <div class="ls-value" id="ls-requests">—</div>
+          <div class="ls-label">requests proxied</div>
+          <div class="ls-live">live</div>
+        </div>
+        <div class="ls-item">
+          <div class="ls-value" id="ls-sessions">—</div>
+          <div class="ls-label">sessions optimized</div>
+          <div class="ls-live">live</div>
+        </div>
+      </div>
+
       <!-- terminal mockup -->
       <div class="terminal">
         <div class="terminal-bar">
           <div class="dot red"></div>
           <div class="dot yellow"></div>
           <div class="dot green"></div>
-          <div class="terminal-title">session log</div>
+          <div class="terminal-title">session log — real 47-request session</div>
         </div>
         <div class="terminal-body">
           <div>
             <span class="line-label line-dim">before</span>
-            <span class="line-before">↑ 14,400 tokens</span>
-            <span class="line-dim">— full codebase, again</span>
+            <span class="line-before">↑ 72,320 tokens</span>
+            <span class="line-dim">— repeated file reads in history</span>
           </div>
           <div>
             <span class="line-label line-dim">after &nbsp;</span>
-            <span class="line-after">↑ &nbsp;2,100 tokens</span>
-            <span class="line-dim">— only what changed</span>
+            <span class="line-after">↑ 59,848 tokens</span>
+            <span class="line-dim">— duplicates stripped, 18 blocks pruned</span>
           </div>
           <div class="savings-row">
             <div class="stat">
-              <div class="stat-value">65%</div>
-              <div class="stat-label">tokens saved</div>
+              <div class="stat-value">17%</div>
+              <div class="stat-label">tokens deduplicated</div>
             </div>
             <div class="stat">
-              <div class="stat-value">2×</div>
-              <div class="stat-label">longer sessions</div>
+              <div class="stat-value">12,472</div>
+              <div class="stat-label">tokens saved / request</div>
             </div>
             <div class="stat">
-              <div class="stat-value">$0</div>
-              <div class="stat-label">extra to Anthropic</div>
+              <div class="stat-value">direct</div>
+              <div class="stat-label">to Anthropic API</div>
             </div>
           </div>
         </div>
@@ -674,7 +805,7 @@
             <span class="p-name">strip known blocks</span>
             <span class="p-algo">re-marshal JSON, pointer swap</span>
             <span class="p-note"
-              >190 K → 47 K tokens typical on warm session</span
+              >72 K → 59 K tokens typical on warm session</span
             >
           </div>
           <div class="pipeline-row">
@@ -704,8 +835,8 @@
       <div class="tech-cards">
         <div class="tech-card">
           <div>
-            <div class="tc-title">Rabin-Karp Chunker</div>
-            <div class="tc-path">internal/chunker/</div>
+            <div class="tc-title">Instant duplicate detection</div>
+            <div class="tc-path">// Rabin-Karp chunking · internal/chunker/</div>
           </div>
           <div class="tc-body">
             <div><span class="hi">window</span> 64 bytes, rolling hash</div>
@@ -727,8 +858,8 @@
 
         <div class="tech-card">
           <div>
-            <div class="tc-title">Custom LSM Engine</div>
-            <div class="tc-path">internal/store/lsm/</div>
+            <div class="tc-title">Near-instant cache lookups</div>
+            <div class="tc-path">// custom LSM engine · internal/store/lsm/</div>
           </div>
           <div class="tc-body">
             <div>
@@ -749,8 +880,8 @@
 
         <div class="tech-card">
           <div>
-            <div class="tc-title">L7 Proxy + SSE</div>
-            <div class="tc-path">internal/proxy/</div>
+            <div class="tc-title">Zero-latency streaming</div>
+            <div class="tc-path">// L7 proxy + SSE · internal/proxy/</div>
           </div>
           <div class="tc-body">
             <div>
@@ -814,9 +945,27 @@
       </div>
     </section>
 
+    <section class="bottom-cta">
+      <h2>Ready? Install in <span class="green">30 seconds.</span></h2>
+      <p class="sub">One command. No account. Works with Claude Code.</p>
+      <div class="install">
+        <div class="install-cmd" onclick="copyInstall()" title="click to copy">
+          <span class="cmd-text">curl -fsSL https://indexqube.com/install | bash</span>
+          <span class="cmd-copy" id="copy-label-2">copy</span>
+        </div>
+        <div class="install-next">
+          then run: <span class="line-after">iq claude</span>
+        </div>
+      </div>
+    </section>
+
     <footer>
       <span>© 2026 indexqube</span>
-      <span>built for devs!</span>
+      <span>
+        <a href="https://github.com/Revanth14/indexqube" target="_blank" rel="noopener">github</a>
+        &nbsp;·&nbsp;
+        <a href="https://github.com/Revanth14/indexqube#readme" target="_blank" rel="noopener">docs</a>
+      </span>
     </footer>
 
     <script>
@@ -824,14 +973,62 @@
         navigator.clipboard.writeText(
           "curl -fsSL https://indexqube.com/install | bash",
         );
-        const label = document.getElementById("copy-label");
-        label.textContent = "copied!";
-        label.style.color = "var(--green)";
-        setTimeout(() => {
-          label.textContent = "copy";
-          label.style.color = "";
-        }, 2000);
+        ["copy-label", "copy-label-2"].forEach((id) => {
+          const label = document.getElementById(id);
+          if (!label) return;
+          label.textContent = "copied!";
+          label.style.color = "var(--green)";
+          setTimeout(() => {
+            label.textContent = "copy";
+            label.style.color = "";
+          }, 2000);
+        });
       }
+
+      // ── Live stats polling ──
+      const STATS_URL = "/stats";
+      const POLL_INTERVAL = 5000;
+
+      function fmtNum(n) {
+        if (n >= 1_000_000) return (n / 1_000_000).toFixed(1).replace(/\.0$/, "") + "M";
+        if (n >= 1_000) return (n / 1_000).toFixed(1).replace(/\.0$/, "") + "K";
+        return String(n);
+      }
+
+      const animState = {};
+
+      function animateTo(el, target) {
+        const key = el.id;
+        if (animState[key]) cancelAnimationFrame(animState[key]);
+        const start = parseFloat(el.dataset.raw) || 0;
+        if (start === target) return;
+        const duration = 600;
+        const began = performance.now();
+        function step(now) {
+          const t = Math.min((now - began) / duration, 1);
+          const ease = t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
+          const cur = Math.round(start + (target - start) * ease);
+          el.textContent = fmtNum(cur);
+          if (t < 1) animState[key] = requestAnimationFrame(step);
+          else { el.dataset.raw = target; el.textContent = fmtNum(target); }
+        }
+        animState[key] = requestAnimationFrame(step);
+      }
+
+      async function fetchStats() {
+        try {
+          const res = await fetch(STATS_URL);
+          if (!res.ok) return;
+          const d = await res.json();
+          animateTo(document.getElementById("ls-tokens-processed"), d.tokens_attempted || 0);
+          animateTo(document.getElementById("ls-tokens-saved"), d.tokens_deduplicated || 0);
+          animateTo(document.getElementById("ls-requests"), d.requests_total || 0);
+          animateTo(document.getElementById("ls-sessions"), d.sessions_total || 0);
+        } catch (_) {}
+      }
+
+      fetchStats();
+      setInterval(fetchStats, POLL_INTERVAL);
     </script>
   </body>
 </html>

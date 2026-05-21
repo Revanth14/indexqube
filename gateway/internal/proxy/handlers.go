@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/Revanth14/indexqube/gateway/internal/domain"
+	"github.com/Revanth14/indexqube/gateway/internal/sessions"
 	"github.com/Revanth14/indexqube/gateway/internal/telemetry"
 )
 
@@ -574,23 +575,49 @@ func (p *Proxy) writeError(w http.ResponseWriter, r *http.Request, payload error
 	}
 }
 
-// handleAgentSessions returns a snapshot of all in-memory agent sessions and
-// the recent kill log. This is the data source for the iq ui dashboard's
-// "Agent Sessions" panel and the interview story around agentic observability.
+// handleAgentSessions returns agent session data for the iq ui dashboard.
+// Live in-memory sessions come from sessionTracker; durable history (surviving
+// restarts) comes from sessionPersist (SQLite). Both sources are included so
+// the dashboard shows the full picture without requiring a process restart.
 func (p *Proxy) handleAgentSessions(w http.ResponseWriter, _ *http.Request) {
 	type response struct {
-		Sessions          []telemetry.AgentSession `json:"sessions"`
-		KillLog           []telemetry.KillEvent    `json:"kill_log"`
-		TotalSessions     int                      `json:"total_sessions"`
-		TotalKills        int                      `json:"total_kills"`
-		TotalDollarsSaved float64                  `json:"total_dollars_saved"`
+		Sessions      []telemetry.AgentSession `json:"sessions"`
+		KillLog       []telemetry.KillEvent    `json:"kill_log"`
+		TotalSessions int                      `json:"total_sessions"`
+		TotalKills    int                      `json:"total_kills"`
 	}
 
 	var resp response
+
+	// Live sessions from the current process (fast, always up-to-date).
 	if p.sessionTracker != nil {
 		resp.Sessions = p.sessionTracker.Snapshot()
 		resp.KillLog = p.sessionTracker.KillLog()
 	}
+
+	// Merge historical data from SQLite — sessions from previous runs that
+	// are no longer in the in-memory store, and the durable kill log.
+	if p.sessionPersist != nil {
+		seen := make(map[string]bool, len(resp.Sessions))
+		for _, s := range resp.Sessions {
+			seen[s.SessionID] = true
+		}
+		if rows, err := p.sessionPersist.Sessions(); err == nil {
+			for _, row := range rows {
+				if !seen[row.SessionID] {
+					resp.Sessions = append(resp.Sessions, sessions.ToAgentSession(row))
+				}
+			}
+		}
+		// Kill log: prefer SQLite (survives restarts) over in-memory.
+		if kills, err := p.sessionPersist.KillLog(); err == nil {
+			resp.KillLog = make([]telemetry.KillEvent, len(kills))
+			for i, k := range kills {
+				resp.KillLog[i] = sessions.ToKillEvent(k)
+			}
+		}
+	}
+
 	if resp.Sessions == nil {
 		resp.Sessions = []telemetry.AgentSession{}
 	}
@@ -600,10 +627,53 @@ func (p *Proxy) handleAgentSessions(w http.ResponseWriter, _ *http.Request) {
 	resp.TotalSessions = len(resp.Sessions)
 	for _, s := range resp.Sessions {
 		resp.TotalKills += s.KillEvents
-		resp.TotalDollarsSaved += s.DollarsSaved
 	}
 
 	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// handleStats returns aggregate gateway metrics for the public landing page.
+// It merges durable SQLite totals with any in-memory sessions not yet flushed.
+func (p *Proxy) handleStats(w http.ResponseWriter, _ *http.Request) {
+	type statsResp struct {
+		SessionsTotal      int64 `json:"sessions_total"`
+		TokensAttempted    int64 `json:"tokens_attempted"`
+		TokensDeduplicated int64 `json:"tokens_deduplicated"`
+		RequestsTotal      int64 `json:"requests_total"`
+	}
+
+	var resp statsResp
+	seen := make(map[string]bool)
+
+	// SQLite: all-time durable totals (survives restarts).
+	if p.sessionPersist != nil {
+		if rows, err := p.sessionPersist.Sessions(); err == nil {
+			for _, row := range rows {
+				seen[row.SessionID] = true
+				resp.SessionsTotal++
+				resp.TokensAttempted += row.TokensAttempted
+				resp.TokensDeduplicated += row.TokensDeduplicated
+				resp.RequestsTotal += row.RequestsTotal
+			}
+		}
+	}
+
+	// In-memory: sessions active in this process but not yet flushed to SQLite.
+	if p.sessionTracker != nil {
+		for _, s := range p.sessionTracker.Snapshot() {
+			if !seen[s.SessionID] {
+				resp.SessionsTotal++
+				resp.TokensAttempted += s.TokensAttempted
+				resp.TokensDeduplicated += s.TokensDeduplicated
+				resp.RequestsTotal += int64(s.RequestsTotal)
+			}
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(resp)
 }

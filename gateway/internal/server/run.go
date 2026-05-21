@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/Revanth14/indexqube/gateway/internal/cache"
@@ -23,6 +24,7 @@ import (
 	"github.com/Revanth14/indexqube/gateway/internal/provider/bedrock"
 	"github.com/Revanth14/indexqube/gateway/internal/provider/openai"
 	"github.com/Revanth14/indexqube/gateway/internal/proxy"
+	"github.com/Revanth14/indexqube/gateway/internal/sessions"
 	"github.com/Revanth14/indexqube/gateway/internal/storage/supabase"
 	"github.com/Revanth14/indexqube/gateway/internal/telemetry"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
@@ -169,6 +171,20 @@ func run(ctx context.Context, publicListener net.Listener) error {
 
 	agentSessions := telemetry.NewAgentSessionStore(0) // 4 h TTL default
 
+	var sessionTracker *sessions.Tracker
+	if home, err := os.UserHomeDir(); err == nil {
+		dbDir := filepath.Join(home, ".indexqube")
+		if err := os.MkdirAll(dbDir, 0o700); err == nil {
+			t, err := sessions.Open(filepath.Join(dbDir, "sessions.db"), logger)
+			if err != nil {
+				logger.Warn("session tracker init failed; continuing without local persistence", slog.Any("err", err))
+			} else {
+				sessionTracker = t
+				logger.Info("session tracker opened", slog.String("path", filepath.Join(dbDir, "sessions.db")))
+			}
+		}
+	}
+
 	p := proxy.New(gov,
 		proxy.WithLogger(logger),
 		proxy.WithMaxRequestSize(cfg.Governor.MaxRequestSize),
@@ -176,6 +192,7 @@ func run(ctx context.Context, publicListener net.Listener) error {
 		proxy.WithOptimizeTimeout(cfg.Governor.OptimizeTimeout),
 		proxy.WithUsageTracker(usageTracker),
 		proxy.WithAgentSessionStore(agentSessions),
+		proxy.WithSessionPersist(sessionTracker),
 		proxy.WithClaudeMessages(proxy.ClaudeMessagesConfig{
 			Mode:                 cfg.ClaudeCode.Mode,
 			DevToken:             cfg.ClaudeCode.DevToken,
@@ -258,6 +275,11 @@ func run(ctx context.Context, publicListener net.Listener) error {
 		logger.Error("admin server shutdown", slog.Any("err", err))
 	}
 	stopJanitor()
+	if sessionTracker != nil {
+		if err := sessionTracker.Close(); err != nil {
+			logger.Error("session tracker close", slog.Any("err", err))
+		}
+	}
 	if err := tp.Shutdown(shutdownCtx); err != nil {
 		logger.Error("telemetry shutdown", slog.Any("err", err))
 	}

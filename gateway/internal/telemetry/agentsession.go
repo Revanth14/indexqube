@@ -7,32 +7,30 @@ import (
 )
 
 // AgentSession is a per-session aggregate of guard decisions and token spend.
-// Its shape mirrors the agent_sessions schema in CONTEXT.md so it can be
-// persisted to a database layer without structural changes.
+// Its shape mirrors the agent_sessions schema so it can be persisted to the
+// sessions.Tracker SQLite store without structural changes.
 type AgentSession struct {
-	SessionID       string  `json:"session_id"`
-	StartedAt       int64   `json:"started_at"` // Unix seconds
-	LastSeenAt      int64   `json:"last_seen_at"`
-	TokensAttempted int64   `json:"tokens_attempted"`
-	TokensSent      int64   `json:"tokens_sent"`
-	TokensSaved     int64   `json:"tokens_saved"`
-	RequestsTotal   int     `json:"requests_total"`
-	LoopDetected    int     `json:"loop_detected"` // velocity/circuit warn events
-	KillEvents      int     `json:"kill_events"`   // guard blocks (HTTP 429)
-	KillReason      string  `json:"kill_reason"`   // most recent block reason
-	DollarsSaved    float64 `json:"dollars_saved"`
-	Status          string  `json:"status"` // "active" | "killed" | "ended"
+	SessionID          string `json:"session_id"`
+	StartedAt          int64  `json:"started_at"` // Unix seconds
+	LastSeenAt         int64  `json:"last_seen_at"`
+	TokensAttempted    int64  `json:"tokens_attempted"`
+	TokensSent         int64  `json:"tokens_sent"`
+	TokensDeduplicated int64  `json:"tokens_deduplicated"`
+	RequestsTotal      int    `json:"requests_total"`
+	LoopDetected       int    `json:"loop_detected"` // velocity/circuit warn events
+	KillEvents         int    `json:"kill_events"`   // guard blocks (HTTP 429)
+	KillReason         string `json:"kill_reason"`   // most recent block reason
+	Status             string `json:"status"`        // "active" | "killed" | "ended"
 }
 
 // KillEvent is emitted whenever a guard blocks a request (HTTP 429).
-// It is the loop-detection audit trail: how many times a session was stopped,
-// why, and how much spend was prevented.
+// It is the loop-detection audit trail: session, timestamp, reason, and how
+// many tokens were deduplicated before the block fired.
 type KillEvent struct {
-	SessionID    string  `json:"session_id"`
-	Timestamp    int64   `json:"timestamp"`     // Unix seconds
-	Reason       string  `json:"reason"`        // "velocity_exceeded" | "budget_exceeded" | …
-	TokensSaved  int64   `json:"tokens_saved"`  // tokens not forwarded due to block
-	DollarsSaved float64 `json:"dollars_saved"` // cost of those tokens
+	SessionID          string `json:"session_id"`
+	Timestamp          int64  `json:"timestamp"`           // Unix seconds
+	Reason             string `json:"reason"`              // "velocity_exceeded" | "budget_exceeded" | …
+	TokensDeduplicated int64  `json:"tokens_deduplicated"` // tokens stripped by optimizer before block
 }
 
 // RequestOutcome is the per-request signal passed to AgentSessionStore.Record.
@@ -41,8 +39,7 @@ type KillEvent struct {
 type RequestOutcome struct {
 	TokensAttempted int
 	TokensSent      int
-	TokensSaved     int
-	DollarsSaved    float64
+	TokensSaved     int // tokens stripped by the optimizer (deduplicated)
 	GuardReason     string
 	Killed          bool // guard returned !Allow (HTTP 429 was sent)
 	Warned          bool // guard returned Allow+Warn
@@ -96,8 +93,7 @@ func (s *AgentSessionStore) Record(sessionKey string, out RequestOutcome) {
 	entry.RequestsTotal++
 	entry.TokensAttempted += int64(out.TokensAttempted)
 	entry.TokensSent += int64(out.TokensSent)
-	entry.TokensSaved += int64(out.TokensSaved)
-	entry.DollarsSaved += out.DollarsSaved
+	entry.TokensDeduplicated += int64(out.TokensSaved)
 
 	if out.Killed {
 		entry.KillEvents++
@@ -105,12 +101,15 @@ func (s *AgentSessionStore) Record(sessionKey string, out RequestOutcome) {
 		entry.lastKilledAt = now
 		entry.Status = "killed"
 
+		deduped := int64(out.TokensAttempted - out.TokensSent)
+		if deduped < 0 {
+			deduped = 0
+		}
 		kill := KillEvent{
-			SessionID:    sessionKey,
-			Timestamp:    nowUnix,
-			Reason:       out.GuardReason,
-			TokensSaved:  int64(out.TokensAttempted - out.TokensSent),
-			DollarsSaved: out.DollarsSaved,
+			SessionID:          sessionKey,
+			Timestamp:          nowUnix,
+			Reason:             out.GuardReason,
+			TokensDeduplicated: deduped,
 		}
 		s.killLog = append(s.killLog, kill)
 		if len(s.killLog) > s.maxKillLog {

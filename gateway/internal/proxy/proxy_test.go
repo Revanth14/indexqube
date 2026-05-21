@@ -634,10 +634,10 @@ func TestClaudeMessages_OptimizePrunesRepeatedTextBlock(t *testing.T) {
 	if len(bodies) != 2 {
 		t.Fatalf("got %d upstream bodies, want 2", len(bodies))
 	}
-	if strings.Contains(bodies[0], "[iq:ref") {
+	if strings.Contains(bodies[0], "omitted") {
 		t.Fatalf("first request should warm session, got body=%s", bodies[0])
 	}
-	if !strings.Contains(bodies[1], "[iq:ref") {
+	if !strings.Contains(bodies[1], "omitted") {
 		t.Fatalf("second request should prune repeated block, got body=%s", bodies[1])
 	}
 	if !strings.Contains(bodies[1], "latest instruction stays") {
@@ -678,10 +678,10 @@ func TestClaudeMessages_OptimizePrunesRepeatedLargeChunks(t *testing.T) {
 	if len(bodies) != 2 {
 		t.Fatalf("got %d upstream bodies, want 2", len(bodies))
 	}
-	if strings.Contains(bodies[0], "[iq:ref") {
+	if strings.Contains(bodies[0], "omitted") {
 		t.Fatalf("first request should warm session, got body=%s", bodies[0])
 	}
-	if !strings.Contains(bodies[1], "[iq:ref") {
+	if !strings.Contains(bodies[1], "omitted") {
 		t.Fatalf("second request should prune repeated large chunks, got body=%s", bodies[1])
 	}
 	if len(bodies[1]) >= len(bodies[0]) {
@@ -734,11 +734,11 @@ func TestClaudeMessages_OptimizePreservesLatestTurnWhilePruningOldContent(t *tes
 	if len(bodies) != 2 {
 		t.Fatalf("got %d upstream bodies, want 2", len(bodies))
 	}
-	if strings.Contains(bodies[0], "[iq:ref") {
+	if strings.Contains(bodies[0], "omitted") {
 		t.Fatalf("first request should warm session, got body=%s", bodies[0])
 	}
 	// Old content (message[0]) must be pruned.
-	if !strings.Contains(bodies[1], "[iq:ref") {
+	if !strings.Contains(bodies[1], "omitted") {
 		t.Fatalf("second request should prune old repeated content, got body=%s", bodies[1])
 	}
 	// Latest turn (message[1]) must be preserved verbatim.
@@ -778,7 +778,7 @@ func TestClaudeMessages_OptimizeNeverPrunesSystemText(t *testing.T) {
 		t.Fatalf("second prepare: %v", err)
 	}
 
-	if strings.Contains(string(forward), "[iq:ref") {
+	if strings.Contains(string(forward), "omitted") {
 		t.Fatalf("system text must not be replaced, body=%s", forward)
 	}
 	var got map[string]any
@@ -820,7 +820,7 @@ func TestClaudeMessages_OptimizePreservesProtectedInstructionToolResult(t *testi
 		t.Fatalf("second prepare: %v", err)
 	}
 
-	if strings.Contains(string(forward), "[iq:ref") {
+	if strings.Contains(string(forward), "omitted") {
 		t.Fatalf("protected instruction file result must not be replaced, body=%s", forward)
 	}
 	var got map[string]any
@@ -833,8 +833,10 @@ func TestClaudeMessages_OptimizePreservesProtectedInstructionToolResult(t *testi
 	if gotToolResult != instructionBody {
 		t.Fatalf("protected instruction body changed after optimize")
 	}
-	if stats.PreservedInstructionCount != 1 {
-		t.Fatalf("preserved_instruction_count=%d, want 1; stats=%+v", stats.PreservedInstructionCount, stats)
+	// Single-occurrence tool results are now protected by the last-occurrence
+	// guard (not the instruction guard), so check the combined preserved count.
+	if stats.PreservedLastOccurrenceCount+stats.PreservedInstructionCount < 1 {
+		t.Fatalf("expected at least one preserved span, stats=%+v", stats)
 	}
 }
 
@@ -850,25 +852,39 @@ func TestClaudeMessages_OptimizeStillPrunesOrdinaryToolResult(t *testing.T) {
 			EnableToolResultPruning: true,
 		},
 	}
+	// Two tool results with identical content at different message positions.
+	// The older one (messages[1]) should be pruned; the newer one (messages[3])
+	// is the most recent occurrence and must be preserved so the model can see
+	// the result without re-invoking the tool.
 	fileBody := strings.Repeat("ordinary source code output line\n", 80)
 	body := []byte(fmt.Sprintf(
-		`{"model":"claude-sonnet-4-6","messages":[{"role":"assistant","content":[{"type":"tool_use","id":"toolu_read_go","name":"Read","input":{"file_path":"/repo/src/main.go"}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_read_go","content":%q}]},{"role":"user","content":"latest turn"}]}`,
-		fileBody,
+		`{"model":"claude-sonnet-4-6","messages":[`+
+			`{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"/repo/src/main.go"}}]},`+
+			`{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":%q}]},`+
+			`{"role":"assistant","content":[{"type":"tool_use","id":"t2","name":"Read","input":{"file_path":"/repo/src/main.go"}}]},`+
+			`{"role":"user","content":[{"type":"tool_result","tool_use_id":"t2","content":%q}]},`+
+			`{"role":"user","content":"latest turn"}]}`,
+		fileBody, fileBody,
 	))
 
+	// First request: warms the session cache; nothing pruned yet.
 	if _, _, _, _, err := p.prepareClaudeBody(context.Background(), cfg, "ordinary-test", body); err != nil {
 		t.Fatalf("first prepare: %v", err)
 	}
+	// Second request: older occurrence (messages[1]) is pruned; newer (messages[3]) preserved.
 	forward, _, stats, _, err := p.prepareClaudeBody(context.Background(), cfg, "ordinary-test", body)
 	if err != nil {
 		t.Fatalf("second prepare: %v", err)
 	}
 
-	if !strings.Contains(string(forward), "[iq:ref") {
-		t.Fatalf("ordinary repeated tool result should still be replaced, body=%s", forward)
+	if !strings.Contains(string(forward), "omitted") {
+		t.Fatalf("older duplicate tool result should be replaced, body=%s", forward)
 	}
 	if stats.BlocksPruned != 1 {
 		t.Fatalf("blocks_pruned=%d, want 1; stats=%+v", stats.BlocksPruned, stats)
+	}
+	if stats.PreservedLastOccurrenceCount != 1 {
+		t.Fatalf("preserved_last_occurrence_count=%d, want 1; stats=%+v", stats.PreservedLastOccurrenceCount, stats)
 	}
 }
 
@@ -884,10 +900,17 @@ func TestClaudeMessages_OptimizeDoesNotHTMLEscapePayload(t *testing.T) {
 			EnableToolResultPruning: true,
 		},
 	}
+	// Two identical tool results: older (messages[1]) gets a readable omission placeholder,
+	// newer (messages[3]) preserved. Verifies HTML chars survive without escaping.
 	fileBody := strings.Repeat("<system-reminder>ordinary & repeated output</system-reminder>\n", 80)
 	body := []byte(fmt.Sprintf(
-		`{"model":"claude-sonnet-4-6","messages":[{"role":"assistant","content":[{"type":"tool_use","id":"toolu_html","name":"Bash","input":{"command":"printf output"}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_html","content":%q}]},{"role":"user","content":"latest turn"}]}`,
-		fileBody,
+		`{"model":"claude-sonnet-4-6","messages":[`+
+			`{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"printf output"}}]},`+
+			`{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":%q}]},`+
+			`{"role":"assistant","content":[{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"printf output"}}]},`+
+			`{"role":"user","content":[{"type":"tool_result","tool_use_id":"t2","content":%q}]},`+
+			`{"role":"user","content":"latest turn"}]}`,
+		fileBody, fileBody,
 	))
 
 	if _, _, _, _, err := p.prepareClaudeBody(context.Background(), cfg, "html-test", body); err != nil {
@@ -898,11 +921,11 @@ func TestClaudeMessages_OptimizeDoesNotHTMLEscapePayload(t *testing.T) {
 		t.Fatalf("second prepare: %v", err)
 	}
 
-	if !strings.Contains(string(forward), "[iq:ref") {
-		t.Fatalf("ordinary repeated tool result should be replaced, body=%s", forward)
+	if !strings.Contains(string(forward), "omitted") {
+		t.Fatalf("older duplicate tool result should be replaced, body=%s", forward)
 	}
 	if bytes.Contains(forward, []byte(`\u003c`)) || bytes.Contains(forward, []byte(`\u003e`)) || bytes.Contains(forward, []byte(`\u0026`)) {
-		t.Fatalf("optimized payload should not HTML-escape unrelated content: %s", forward)
+		t.Fatalf("optimized payload must not HTML-escape content: %s", forward)
 	}
 	if stats.EstimatedTokensSaved <= 0 {
 		t.Fatalf("expected positive token savings, stats=%+v", stats)
@@ -955,6 +978,7 @@ func TestDumpClaudePayloadsAppendsSessionFile(t *testing.T) {
 
 func TestDumpClaudePayloadsFallsBackToPairFiles(t *testing.T) {
 	dumpDir := t.TempDir()
+	t.Setenv("IQ_DUMP_SESSION_FILE", "")
 	t.Setenv("IQ_DUMP_DIR", dumpDir)
 
 	dumpClaudePayloads("dump-test", []byte(`{"before":true}`), []byte(`{"after":true}`))

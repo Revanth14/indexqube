@@ -90,8 +90,10 @@ type claudeOptimizerStats struct {
 	PreservedSystemCount      int `json:"preserved_system_count"`
 	PreservedToolUseBytes     int `json:"preserved_tool_use_bytes"`
 	PreservedToolUseCount     int `json:"preserved_tool_use_count"`
-	PreservedInstructionBytes int `json:"preserved_instruction_bytes"`
-	PreservedInstructionCount int `json:"preserved_instruction_count"`
+	PreservedInstructionBytes    int `json:"preserved_instruction_bytes"`
+	PreservedInstructionCount    int `json:"preserved_instruction_count"`
+	PreservedLastOccurrenceBytes int `json:"preserved_last_occurrence_bytes"`
+	PreservedLastOccurrenceCount int `json:"preserved_last_occurrence_count"`
 
 	// Size tracking.
 	LargestSpanBytes   int `json:"largest_span_bytes"`
@@ -474,6 +476,20 @@ func (p *Proxy) prepareClaudeBody(ctx context.Context, cfg ClaudeMessagesConfig,
 	stats.ClassSpansSeen = make(map[string]int)
 	stats.ClassSpansPruned = make(map[string]int)
 
+	// Pre-pass: for hashes that appear MORE THAN ONCE in this request,
+	// track the highest message index. When the same file was read multiple
+	// times we preserve the newest copy and prune the older duplicates.
+	toolResultHashCount := make(map[string]int)
+	lastToolResultMsg := make(map[string]int)
+	for _, span := range spans {
+		if span.Class == SpanClassToolResultOld || span.Class == SpanClassToolResultLatest {
+			toolResultHashCount[span.Hash]++
+			if existing, ok := lastToolResultMsg[span.Hash]; !ok || span.MessageIndex > existing {
+				lastToolResultMsg[span.Hash] = span.MessageIndex
+			}
+		}
+	}
+
 	var prunableSpans []TextSpan
 
 	for _, span := range spans {
@@ -510,6 +526,19 @@ func (p *Proxy) prepareClaudeBody(ctx context.Context, cfg ClaudeMessagesConfig,
 			stats.PreservedLatestTurnBytes += span.Bytes
 			stats.PreservedLatestTurnCount++
 			continue
+		}
+
+		// When the same tool result content appears more than once in this
+		// request (the model re-read the same file), preserve the newest copy
+		// so the model always has one copy. Older duplicates fall through to
+		// be pruned. For single-occurrence tool results the readable replacement
+		// text is self-explanatory enough that the model won't re-invoke.
+		if span.Class == SpanClassToolResultOld && toolResultHashCount[span.Hash] > 1 {
+			if lastMsg := lastToolResultMsg[span.Hash]; span.MessageIndex == lastMsg {
+				stats.PreservedLastOccurrenceBytes += span.Bytes
+				stats.PreservedLastOccurrenceCount++
+				continue
+			}
 		}
 
 		if !isEligibleSpanClass(span.Class, cfg.Optimizer) {
@@ -626,14 +655,17 @@ func containsProtectedInstructionPath(s string) bool {
 	return false
 }
 
-// classSpecificReplacement returns a compact replacement marker for a pruned
-// span. Short format minimises the token overhead of the marker itself.
+// classSpecificReplacement returns a human-readable placeholder for a pruned
+// span. The text must be self-explanatory so the model does not re-invoke the
+// tool to retrieve content it has already processed.
 func classSpecificReplacement(span TextSpan) string {
-	h := span.Hash
-	if len(h) > 12 {
-		h = h[:12]
+	if span.BlockType == "tool_result" {
+		if span.SourcePath != "" {
+			return "[Content of " + span.SourcePath + " was read here — omitted to save context]"
+		}
+		return "[Tool result content omitted — already processed in this session]"
 	}
-	return "[iq:ref " + h + "]"
+	return "[Content omitted — already processed in this session]"
 }
 
 // setSpanText navigates to the span's location in root and replaces its text
@@ -1145,13 +1177,16 @@ func (p *Proxy) emitClaudeUsageEvent(r *http.Request, sessionKey, model string, 
 		})
 	}
 
+	outcome := telemetry.RequestOutcome{
+		TokensAttempted: optStats.EstimatedTokensBefore,
+		TokensSent:      optStats.EstimatedTokensAfter,
+		TokensSaved:     optStats.EstimatedTokensSaved,
+	}
 	if p.sessionTracker != nil {
-		p.sessionTracker.Record(sessionKey, telemetry.RequestOutcome{
-			TokensAttempted: optStats.EstimatedTokensBefore,
-			TokensSent:      optStats.EstimatedTokensAfter,
-			TokensSaved:     optStats.EstimatedTokensSaved,
-			DollarsSaved:    telemetry.EstimateCostSaved("optimize", model, optStats.EstimatedTokensSaved),
-		})
+		p.sessionTracker.Record(sessionKey, outcome)
+	}
+	if p.sessionPersist != nil {
+		p.sessionPersist.Record(sessionKey, outcome)
 	}
 }
 
