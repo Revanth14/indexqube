@@ -635,8 +635,27 @@ func (p *Proxy) handleAgentSessions(w http.ResponseWriter, _ *http.Request) {
 }
 
 // handleStats returns aggregate gateway metrics for the public landing page.
-// It merges durable SQLite totals with any in-memory sessions not yet flushed.
+// When a Supabase stats handler is configured it returns global all-time totals
+// from the usage_events table (cached 5 min). Otherwise it falls back to local
+// SQLite + in-memory session data for the current process.
 func (p *Proxy) handleStats(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	// Prefer Supabase for global totals (server deployments).
+	if p.supabaseStats != nil {
+		stats, err := p.supabaseStats.get()
+		if err != nil {
+			http.Error(w, `{"error":"stats unavailable"}`, http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Cache-Control", "public, max-age=300")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(stats)
+		return
+	}
+
+	// Fallback: aggregate from local SQLite + in-memory store.
 	type statsResp struct {
 		SessionsTotal      int64 `json:"sessions_total"`
 		TokensAttempted    int64 `json:"tokens_attempted"`
@@ -647,7 +666,6 @@ func (p *Proxy) handleStats(w http.ResponseWriter, _ *http.Request) {
 	var resp statsResp
 	seen := make(map[string]bool)
 
-	// SQLite: all-time durable totals (survives restarts).
 	if p.sessionPersist != nil {
 		if rows, err := p.sessionPersist.Sessions(); err == nil {
 			for _, row := range rows {
@@ -660,7 +678,6 @@ func (p *Proxy) handleStats(w http.ResponseWriter, _ *http.Request) {
 		}
 	}
 
-	// In-memory: sessions active in this process but not yet flushed to SQLite.
 	if p.sessionTracker != nil {
 		for _, s := range p.sessionTracker.Snapshot() {
 			if !seen[s.SessionID] {
@@ -672,8 +689,6 @@ func (p *Proxy) handleStats(w http.ResponseWriter, _ *http.Request) {
 		}
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(resp)
 }

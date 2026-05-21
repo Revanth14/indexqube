@@ -42,6 +42,7 @@ type Proxy struct {
 	usageTracker    telemetry.Sink
 	sessionTracker  *telemetry.AgentSessionStore
 	sessionPersist  *sessions.Tracker
+	supabaseStats   *StatsHandler
 }
 
 // BedrockConfig routes /v1/messages to AWS Bedrock instead of Anthropic's API.
@@ -151,6 +152,17 @@ func WithAgentSessionStore(s *telemetry.AgentSessionStore) Option {
 func WithSessionPersist(t *sessions.Tracker) Option {
 	return func(p *Proxy) {
 		p.sessionPersist = t
+	}
+}
+
+// WithSupabaseStats wires a Supabase-backed stats handler for GET /stats.
+// When set, handleStats fetches global totals from Supabase instead of the
+// local SQLite store.
+func WithSupabaseStats(supabaseURL, serviceKey string) Option {
+	return func(p *Proxy) {
+		if supabaseURL != "" && serviceKey != "" {
+			p.supabaseStats = NewStatsHandler(supabaseURL, serviceKey)
+		}
 	}
 }
 

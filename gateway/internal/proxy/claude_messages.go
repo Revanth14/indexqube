@@ -1161,6 +1161,7 @@ func (p *Proxy) emitClaudeUsageEvent(r *http.Request, sessionKey, model string, 
 	if p.usageTracker != nil {
 		p.usageTracker.Track(telemetry.UsageEvent{
 			MachineID:            telemetry.GetMachineID(),
+			SessionID:            sessionKey,
 			OsArch:               runtime.GOOS + "/" + runtime.GOARCH,
 			IqVersion:            Version,
 			CliAgent:             r.Header.Get("User-Agent"),

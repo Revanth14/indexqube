@@ -38,6 +38,7 @@ type Sink interface {
 // Do not add raw prompts, raw code, terminal output, provider keys, or file contents here.
 type UsageEvent struct {
 	MachineID            string         `json:"machine_id"`
+	SessionID            string         `json:"session_id"`
 	OsArch               string         `json:"os_arch"`
 	IqVersion            string         `json:"iq_version"`
 	CliAgent             string         `json:"cli_agent"`

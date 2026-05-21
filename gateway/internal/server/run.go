@@ -193,6 +193,7 @@ func run(ctx context.Context, publicListener net.Listener) error {
 		proxy.WithUsageTracker(usageTracker),
 		proxy.WithAgentSessionStore(agentSessions),
 		proxy.WithSessionPersist(sessionTracker),
+		proxy.WithSupabaseStats(cfg.Supabase.URL, cfg.Supabase.ServiceKey),
 		proxy.WithClaudeMessages(proxy.ClaudeMessagesConfig{
 			Mode:                 cfg.ClaudeCode.Mode,
 			DevToken:             cfg.ClaudeCode.DevToken,
