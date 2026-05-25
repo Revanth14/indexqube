@@ -7,6 +7,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -16,8 +17,11 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
+
+	_ "modernc.org/sqlite" // pure-Go SQLite driver
 
 	"github.com/Revanth14/indexqube/gateway/internal/server"
 )
@@ -111,8 +115,12 @@ func runClaude(args []string, devMode, dumpPayloads bool) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	proxyDone := make(chan struct{})
 	os.Setenv("INDEXQUBE_LOG_LEVEL", "off")
-	go startProxy(ctx, ln)
+	go func() {
+		startProxy(ctx, ln)
+		close(proxyDone)
+	}()
 
 	if !waitForProxy(port) {
 		fmt.Fprintf(os.Stderr, "iq: proxy failed to start within 2s\n")
@@ -126,8 +134,11 @@ func runClaude(args []string, devMode, dumpPayloads bool) {
 	}
 
 	if !filepath.IsAbs(claudePath) {
-		fmt.Fprintf(os.Stderr, "iq: 'claude' path is not absolute: %s\n", claudePath)
-		os.Exit(1)
+		claudePath, err = filepath.Abs(claudePath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "iq: failed to resolve absolute path for 'claude': %v\n", err)
+			os.Exit(1)
+		}
 	}
 
 	cmdArgs := append([]string{claudePath}, args...)
@@ -143,20 +154,106 @@ func runClaude(args []string, devMode, dumpPayloads bool) {
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(sigs)
 	go func() {
-		sig := <-sigs
-		if cmd.Process != nil {
-			cmd.Process.Signal(sig) //nolint:errcheck
+		for sig := range sigs {
+			if cmd.Process != nil {
+				cmd.Process.Signal(sig) //nolint:errcheck
+			}
 		}
 	}()
 
-	if err := cmd.Run(); err != nil {
+	runErr := cmd.Run()
+
+	// Trigger graceful shutdown
+	cancel()
+	<-proxyDone
+
+	// Print beautiful colored session summary of token savings
+	printSessionSummary(sessionID)
+
+	if runErr != nil {
 		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
+		if errors.As(runErr, &exitErr) {
 			os.Exit(exitErr.ExitCode())
 		}
-		fmt.Fprintf(os.Stderr, "iq: failed to run claude: %v\n", err)
+		fmt.Fprintf(os.Stderr, "iq: failed to run claude: %v\n", runErr)
 		os.Exit(1)
 	}
+}
+
+func printSessionSummary(sessionID string) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+	dbPath := filepath.Join(home, ".indexqube", "sessions.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		return
+	}
+	defer db.Close()
+
+	var requestsTotal, tokensAttempted, tokensSent, tokensDeduplicated int64
+	var status string
+	queryID := "%"
+	if len(sessionID) >= 8 {
+		queryID = "%-" + sessionID[:8]
+	}
+	err = db.QueryRow(`
+		SELECT requests_total, tokens_attempted, tokens_sent, tokens_deduplicated, status
+		FROM   agent_sessions
+		WHERE  session_id LIKE ?
+		ORDER BY last_seen_at DESC
+		LIMIT 1
+	`, queryID).Scan(&requestsTotal, &tokensAttempted, &tokensSent, &tokensDeduplicated, &status)
+	if err != nil {
+		return
+	}
+
+	if requestsTotal == 0 {
+		return
+	}
+
+	percent := 0.0
+	if tokensAttempted > 0 {
+		percent = float64(tokensDeduplicated) / float64(tokensAttempted) * 100
+	}
+
+	// Cost saved (estimate at $3 per million tokens for Claude 3.5 Sonnet inputs)
+	dollarsSaved := float64(tokensDeduplicated) * 0.000003
+
+	fmt.Fprintln(os.Stderr)
+	fmt.Fprintln(os.Stderr, "  \033[1;36m┌────────────────────────────────────────────────────────┐\033[0m")
+	fmt.Fprintln(os.Stderr, "  \033[1;36m│\033[0m                  \033[1;37mIndexQube Session Summary\033[0m             \033[1;36m│\033[0m")
+	fmt.Fprintln(os.Stderr, "  \033[1;36m├────────────────────────────────────────────────────────┤\033[0m")
+	fmt.Fprintf(os.Stderr, "  \033[1;36m│\033[0m  %-20s : \033[1;32m%-29d\033[0m\033[1;36m│\033[0m\n", "Requests Processed", requestsTotal)
+	fmt.Fprintf(os.Stderr, "  \033[1;36m│\033[0m  %-20s : \033[1;37m%-29s\033[0m\033[1;36m│\033[0m\n", "Tokens Attempted", formatNumber(tokensAttempted))
+	fmt.Fprintf(os.Stderr, "  \033[1;36m│\033[0m  %-20s : \033[1;37m%-29s\033[0m\033[1;36m│\033[0m\n", "Tokens Sent", formatNumber(tokensSent))
+	fmt.Fprintf(os.Stderr, "  \033[1;36m│\033[0m  %-20s : \033[1;35m%-29s\033[0m\033[1;36m│\033[0m\n", "Tokens Saved", fmt.Sprintf("%s  (%.1f%%)", formatNumber(tokensDeduplicated), percent))
+	fmt.Fprintf(os.Stderr, "  \033[1;36m│\033[0m  %-20s : \033[1;33m$%-28.2f\033[0m\033[1;36m│\033[0m\n", "Estimated Savings", dollarsSaved)
+	fmt.Fprintln(os.Stderr, "  \033[1;36m├────────────────────────────────────────────────────────┤\033[0m")
+	statusColor := "\033[1;32m" // green
+	if status == "killed" {
+		statusColor = "\033[1;31m" // red
+	}
+	fmt.Fprintf(os.Stderr, "  \033[1;36m│\033[0m  %-20s : %s%-29s\033[0m\033[1;36m│\033[0m\n", "Session Status", statusColor, strings.ToUpper(status))
+	fmt.Fprintln(os.Stderr, "  \033[1;36m└────────────────────────────────────────────────────────┘\033[0m")
+	fmt.Fprintln(os.Stderr)
+}
+
+func formatNumber(n int64) string {
+	in := fmt.Sprintf("%d", n)
+	out := make([]byte, len(in)+(len(in)-1)/3)
+	for i, j, k := len(in)-1, len(out)-1, 0; i >= 0; i-- {
+		out[j] = in[i]
+		j--
+		k++
+		if k == 3 && i > 0 {
+			out[j] = ','
+			j--
+			k = 0
+		}
+	}
+	return string(out)
 }
 
 func printHelp() {
@@ -189,6 +286,9 @@ func startProxy(ctx context.Context, ln net.Listener) {
 	}
 	os.Setenv("INDEXQUBE_MODE", "optimize")
 	os.Setenv("INDEXQUBE_ENABLE_BLOCK_OPTIMIZER", "true")
+	// Bind admin server to an ephemeral port so multiple iq instances
+	// don't collide on the default 9100.
+	os.Setenv("ADMIN_PORT", "0")
 	// Route telemetry through the deployed gateway so Supabase credentials
 	// never need to be baked into this distributed binary.
 	if os.Getenv("IQ_TELEMETRY_ENDPOINT") == "" {

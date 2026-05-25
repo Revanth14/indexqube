@@ -623,6 +623,7 @@ func TestClaudeMessages_OptimizePrunesRepeatedTextBlock(t *testing.T) {
 			t.Fatalf("new request: %v", err)
 		}
 		req.Header.Set("Authorization", "Bearer iq-dev-local")
+		req.Header.Set("Cache-Control", "no-cache")
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatalf("POST /v1/messages: %v", err)
@@ -667,6 +668,7 @@ func TestClaudeMessages_OptimizePrunesRepeatedLargeChunks(t *testing.T) {
 			t.Fatalf("new request: %v", err)
 		}
 		req.Header.Set("Authorization", "Bearer iq-dev-local")
+		req.Header.Set("Cache-Control", "no-cache")
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatalf("POST /v1/messages: %v", err)
@@ -723,6 +725,7 @@ func TestClaudeMessages_OptimizePreservesLatestTurnWhilePruningOldContent(t *tes
 			t.Fatalf("new request: %v", err)
 		}
 		req.Header.Set("Authorization", "Bearer iq-dev-local")
+		req.Header.Set("Cache-Control", "no-cache")
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatalf("POST /v1/messages: %v", err)
@@ -950,8 +953,8 @@ func TestDumpClaudePayloadsAppendsSessionFile(t *testing.T) {
 	sessionFile := filepath.Join(dumpDir, "iq-session-test.jsonl")
 	t.Setenv("IQ_DUMP_SESSION_FILE", sessionFile)
 
-	dumpClaudePayloads("dump-test", []byte(`{"before":true}`), []byte(`{"after":true}`))
-	dumpClaudePayloads("dump-test-2", []byte(`{"before":2}`), []byte(`{"after":2}`))
+	dumpClaudePayloads("dump-test", []byte(`{"before":true}`), []byte(`{"after":true}`), claudeStreamStats{OutputRawText: "simulated response", OutputTokens: 10, Status: "completed"}, claudeOptimizerStats{})
+	dumpClaudePayloads("dump-test-2", []byte(`{"before":2}`), []byte(`{"after":2}`), claudeStreamStats{}, claudeOptimizerStats{})
 
 	raw, err := os.ReadFile(sessionFile)
 	if err != nil {
@@ -971,6 +974,9 @@ func TestDumpClaudePayloadsAppendsSessionFile(t *testing.T) {
 	if !strings.Contains(string(first.Before), `"before":true`) {
 		t.Fatalf("before payload missing from first record: %s", first.Before)
 	}
+	if first.Response.Text != "simulated response" || first.Response.OutputTokens != 10 {
+		t.Fatalf("unexpected response metrics inside first record: %+v", first.Response)
+	}
 	if _, err := os.Stat(filepath.Join(dumpDir, "iq-before-dump-test.json")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("session dumps should not create per-request before file, err=%v", err)
 	}
@@ -981,7 +987,7 @@ func TestDumpClaudePayloadsFallsBackToPairFiles(t *testing.T) {
 	t.Setenv("IQ_DUMP_SESSION_FILE", "")
 	t.Setenv("IQ_DUMP_DIR", dumpDir)
 
-	dumpClaudePayloads("dump-test", []byte(`{"before":true}`), []byte(`{"after":true}`))
+	dumpClaudePayloads("dump-test", []byte(`{"before":true}`), []byte(`{"after":true}`), claudeStreamStats{}, claudeOptimizerStats{})
 
 	before, err := os.ReadFile(filepath.Join(dumpDir, "iq-before-dump-test.json"))
 	if err != nil {
@@ -996,6 +1002,77 @@ func TestDumpClaudePayloadsFallsBackToPairFiles(t *testing.T) {
 	}
 	if !strings.Contains(string(after), `"after": true`) {
 		t.Fatalf("after dump was not pretty printed: %s", after)
+	}
+}
+
+func TestDumpClaudePayloadsEmitsOptimizerStats(t *testing.T) {
+	sessionFile := filepath.Join(t.TempDir(), "session.jsonl")
+	t.Setenv("IQ_DUMP_SESSION_FILE", sessionFile)
+
+	// Realistic post-FIX-B stats: a turn where some bytes were pruned, some
+	// were known-but-protected (CLAUDE.md), and the rest were known-but-
+	// latest-turn. KnownBytes is the sum across all preservation paths plus
+	// the pruned bytes.
+	opt := claudeOptimizerStats{
+		BlocksPruned:                  2,
+		BlocksKnown:                   5,
+		BytesPruned:                   1000,
+		PreservedInstructionBytes:     3027,
+		PreservedInstructionCount:     1,
+		PreservedLatestTurnBytes:      500,
+		PreservedLatestTurnCount:      1,
+		PreservedLastOccurrenceBytes:  0,
+		PreservedLastOccurrenceCount:  0,
+	}
+	opt.KnownBytes = opt.BytesPruned + opt.PreservedInstructionBytes +
+		opt.PreservedLatestTurnBytes + opt.PreservedLastOccurrenceBytes
+
+	dumpClaudePayloads("opt-test", []byte(`{"before":1}`), []byte(`{"after":1}`), claudeStreamStats{}, opt)
+
+	raw, err := os.ReadFile(sessionFile)
+	if err != nil {
+		t.Fatalf("read session file: %v", err)
+	}
+	line := strings.TrimRight(string(raw), "\n")
+	var rec struct {
+		SavedBytes int `json:"saved_bytes"`
+		Optimizer  *struct {
+			BlocksPruned         int `json:"blocks_pruned"`
+			BlocksKnown          int `json:"blocks_known"`
+			BlocksKnownProtected int `json:"blocks_known_protected"`
+			BytesPruned          int `json:"bytes_pruned"`
+			ProtectedBytes       int `json:"protected_bytes"`
+			KnownBytes           int `json:"known_bytes"`
+			TrueCacheHitBytes    int `json:"true_cache_hit_bytes"`
+		} `json:"optimizer"`
+	}
+	if err := json.Unmarshal([]byte(line), &rec); err != nil {
+		t.Fatalf("parse dump line: %v\nline=%s", err, line)
+	}
+	if rec.Optimizer == nil {
+		t.Fatalf("expected optimizer block in dump record; got: %s", line)
+	}
+	if got, want := rec.Optimizer.ProtectedBytes, opt.PreservedInstructionBytes; got != want {
+		t.Errorf("protected_bytes: got %d, want %d", got, want)
+	}
+	if got, want := rec.Optimizer.BlocksKnownProtected, opt.PreservedInstructionCount; got != want {
+		t.Errorf("blocks_known_protected: got %d, want %d", got, want)
+	}
+	if got, want := rec.Optimizer.BytesPruned, opt.BytesPruned; got != want {
+		t.Errorf("bytes_pruned: got %d, want %d", got, want)
+	}
+	if got, want := rec.Optimizer.KnownBytes, opt.KnownBytes; got != want {
+		t.Errorf("known_bytes: got %d, want %d", got, want)
+	}
+	if got, want := rec.Optimizer.TrueCacheHitBytes, opt.KnownBytes; got != want {
+		t.Errorf("true_cache_hit_bytes: got %d, want %d (must equal KnownBytes)", got, want)
+	}
+	// Invariant: true_cache_hit_bytes == bytes_pruned + protected_bytes + (other preservations).
+	// Here PreservedLastOccurrenceBytes==0 and PreservedLatestTurnBytes==500, so:
+	wantInvariant := rec.Optimizer.BytesPruned + rec.Optimizer.ProtectedBytes + opt.PreservedLatestTurnBytes
+	if rec.Optimizer.TrueCacheHitBytes != wantInvariant {
+		t.Errorf("invariant broken: true_cache_hit_bytes=%d, expected %d",
+			rec.Optimizer.TrueCacheHitBytes, wantInvariant)
 	}
 }
 

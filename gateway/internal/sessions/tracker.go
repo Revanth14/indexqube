@@ -10,6 +10,7 @@
 // The schema uses two tables:
 //   - agent_sessions: one row per session, upserted on every request
 //   - kill_events:    append-only audit log, one row per guard kill
+// Hardened for high-concurrency.
 package sessions
 
 import (
@@ -133,6 +134,31 @@ func (t *Tracker) Record(sessionID string, outcome telemetry.RequestOutcome) {
 			slog.String("session_id", sessionID),
 		)
 	}
+}
+
+// SessionByID retrieves a single agent session by its unique session ID.
+func (t *Tracker) SessionByID(sessionID string) (SessionRow, bool, error) {
+	var r SessionRow
+	err := t.db.QueryRow(`
+		SELECT session_id, started_at, last_seen_at,
+		       tokens_attempted, tokens_sent, tokens_deduplicated,
+		       requests_total, loop_detected, kill_events,
+		       kill_reason, status
+		FROM   agent_sessions
+		WHERE  session_id = ?
+	`, sessionID).Scan(
+		&r.SessionID, &r.StartedAt, &r.LastSeenAt,
+		&r.TokensAttempted, &r.TokensSent, &r.TokensDeduplicated,
+		&r.RequestsTotal, &r.LoopDetected, &r.KillEvents,
+		&r.KillReason, &r.Status,
+	)
+	if err == sql.ErrNoRows {
+		return r, false, nil
+	}
+	if err != nil {
+		return r, false, err
+	}
+	return r, true, nil
 }
 
 // Sessions returns all rows from agent_sessions, ordered by last_seen_at
