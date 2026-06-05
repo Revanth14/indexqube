@@ -16,6 +16,7 @@ package sessions
 import (
 	"database/sql"
 	"log/slog"
+	"os"
 	"sync"
 	"time"
 
@@ -107,6 +108,11 @@ func Open(path string, logger *slog.Logger) (*Tracker, error) {
 
 	if logger == nil {
 		logger = slog.Default()
+	}
+
+	if err := os.Chmod(path, 0o600); err != nil {
+		db.Close()
+		return nil, err
 	}
 
 	t := &Tracker{

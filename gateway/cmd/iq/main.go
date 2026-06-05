@@ -85,12 +85,12 @@ func runClaude(args []string, devMode, dumpPayloads bool) {
 	sessionID := generateToken()
 	if dumpPayloads {
 		os.Setenv("IQ_DUMP_PAYLOADS", "1")
-		cwd, err := os.Getwd()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "iq: failed to resolve dump directory: %v\n", err)
+		repoRoot := findRepoRoot()
+		if repoRoot == "" {
+			fmt.Fprintf(os.Stderr, "iq: failed to resolve repository root directory\n")
 			os.Exit(1)
 		}
-		dumpDir := filepath.Join(cwd, ".indexqube", "dumps")
+		dumpDir := filepath.Join(repoRoot, ".indexqube", "dumps")
 		shortSessionID := sessionID
 		if len(shortSessionID) > 8 {
 			shortSessionID = shortSessionID[:8]
@@ -314,4 +314,26 @@ func waitForProxy(port int) bool {
 		time.Sleep(100 * time.Millisecond)
 	}
 	return false
+}
+
+func findRepoRoot() string {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	dir := cwd
+	for {
+		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+			return dir
+		}
+		if _, err := os.Stat(filepath.Join(dir, "CLAUDE.md")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return cwd
 }

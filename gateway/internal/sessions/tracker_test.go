@@ -10,6 +10,30 @@ import (
 	"github.com/Revanth14/indexqube/gateway/internal/telemetry"
 )
 
+func TestTracker_FilePermissions(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "iq-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	tracker, err := Open(filepath.Join(tmpDir, "sessions.db"), logger)
+	if err != nil {
+		t.Fatalf("failed to open tracker: %v", err)
+	}
+	defer tracker.Close()
+
+	info, err := os.Stat(filepath.Join(tmpDir, "sessions.db"))
+	if err != nil {
+		t.Fatalf("failed to stat db: %v", err)
+	}
+	mode := info.Mode().Perm()
+	if mode != 0o600 {
+		t.Fatalf("expected file mode 0o600, got 0o%03o", mode)
+	}
+}
+
 func TestTracker_RecordAndRetrieve(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "iq-test-*")
 	if err != nil {
@@ -99,7 +123,7 @@ func TestTracker_KillEvent(t *testing.T) {
 
 	sessionID := "test-session-kill"
 	outcome := telemetry.RequestOutcome{
-		TokensAttempted: 500,
+		TokensAttempted: 1000,
 		TokensSent:      500,
 		Warned:          true,
 		Killed:          true,

@@ -88,8 +88,9 @@ class Config:
 
     # Model fallback chain
     model_ids: tuple[str, ...] = (
+        "us.anthropic.claude-opus-4-6-v1",
+        "anthropic.claude-opus-4-6-v1",
         "us.anthropic.claude-sonnet-4-6",
-        "us.anthropic.claude-opus-4-6",
         "anthropic.claude-sonnet-4-6",
         "amazon.nova-pro-v1:0",
     )
