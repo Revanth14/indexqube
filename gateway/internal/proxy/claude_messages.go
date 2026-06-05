@@ -501,11 +501,11 @@ func dumpClaudePayloads(requestID string, before, after []byte, stats claudeStre
 	}
 	beforePath := filepath.Join(dumpDir, "iq-before-"+requestID+".json")
 	afterPath := filepath.Join(dumpDir, "iq-after-"+requestID+".json")
-	if err := os.WriteFile(beforePath, prettyJSON([]byte(redact.String(string(before)))), 0o600); err != nil {
+	if err := os.WriteFile(beforePath, prettyJSON(redactedJSONPayload(before)), 0o600); err != nil {
 		fmt.Fprintf(os.Stderr, "[iq] failed to dump payload pair: %v\n", err)
 		return
 	}
-	if err := os.WriteFile(afterPath, prettyJSON([]byte(redact.String(string(after)))), 0o600); err != nil {
+	if err := os.WriteFile(afterPath, prettyJSON(redactedJSONPayload(after)), 0o600); err != nil {
 		fmt.Fprintf(os.Stderr, "[iq] failed to dump payload pair: %v\n", err)
 		return
 	}
@@ -555,10 +555,10 @@ func appendSessionDump(sessionFile, requestID string, before, after []byte, stat
 		BeforeBytes: len(before),
 		AfterBytes:  len(after),
 		SavedBytes:  len(before) - len(after),
-		Before:      json.RawMessage(before),
-		After:       json.RawMessage(after),
+		Before:      redactedJSONPayload(before),
+		After:       redactedJSONPayload(after),
 		Response: payloadDumpResponse{
-			Text:         stats.OutputRawText,
+			Text:         redact.String(stats.OutputRawText),
 			OutputTokens: stats.OutputTokens,
 			Status:       stats.Status,
 		},
@@ -576,7 +576,6 @@ func appendSessionDump(sessionFile, requestID string, before, after []byte, stat
 	if err != nil {
 		return err
 	}
-	line = []byte(redact.String(string(line)))
 	line = append(line, '\n')
 
 	dumpPayloadMu.Lock()
@@ -588,6 +587,48 @@ func appendSessionDump(sessionFile, requestID string, before, after []byte, stat
 	defer f.Close()
 	_, err = f.Write(line)
 	return err
+}
+
+func redactedJSONPayload(raw []byte) json.RawMessage {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return json.RawMessage("null")
+	}
+
+	var parsed any
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		encoded, _ := json.Marshal(redact.String(string(raw)))
+		return json.RawMessage(encoded)
+	}
+
+	encoded, err := marshalJSONNoHTMLEscape(redactJSONValue(parsed))
+	if err != nil {
+		fallback, _ := json.Marshal(redact.String(string(raw)))
+		return json.RawMessage(fallback)
+	}
+	return json.RawMessage(encoded)
+}
+
+func redactJSONValue(value any) any {
+	switch v := value.(type) {
+	case map[string]any:
+		for key, child := range v {
+			if redact.SensitiveKey(key) {
+				v[key] = "[redacted]"
+				continue
+			}
+			v[key] = redactJSONValue(child)
+		}
+		return v
+	case []any:
+		for i, child := range v {
+			v[i] = redactJSONValue(child)
+		}
+		return v
+	case string:
+		return redact.String(v)
+	default:
+		return v
+	}
 }
 
 func appendDumpLog(dumpDir, beforePath, afterPath string) {
