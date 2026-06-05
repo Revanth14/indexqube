@@ -19,6 +19,7 @@ var (
 	corsAllowedMethods = []string{"GET", "POST", "OPTIONS"}
 	corsAllowedHeaders = []string{
 		"Content-Type",
+		"Authorization",
 		"X-Request-ID",
 		"X-IQ-Session-Key",
 		"X-IQ-Project-Memory",

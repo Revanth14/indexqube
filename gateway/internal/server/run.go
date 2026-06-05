@@ -101,7 +101,7 @@ func run(ctx context.Context, publicListener net.Listener) error {
 		if home, err := os.UserHomeDir(); err == nil {
 			cacheDir := filepath.Join(home, ".indexqube", "cache")
 			if err := os.MkdirAll(cacheDir, 0o700); err == nil {
-				lsmCache, err := cache.NewLSMCache(cacheDir, cfg.Cache.MaxEntryBytes)
+				lsmCache, err := cache.NewLSMCache(cacheDir, cfg.Cache.MaxEntryBytes, cfg.Cache.TTL)
 				if err != nil {
 					logger.Warn("failed to initialize LSM cache; falling back to memory cache", slog.Any("err", err))
 				} else {
@@ -241,6 +241,7 @@ func run(ctx context.Context, publicListener net.Listener) error {
 			HTTPClient:   upstreamClient,
 		}),
 	)
+	p.Start()
 
 	publicServer := buildPublicServer(cfg, p, tp, logger)
 	adminServer := buildAdminServer(cfg, tp, logger)
@@ -293,6 +294,7 @@ func run(ctx context.Context, publicListener net.Listener) error {
 		logger.Error("admin server shutdown", slog.Any("err", err))
 	}
 	stopJanitor()
+	p.Stop()
 	if sessionTracker != nil {
 		if err := sessionTracker.Close(); err != nil {
 			logger.Error("session tracker close", slog.Any("err", err))
@@ -349,6 +351,12 @@ func buildPublicServer(cfg *config.AppConfig, p *proxy.Proxy, tp *telemetry.Prov
 			AllowChromeExtensions: cfg.Server.CORSAllowChromeExtensions,
 			MaxAge:                cfg.Server.CORSMaxAge,
 		}),
+		middleware.Auth(cfg.Server.AuthToken, cfg.Server.TrustedProxies),
+		middleware.RateLimit(
+			middleware.NewRateLimiter(1, 60, 5*time.Minute),
+			"/v1/",
+			cfg.Server.TrustedProxies,
+		),
 		func(next http.Handler) http.Handler { return otelhttp.NewHandler(next, "gateway") },
 		middleware.RouteResolver(p.Mux()),
 		middleware.RequestID,

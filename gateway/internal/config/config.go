@@ -36,6 +36,11 @@ type ServerConfig struct {
 	// value caps the maximum stream duration and breaks long generations.
 	WriteTimeout              time.Duration
 	IdleTimeout               time.Duration
+	// AuthToken protects sensitive endpoints (/stats, /v1/agent-sessions,
+	// /v1/diagnostics) when the gateway binds to a non-loopback address.
+	// Empty disables auth entirely. Defaults to INDEXQUBE_AUTH_TOKEN,
+	// falling back to INDEXQUBE_DEV_TOKEN for backwards compatibility.
+	AuthToken                 string
 	CORSEnabled               bool
 	CORSAllowedOrigins        []string
 	CORSAllowChromeExtensions bool
@@ -162,6 +167,7 @@ func Load() (*AppConfig, error) {
 			// Slowloris is mitigated by ReadHeaderTimeout + IdleTimeout instead.
 			WriteTimeout: getEnvAsDuration("SERVER_WRITE_TIMEOUT", 0),
 			IdleTimeout:  getEnvAsDuration("SERVER_IDLE_TIMEOUT", 120*time.Second),
+			AuthToken:    getEnvFirst([]string{"INDEXQUBE_AUTH_TOKEN", "INDEXQUBE_DEV_TOKEN"}, ""),
 			CORSEnabled:  getEnvAsBool("CORS_ENABLED", true),
 			CORSAllowedOrigins: getEnvAsCSV("CORS_ALLOWED_ORIGINS", []string{
 				"http://localhost:3000",
