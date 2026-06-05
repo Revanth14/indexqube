@@ -38,6 +38,7 @@ type Proxy struct {
 	mux             *http.ServeMux
 	maxRequestSize  int64
 	optimizeTimeout time.Duration
+	streamTimeout   time.Duration
 	metrics         *telemetry.Metrics
 	claude          ClaudeMessagesConfig
 	usageTracker    telemetry.Sink
@@ -67,6 +68,15 @@ type Proxy struct {
 	// is checked against these hints to detect "small payload is prefix of
 	// large payload" reuse patterns (FIX 3).
 	sessionPrefixHints sync.Map // map[string]*prefixHintSet
+
+	// sessionLastUsed tracks the last access time for each session key.
+	// Used by the background cleanup goroutine to evict idle entries.
+	sessionLastUsed sync.Map // map[string]time.Time
+
+	// cleanupCtx/cleanupCancel manage the background TTL eviction goroutine.
+	cleanupCtx    context.Context
+	cleanupCancel context.CancelFunc
+	cleanupDone   chan struct{}
 
 	// sessionSuggestionTs tracks the last time a suggestion-mode request was
 	// processed per session. Used to rate-limit harness meta-prompt injections
@@ -143,7 +153,7 @@ func (s *sessionTurnState) saveCachedResponse(promptHash string, payload []byte)
 	}
 	s.cachedResponses = append(s.cachedResponses, cachedResponse{
 		promptHash: promptHash,
-		payload:    payload,
+		payload:    append([]byte(nil), payload...),
 	})
 }
 
@@ -246,6 +256,15 @@ func WithOptimizeTimeout(d time.Duration) Option {
 	}
 }
 
+// WithStreamTimeout caps the duration of streaming governor requests.
+// A non-positive value uses the default (5 minutes).
+func WithStreamTimeout(d time.Duration) Option {
+	return func(p *Proxy) {
+		if d > 0 {
+			p.streamTimeout = d
+		}
+	}
+}
 func WithClaudeMessages(cfg ClaudeMessagesConfig) Option {
 	return func(p *Proxy) {
 		p.claude = cfg
@@ -300,6 +319,7 @@ func New(gov Governor, opts ...Option) *Proxy {
 		mux:              http.NewServeMux(),
 		maxRequestSize:   8 << 20, // default 8 MiB
 		optimizeTimeout:  30 * time.Second,
+		streamTimeout:    0, // disabled by default; use WithStreamTimeout to enable
 		inFlightRequests: newInFlightTracker(),
 	}
 	for _, opt := range opts {

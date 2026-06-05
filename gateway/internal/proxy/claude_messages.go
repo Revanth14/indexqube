@@ -25,6 +25,7 @@ import (
 	"github.com/Revanth14/indexqube/gateway/internal/chunker"
 	"github.com/Revanth14/indexqube/gateway/internal/memory"
 	"github.com/Revanth14/indexqube/gateway/internal/middleware"
+	"github.com/Revanth14/indexqube/gateway/internal/redact"
 	"github.com/Revanth14/indexqube/gateway/internal/telemetry"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
@@ -37,8 +38,8 @@ const (
 )
 
 type contextKey string
-const isSubscriptionKey contextKey = "isSubscription"
 
+const isSubscriptionKey contextKey = "isSubscription"
 
 // guardBypassRe matches directives that attempt to disable proxy safety controls.
 // The separator between "guards" and "velocity" is optional (covers slash, pipe,
@@ -77,10 +78,10 @@ type claudeOptimizerStats struct {
 	BlocksPruned int `json:"blocks_pruned"`
 
 	// Byte/token accounting.
-	BytesBefore           int     `json:"bytes_before"`
-	BytesAfter            int     `json:"bytes_after"`
-	BytesEligible         int     `json:"bytes_eligible"`
-	BytesPruned           int     `json:"bytes_pruned"`
+	BytesBefore   int `json:"bytes_before"`
+	BytesAfter    int `json:"bytes_after"`
+	BytesEligible int `json:"bytes_eligible"`
+	BytesPruned   int `json:"bytes_pruned"`
 	// KnownBytes is the byte total of every span that hit the session cache
 	// (Seen returned true), independent of whether the span was subsequently
 	// pruned or preserved by a protection rule. Invariant:
@@ -100,14 +101,14 @@ type claudeOptimizerStats struct {
 	ClassSpansPruned   map[string]int `json:"class_spans_pruned,omitempty"`
 
 	// Preserve-reason counters.
-	PreservedLatestTurnBytes  int `json:"preserved_latest_turn_bytes"`
-	PreservedLatestTurnCount  int `json:"preserved_latest_turn_count"`
-	PreservedSmallBytes       int `json:"preserved_small_bytes"`
-	PreservedSmallCount       int `json:"preserved_small_count"`
-	PreservedSystemBytes      int `json:"preserved_system_bytes"`
-	PreservedSystemCount      int `json:"preserved_system_count"`
-	PreservedToolUseBytes     int `json:"preserved_tool_use_bytes"`
-	PreservedToolUseCount     int `json:"preserved_tool_use_count"`
+	PreservedLatestTurnBytes     int `json:"preserved_latest_turn_bytes"`
+	PreservedLatestTurnCount     int `json:"preserved_latest_turn_count"`
+	PreservedSmallBytes          int `json:"preserved_small_bytes"`
+	PreservedSmallCount          int `json:"preserved_small_count"`
+	PreservedSystemBytes         int `json:"preserved_system_bytes"`
+	PreservedSystemCount         int `json:"preserved_system_count"`
+	PreservedToolUseBytes        int `json:"preserved_tool_use_bytes"`
+	PreservedToolUseCount        int `json:"preserved_tool_use_count"`
 	PreservedInstructionBytes    int `json:"preserved_instruction_bytes"`
 	PreservedInstructionCount    int `json:"preserved_instruction_count"`
 	PreservedLastOccurrenceBytes int `json:"preserved_last_occurrence_bytes"`
@@ -227,23 +228,79 @@ func (p *Proxy) handleClaudeMessages(w http.ResponseWriter, r *http.Request) {
 		p.writeError(w, r, errorPayload{HTTPStatus: http.StatusBadRequest, Type: "invalid_request_error", Code: "invalid_anthropic_request", Message: err.Error()})
 		return
 	}
-	
+	overheadMs := time.Since(overheadStart).Milliseconds()
+
+	finishSynthetic := func(streamStats claudeStreamStats) {
+		effectiveOpt := optStats
+		effectiveOpt.BytesAfter = 0
+		effectiveOpt.EstimatedTokensAfter = 0
+		effectiveOpt.EstimatedTokensSaved = effectiveOpt.EstimatedTokensBefore
+		if effectiveOpt.BytesBefore > 0 {
+			effectiveOpt.ReductionRatio = 1
+		}
+
+		duration := time.Since(started)
+		if cfg.SessionStore != nil {
+			cfg.SessionStore.RecordUsage(sessionKey, memory.UsageTotals{
+				Requests:    1,
+				TokensIn:    estimateTokens(len(body)),
+				TokensOut:   streamStats.estimatedOutputTokens(),
+				TokensSaved: effectiveOpt.EstimatedTokensSaved,
+				BytesIn:     len(body),
+				BytesSaved:  effectiveOpt.BytesBefore - effectiveOpt.BytesAfter,
+			})
+		}
+		p.logClaudeRequestComplete(r.Context(), requestID, cfg.Mode, meta.Model, sessionKey, len(body), effectiveOpt, streamStats, duration, missingReqID, requestID, velocityWarning)
+		p.emitClaudeUsageEvent(r, sessionKey, meta.Model, effectiveOpt, duration, streamStats.StatusCode, overheadMs)
+		if os.Getenv("IQ_DUMP_PAYLOADS") == "1" {
+			dumpClaudePayloads(requestID, body, nil, streamStats, effectiveOpt)
+		}
+	}
+
 	// Intercept Sentinel Probes (quota, ping) to respond in 1 ms at 0 cost
 	normalizedLatest := strings.TrimSpace(strings.ToLower(shape.LatestUserText))
 	if normalizedLatest == "quota" || normalizedLatest == "ping" {
 		p.logger.InfoContext(ctx, "sentinel probe intercepted",
 			slog.String("session_key", shortLogHash(sessionKey)),
 			slog.String("probe", normalizedLatest))
-		writeSyntheticStreamResponse(w, "IndexQube active. Quota check successful.")
+		text := "IndexQube active. Quota check successful."
+		writeSyntheticStreamResponse(w, text)
+		finishSynthetic(claudeStreamStats{
+			OutputText:    len(text),
+			OutputRawText: text,
+			Status:        "synthetic_probe",
+			StatusCode:    http.StatusOK,
+			Completed:     true,
+			Provider:      "synthetic",
+		})
 		return
 	}
 
 	var capture *responseCaptureWriter
 	var promptCacheHash string
-	isCacheablePrompt := shape.LatestUserText != "" && shape.ToolResultCount == 0 && cfg.Mode == "optimize" &&
+	isCacheablePrompt := shape.LatestUserText != "" && cfg.Mode == "optimize" &&
 		r.Header.Get("Cache-Control") != "no-cache" && r.Header.Get("Pragma") != "no-cache"
+	writeCachedResponse := func(cachedPayload []byte) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		w.Header().Set("Connection", "keep-alive")
+		w.Header().Set("X-Accel-Buffering", "no")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(cachedPayload)
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		finishSynthetic(claudeStreamStats{
+			Chunks:     bytes.Count(cachedPayload, []byte("event: content_block_delta")),
+			OutputText: len(cachedPayload),
+			Status:     "cache_replay",
+			StatusCode: http.StatusOK,
+			Completed:  true,
+			Provider:   "cache",
+		})
+	}
 	if isCacheablePrompt {
-		promptCacheHash = computePromptHash(shape.LatestUserText, meta.Model)
+		promptCacheHash = computePromptHash(body, meta.Model)
 		ts := p.getOrCreateTurnState(sessionKey)
 		ts.mu.Lock()
 		cachedPayload, ok := ts.getCachedResponse(promptCacheHash)
@@ -252,22 +309,12 @@ func (p *Proxy) handleClaudeMessages(w http.ResponseWriter, r *http.Request) {
 			p.logger.InfoContext(ctx, "response-level cache hit",
 				slog.String("session_key", shortLogHash(sessionKey)),
 				slog.String("prompt_hash", promptCacheHash[:8]))
-			w.Header().Set("Content-Type", "text/event-stream")
-			w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-			w.Header().Set("Connection", "keep-alive")
-			w.Header().Set("X-Accel-Buffering", "no")
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write(cachedPayload)
-			if flusher, ok := w.(http.Flusher); ok {
-				flusher.Flush()
-			}
+			writeCachedResponse(cachedPayload)
 			return
 		}
 		capture = &responseCaptureWriter{ResponseWriter: w}
 		w = capture
 	}
-
-	overheadMs := time.Since(overheadStart).Milliseconds()
 
 	// FIX 2: in-flight duplicate detection. When a second identical request
 	// arrives while the first is still in-flight, it waits up to 30 s for the
@@ -280,6 +327,19 @@ func (p *Proxy) handleClaudeMessages(w http.ResponseWriter, r *http.Request) {
 		case <-time.After(30 * time.Second):
 		case <-r.Context().Done():
 			return
+		}
+		if isCacheablePrompt {
+			ts := p.getOrCreateTurnState(sessionKey)
+			ts.mu.Lock()
+			cachedPayload, ok := ts.getCachedResponse(promptCacheHash)
+			ts.mu.Unlock()
+			if ok {
+				p.logger.InfoContext(ctx, "response-level cache hit after in-flight wait",
+					slog.String("session_key", shortLogHash(sessionKey)),
+					slog.String("prompt_hash", promptCacheHash[:8]))
+				writeCachedResponse(cachedPayload)
+				return
+			}
 		}
 		// Re-register after the original completed so our dispatch is tracked.
 		if done2, _ := p.inFlightRequests.acquire(promptHash); done2 != nil {
@@ -417,6 +477,7 @@ func (c ClaudeMessagesConfig) validate() error {
 }
 
 func validClaudeDevToken(r *http.Request, want string) bool {
+	_ = want
 	auth := strings.TrimSpace(r.Header.Get("Authorization"))
 	token := strings.TrimSpace(strings.TrimPrefix(auth, "Bearer "))
 	return token != ""
@@ -440,11 +501,11 @@ func dumpClaudePayloads(requestID string, before, after []byte, stats claudeStre
 	}
 	beforePath := filepath.Join(dumpDir, "iq-before-"+requestID+".json")
 	afterPath := filepath.Join(dumpDir, "iq-after-"+requestID+".json")
-	if err := os.WriteFile(beforePath, prettyJSON(before), 0o600); err != nil {
+	if err := os.WriteFile(beforePath, prettyJSON([]byte(redact.String(string(before)))), 0o600); err != nil {
 		fmt.Fprintf(os.Stderr, "[iq] failed to dump payload pair: %v\n", err)
 		return
 	}
-	if err := os.WriteFile(afterPath, prettyJSON(after), 0o600); err != nil {
+	if err := os.WriteFile(afterPath, prettyJSON([]byte(redact.String(string(after)))), 0o600); err != nil {
 		fmt.Fprintf(os.Stderr, "[iq] failed to dump payload pair: %v\n", err)
 		return
 	}
@@ -515,6 +576,7 @@ func appendSessionDump(sessionFile, requestID string, before, after []byte, stat
 	if err != nil {
 		return err
 	}
+	line = []byte(redact.String(string(line)))
 	line = append(line, '\n')
 
 	dumpPayloadMu.Lock()
@@ -664,6 +726,7 @@ func (p *Proxy) warmUpSystemSpans(ctx context.Context, cfg ClaudeMessagesConfig,
 // creating it if it does not yet exist.
 func (p *Proxy) getOrCreateTurnState(sessionKey string) *sessionTurnState {
 	v, _ := p.sessionTurnCounters.LoadOrStore(sessionKey, &sessionTurnState{})
+	p.touchSession(sessionKey)
 	return v.(*sessionTurnState)
 }
 
@@ -671,6 +734,7 @@ func (p *Proxy) getOrCreateTurnState(sessionKey string) *sessionTurnState {
 // sessionKey, creating it if it does not yet exist.
 func (p *Proxy) getOrCreateBoilerplateState(sessionKey string) *boilerplateState {
 	v, _ := p.sessionBoilerplateState.LoadOrStore(sessionKey, &boilerplateState{})
+	p.touchSession(sessionKey)
 	return v.(*boilerplateState)
 }
 
@@ -780,6 +844,7 @@ func (p *Proxy) prepareClaudeBody(ctx context.Context, cfg ClaudeMessagesConfig,
 	// zero-savings. Uses a stable chunk ID: sha256(file_path + content_hash).
 	if root["system"] != nil {
 		_, alreadyWarmed := p.sessionWarmUpDone.LoadOrStore(sessionKey, true)
+		p.touchSession(sessionKey)
 		if !alreadyWarmed {
 			p.warmUpSystemSpans(ctx, cfg, sessionKey, root)
 		}
@@ -796,6 +861,7 @@ func (p *Proxy) prepareClaudeBody(ctx context.Context, cfg ClaudeMessagesConfig,
 				slog.String("session_key", shortLogHash(sessionKey)))
 		} else {
 			p.sessionSuggestionTs.Store(sessionKey, now)
+			p.touchSession(sessionKey)
 		}
 		return body, req, stats, shape, nil
 	}
@@ -953,6 +1019,23 @@ func (p *Proxy) prepareClaudeBody(ctx context.Context, cfg ClaudeMessagesConfig,
 		if !known {
 			if span.Class == SpanClassSystemText || span.Class == SpanClassSystemBoilerplate {
 				systemAllKnown = false
+			}
+
+			// Protected content must win even when the span is a new boilerplate
+			// variant. This check intentionally runs before boilerplate cooldown
+			// pruning so instruction files, credentials, and the latest turn are
+			// never removed just because they live inside a repeated harness block.
+			if span.IsLatestTurn {
+				stats.PreservedLatestTurnBytes += span.Bytes
+				stats.PreservedLatestTurnCount++
+				stats.BlocksNew++
+				continue
+			}
+			if isProtectedInstructionSpan(span) {
+				stats.PreservedInstructionBytes += span.Bytes
+				stats.PreservedInstructionCount++
+				stats.BlocksNew++
+				continue
 			}
 
 			// FIX 7: SUGGESTION MODE injection cooldown. If a boilerplate span
@@ -1130,7 +1213,15 @@ var protectedInstructionPathFragments = [...]string{
 }
 
 func isProtectedInstructionSpan(span TextSpan) bool {
-	return containsProtectedInstructionPath(span.SourcePath) || containsProtectedInstructionPath(span.Text)
+	return containsProtectedInstructionPath(span.SourcePath) || containsProtectedInstructionPath(span.Text) || containsCredentialMarker(span.Text)
+}
+
+func containsCredentialMarker(s string) bool {
+	lower := strings.ToLower(s)
+	return strings.Contains(lower, "api-key") ||
+		strings.Contains(lower, "bearer ") ||
+		strings.Contains(lower, "x-anthropic-api-key") ||
+		strings.Contains(lower, "authorization")
 }
 
 func containsProtectedInstructionPath(s string) bool {
@@ -1245,7 +1336,6 @@ func isSubscriptionAuth(auth string) bool {
 		strings.Contains(auth, "sk-ant-oat")
 }
 
-
 // forwardClaudeMessagesViaBedrock proxies /v1/messages to the Bedrock
 // InvokeModelWithResponseStream API. The Anthropic Messages body is forwarded
 // as-is except that `model` and `stream` are removed and
@@ -1270,7 +1360,7 @@ func (p *Proxy) forwardClaudeMessagesViaBedrock(w http.ResponseWriter, r *http.R
 	delete(root, "model")
 	delete(root, "stream")
 	delete(root, "context_management") // Bedrock rejects this Anthropic-specific field
-	stripCacheControlRecursively(root)  // Bedrock rejects cache_control fields
+	stripCacheControlRecursively(root) // Bedrock rejects cache_control fields
 	root["anthropic_version"] = "bedrock-2023-05-31"
 	bedrockBody, err := json.Marshal(root)
 	if err != nil {
@@ -2072,6 +2162,7 @@ func (p *Proxy) getOrCreatePrefixHints(sessionKey string) *prefixHintSet {
 	v, _ := p.sessionPrefixHints.LoadOrStore(sessionKey, &prefixHintSet{
 		hints: make(map[string]int),
 	})
+	p.touchSession(sessionKey)
 	return v.(*prefixHintSet)
 }
 
@@ -2162,10 +2253,19 @@ func (rcw *responseCaptureWriter) WriteString(s string) (int, error) {
 	return rcw.ResponseWriter.Write([]byte(s))
 }
 
-func computePromptHash(prompt, model string) string {
-	normalized := strings.TrimSpace(strings.ToLower(prompt))
-	sum := sha256.Sum256([]byte(normalized + "|" + model))
-	return hex.EncodeToString(sum[:])
+func computePromptHash(body []byte, model string) string {
+	canonicalBody := body
+	var parsed any
+	if err := json.Unmarshal(body, &parsed); err == nil {
+		if encoded, encErr := marshalJSONNoHTMLEscape(parsed); encErr == nil {
+			canonicalBody = encoded
+		}
+	}
+	h := sha256.New()
+	h.Write([]byte(model))
+	h.Write([]byte{0})
+	h.Write(canonicalBody)
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 func writeSyntheticStreamResponse(w http.ResponseWriter, text string) {

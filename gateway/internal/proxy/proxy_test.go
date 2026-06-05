@@ -13,6 +13,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -477,6 +479,135 @@ func TestClaudeMessages_AnthropicPassthroughStreaming(t *testing.T) {
 	}
 }
 
+func TestClaudeMessages_ResponseCacheReplaysRepeatedPromptWithPriorToolHistory(t *testing.T) {
+	t.Parallel()
+	var calls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "event: message_start\n")
+		_, _ = io.WriteString(w, `data: {"type":"message_start","message":{"id":"msg_1","model":"claude-sonnet-4-6"}}`+"\n\n")
+		_, _ = io.WriteString(w, "event: content_block_delta\n")
+		_, _ = io.WriteString(w, `data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"project summary"}}`+"\n\n")
+		_, _ = io.WriteString(w, "event: message_stop\n")
+		_, _ = io.WriteString(w, `data: {"type":"message_stop"}`+"\n\n")
+	}))
+	t.Cleanup(upstream.Close)
+	srv := newClaudeTestServer(t, upstream.URL, memory.NewStore(time.Hour), "optimize", true)
+
+	body := `{"model":"claude-sonnet-4-6","stream":true,"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"old file listing\nmain.go\nREADME.md"}]},{"role":"assistant","content":"I read the files."},{"role":"user","content":"what does this project do?"}]}`
+	for i := 0; i < 2; i++ {
+		req, err := http.NewRequest(http.MethodPost, srv.URL+"/v1/messages", strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		req.Header.Set("Authorization", "Bearer iq-dev-local")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("POST /v1/messages: %v", err)
+		}
+		got, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status=%d body=%s", resp.StatusCode, got)
+		}
+		if !strings.Contains(string(got), "project summary") {
+			t.Fatalf("body=%s, want cached upstream response", got)
+		}
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("upstream calls=%d, want 1", got)
+	}
+}
+
+func TestClaudeMessages_ResponseCacheRecheckedAfterInflightWait(t *testing.T) {
+	t.Parallel()
+	var calls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		time.Sleep(100 * time.Millisecond)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "event: content_block_delta\n")
+		_, _ = io.WriteString(w, `data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"cached concurrent answer"}}`+"\n\n")
+		_, _ = io.WriteString(w, "event: message_stop\n")
+		_, _ = io.WriteString(w, `data: {"type":"message_stop"}`+"\n\n")
+	}))
+	t.Cleanup(upstream.Close)
+	srv := newClaudeTestServer(t, upstream.URL, memory.NewStore(time.Hour), "optimize", true)
+
+	body := `{"model":"claude-sonnet-4-6","stream":true,"messages":[{"role":"user","content":"what does this project do?"}]}`
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			req, err := http.NewRequest(http.MethodPost, srv.URL+"/v1/messages", strings.NewReader(body))
+			if err != nil {
+				errs <- err
+				return
+			}
+			req.Header.Set("Authorization", "Bearer iq-dev-local")
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				errs <- err
+				return
+			}
+			got, _ := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				errs <- fmt.Errorf("status=%d body=%s", resp.StatusCode, got)
+				return
+			}
+			if !strings.Contains(string(got), "cached concurrent answer") {
+				errs <- fmt.Errorf("body=%s, want cached concurrent answer", got)
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("upstream calls=%d, want 1", got)
+	}
+}
+
+func TestClaudeMessages_SentinelProbeDoesNotCallUpstream(t *testing.T) {
+	t.Parallel()
+	var calls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		t.Fatal("upstream should not be called for sentinel probe")
+	}))
+	t.Cleanup(upstream.Close)
+	srv := newClaudeTestServer(t, upstream.URL, memory.NewStore(time.Hour), "observe", false)
+
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/v1/messages", strings.NewReader(`{"model":"claude-sonnet-4-6","stream":true,"messages":[{"role":"user","content":"quota"}]}`))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer iq-dev-local")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST /v1/messages: %v", err)
+	}
+	got, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, got)
+	}
+	if !strings.Contains(string(got), "IndexQube active") {
+		t.Fatalf("body=%s, want synthetic response", got)
+	}
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("upstream calls=%d, want 0", got)
+	}
+}
+
 func TestClaudeMessages_MissingAuth(t *testing.T) {
 	t.Parallel()
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -843,6 +974,56 @@ func TestClaudeMessages_OptimizePreservesProtectedInstructionToolResult(t *testi
 	}
 }
 
+func TestClaudeMessages_ProtectedSystemBoilerplateBeatsCooldownPruning(t *testing.T) {
+	t.Parallel()
+	p := New(&fakeGovernor{})
+	session := "protected-boilerplate-test"
+	cfg := ClaudeMessagesConfig{
+		Mode:                 "optimize",
+		EnableBlockOptimizer: true,
+		SessionStore:         memory.NewStore(time.Hour),
+		Optimizer: OptimizerConfig{
+			MinSpanBytes:            512,
+			EnableToolResultPruning: true,
+		},
+	}
+	bodyFor := func(secret string) []byte {
+		systemText := "<system-reminder>\n" +
+			strings.Repeat("stable harness reminder line\n", 30) +
+			"Authorization: Bearer " + secret + "\n" +
+			"CLAUDE.md must remain visible\n" +
+			"</system-reminder>"
+		return []byte(fmt.Sprintf(
+			`{"model":"claude-sonnet-4-6","system":[{"type":"text","text":%q}],"messages":[{"role":"user","content":"latest turn"}]}`,
+			systemText,
+		))
+	}
+
+	p.resolveRequestID(session, "turn-1")
+	if _, _, _, _, err := p.prepareClaudeBody(context.Background(), cfg, session, bodyFor("sk-proj-firstsecret")); err != nil {
+		t.Fatalf("first prepare: %v", err)
+	}
+	p.resolveRequestID(session, "turn-2")
+	if _, _, _, _, err := p.prepareClaudeBody(context.Background(), cfg, session, bodyFor("sk-proj-secondsecret")); err != nil {
+		t.Fatalf("second prepare: %v", err)
+	}
+	p.resolveRequestID(session, "turn-3")
+	forward, _, stats, _, err := p.prepareClaudeBody(context.Background(), cfg, session, bodyFor("sk-proj-thirdsecret"))
+	if err != nil {
+		t.Fatalf("third prepare: %v", err)
+	}
+
+	if strings.Contains(string(forward), "omitted") {
+		t.Fatalf("protected system boilerplate must not be replaced during cooldown, body=%s", forward)
+	}
+	if !strings.Contains(string(forward), "Authorization: Bearer sk-proj-thirdsecret") {
+		t.Fatalf("protected credential marker missing from forwarded body: %s", forward)
+	}
+	if stats.PreservedInstructionCount < 1 {
+		t.Fatalf("expected protected boilerplate to be counted as preserved, stats=%+v", stats)
+	}
+}
+
 func TestClaudeMessages_OptimizeStillPrunesOrdinaryToolResult(t *testing.T) {
 	t.Parallel()
 	p := New(&fakeGovernor{})
@@ -946,6 +1127,9 @@ func TestProtectedInstructionSpanDetection(t *testing.T) {
 	if isProtectedInstructionSpan(TextSpan{SourcePath: `/repo/src/main.go`, Text: `package main`}) {
 		t.Fatal("ordinary source file should not be protected")
 	}
+	if !isProtectedInstructionSpan(TextSpan{Text: `Authorization: Bearer my-api-key`}) {
+		t.Fatal("expected Authorization bearer text to be protected")
+	}
 }
 
 func TestDumpClaudePayloadsAppendsSessionFile(t *testing.T) {
@@ -1014,15 +1198,15 @@ func TestDumpClaudePayloadsEmitsOptimizerStats(t *testing.T) {
 	// latest-turn. KnownBytes is the sum across all preservation paths plus
 	// the pruned bytes.
 	opt := claudeOptimizerStats{
-		BlocksPruned:                  2,
-		BlocksKnown:                   5,
-		BytesPruned:                   1000,
-		PreservedInstructionBytes:     3027,
-		PreservedInstructionCount:     1,
-		PreservedLatestTurnBytes:      500,
-		PreservedLatestTurnCount:      1,
-		PreservedLastOccurrenceBytes:  0,
-		PreservedLastOccurrenceCount:  0,
+		BlocksPruned:                 2,
+		BlocksKnown:                  5,
+		BytesPruned:                  1000,
+		PreservedInstructionBytes:    3027,
+		PreservedInstructionCount:    1,
+		PreservedLatestTurnBytes:     500,
+		PreservedLatestTurnCount:     1,
+		PreservedLastOccurrenceBytes: 0,
+		PreservedLastOccurrenceCount: 0,
 	}
 	opt.KnownBytes = opt.BytesPruned + opt.PreservedInstructionBytes +
 		opt.PreservedLatestTurnBytes + opt.PreservedLastOccurrenceBytes
