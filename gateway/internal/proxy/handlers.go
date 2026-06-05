@@ -147,6 +147,10 @@ func (p *Proxy) handleOptimize(w http.ResponseWriter, r *http.Request) {
 	if sk == "" {
 		sk = r.Header.Get(headerSessionKey)
 	}
+	if err := validateSessionKey(sk); err != nil {
+		p.writeError(w, r, errorPayload{HTTPStatus: http.StatusBadRequest, Type: "invalid_request_error", Code: "invalid_session_key", Message: err.Error()})
+		return
+	}
 	pm := body.ProjectMemory
 	if pm == "" {
 		pm = r.Header.Get(headerProjectMemory)
@@ -358,10 +362,20 @@ func normalizeContextPath(path string) string {
 	}
 	path = strings.ReplaceAll(path, "\\", "/")
 	path = strings.TrimPrefix(path, "/")
-	if path == "" || strings.Contains(path, "```") || strings.ContainsAny(path, "\r\n\t ") {
+	if path == "" || strings.Contains(path, "```") || strings.ContainsAny(path, "\r\n\t ") || containsTraversal(path) {
 		return defaultRawContextPath
 	}
 	return path
+}
+
+func containsTraversal(path string) bool {
+	parts := strings.Split(path, "/")
+	for _, p := range parts {
+		if p == ".." {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizeContextLang(lang, path, content string) string {
@@ -482,8 +496,6 @@ func renderOptimizedText(msgs []domain.Message) string {
 func (p *Proxy) streamThroughGovernor(w http.ResponseWriter, r *http.Request, req *domain.InferenceRequest) {
 	sw, err := newSSEWriter(w)
 	if err != nil {
-		// Headers haven't been committed yet (newSSEWriter failed before any
-		// successful frame flush in practice), so a JSON 500 is still safe.
 		p.logger.ErrorContext(r.Context(), "sse writer init failed", slog.Any("err", err))
 		p.writeError(w, r, errorPayload{
 			HTTPStatus: http.StatusInternalServerError,
@@ -494,7 +506,14 @@ func (p *Proxy) streamThroughGovernor(w http.ResponseWriter, r *http.Request, re
 		return
 	}
 
-	if err := p.governor.Stream(r.Context(), req, sw); err != nil {
+	ctx := r.Context()
+	if p.streamTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, p.streamTimeout)
+		defer cancel()
+	}
+
+	if err := p.governor.Stream(ctx, req, sw); err != nil {
 		// Client hung up -- socket is gone, don't try to write to it.
 		// Two paths lead here:
 		//   A) The adapter detected ctx.Err() and returned context.Canceled.
@@ -640,7 +659,6 @@ func (p *Proxy) handleAgentSessions(w http.ResponseWriter, _ *http.Request) {
 // SQLite + in-memory session data for the current process.
 func (p *Proxy) handleStats(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 
 	// Prefer Supabase for global totals (server deployments).
 	if p.supabaseStats != nil {
