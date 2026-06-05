@@ -3,6 +3,7 @@ package cache
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	"github.com/Revanth14/indexqube/gateway/internal/store/lsm"
 )
@@ -12,15 +13,16 @@ import (
 type LSMCache struct {
 	engine        *lsm.Engine
 	maxEntryBytes int64
+	ttl           time.Duration
 }
 
 // NewLSMCache opens (or creates) an LSM storage engine in dir.
-func NewLSMCache(dir string, maxEntryBytes int64) (*LSMCache, error) {
+func NewLSMCache(dir string, maxEntryBytes int64, ttl time.Duration) (*LSMCache, error) {
 	opts := lsm.Options{
 		MemTableSize:  4 * 1024 * 1024, // 4 MiB flushes
 		MaxL0Tables:   4,
-		BlockSize:     4096,            // page-aligned
-		BloomFPRate:   0.01,            // 1% false positive
+		BlockSize:     4096, // page-aligned
+		BloomFPRate:   0.01, // 1% false positive
 		BloomExpected: 10000,
 		MaxTableSize:  2 * 1024 * 1024, // 2 MiB tables
 		L1Budget:      10 * 1024 * 1024,
@@ -32,6 +34,7 @@ func NewLSMCache(dir string, maxEntryBytes int64) (*LSMCache, error) {
 	return &LSMCache{
 		engine:        engine,
 		maxEntryBytes: maxEntryBytes,
+		ttl:           ttl,
 	}, nil
 }
 
@@ -48,6 +51,9 @@ func (c *LSMCache) Get(ctx context.Context, key Key) (*Entry, bool, error) {
 	var entry Entry
 	if err := json.Unmarshal(val, &entry); err != nil {
 		return nil, false, err
+	}
+	if c.ttl > 0 && !entry.CreatedAt.IsZero() && time.Since(entry.CreatedAt) > c.ttl {
+		return nil, false, nil
 	}
 	return &entry, true, nil
 }

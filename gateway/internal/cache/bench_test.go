@@ -196,7 +196,7 @@ func BenchmarkLSMCachePut(b *testing.B) {
 		sz := sz
 		b.Run(sz.name, func(b *testing.B) {
 			dir := b.TempDir()
-			c, err := NewLSMCache(dir, 0) // 0 = no per-entry size cap
+			c, err := NewLSMCache(dir, 0, 0) // 0 = no per-entry size cap, no TTL
 			if err != nil {
 				b.Fatalf("NewLSMCache: %v", err)
 			}
@@ -223,7 +223,7 @@ func BenchmarkLSMCacheGet(b *testing.B) {
 		sz := sz
 		b.Run(sz.name, func(b *testing.B) {
 			dir := b.TempDir()
-			c, err := NewLSMCache(dir, 0)
+			c, err := NewLSMCache(dir, 0, 0)
 			if err != nil {
 				b.Fatalf("NewLSMCache: %v", err)
 			}

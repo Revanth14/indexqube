@@ -17,7 +17,7 @@ func TestLSMCache_GetMissOnEmpty(t *testing.T) {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	c, err := NewLSMCache(tmpDir, 1024)
+	c, err := NewLSMCache(tmpDir, 1024, time.Hour)
 	if err != nil {
 		t.Fatalf("NewLSMCache failed: %v", err)
 	}
@@ -39,7 +39,7 @@ func TestLSMCache_PutThenGet(t *testing.T) {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	c, err := NewLSMCache(tmpDir, 1024)
+	c, err := NewLSMCache(tmpDir, 1024, time.Hour)
 	if err != nil {
 		t.Fatalf("NewLSMCache failed: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestLSMCache_PutTooLargeRejected(t *testing.T) {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	c, err := NewLSMCache(tmpDir, 10) // extremely small max size
+	c, err := NewLSMCache(tmpDir, 10, time.Hour) // extremely small max size
 	if err != nil {
 		t.Fatalf("NewLSMCache failed: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestLSMCache_PersistenceAcrossCloses(t *testing.T) {
 	defer os.RemoveAll(tmpDir)
 
 	// Phase 1: Open, write entry, then close
-	c1, err := NewLSMCache(tmpDir, 1024)
+	c1, err := NewLSMCache(tmpDir, 1024, time.Hour)
 	if err != nil {
 		t.Fatalf("c1 NewLSMCache failed: %v", err)
 	}
@@ -130,7 +130,7 @@ func TestLSMCache_PersistenceAcrossCloses(t *testing.T) {
 	c1.Close()
 
 	// Phase 2: Re-open in the same directory, read entry, then close
-	c2, err := NewLSMCache(tmpDir, 1024)
+	c2, err := NewLSMCache(tmpDir, 1024, time.Hour)
 	if err != nil {
 		t.Fatalf("c2 NewLSMCache failed: %v", err)
 	}
@@ -146,5 +146,36 @@ func TestLSMCache_PersistenceAcrossCloses(t *testing.T) {
 
 	if string(got.Chunks[0]) != string(want.Chunks[0]) {
 		t.Errorf("chunk data corrupted: got %s, want %s", got.Chunks[0], want.Chunks[0])
+	}
+}
+func TestLSMCache_TTLExpiredReturnsMiss(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "iq-lsm-cache-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	c, err := NewLSMCache(tmpDir, 1024, time.Minute)
+	if err != nil {
+		t.Fatalf("NewLSMCache failed: %v", err)
+	}
+	defer c.Close()
+
+	entry := &Entry{
+		Provider:  domain.ProviderAnthropic,
+		Model:     "claude-3-5-sonnet",
+		Chunks:    [][]byte{[]byte("expired chunk")},
+		CreatedAt: time.Now().Add(-2 * time.Minute),
+	}
+	if err := c.Put(context.Background(), "expired-key", entry); err != nil {
+		t.Fatalf("Put failed: %v", err)
+	}
+
+	_, hit, err := c.Get(context.Background(), "expired-key")
+	if err != nil {
+		t.Fatalf("Get failed: %v", err)
+	}
+	if hit {
+		t.Fatal("expected expired LSM cache entry to be a miss")
 	}
 }
