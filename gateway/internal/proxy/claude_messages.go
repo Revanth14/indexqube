@@ -37,10 +37,6 @@ const (
 	claudeDefaultMode = "observe"
 )
 
-type contextKey string
-
-const isSubscriptionKey contextKey = "isSubscription"
-
 // guardBypassRe matches directives that attempt to disable proxy safety controls.
 // The separator between "guards" and "velocity" is optional (covers slash, pipe,
 // backslash, or none) to handle formatting variations in injected CLAUDE.md files.
@@ -113,6 +109,12 @@ type claudeOptimizerStats struct {
 	PreservedInstructionCount    int `json:"preserved_instruction_count"`
 	PreservedLastOccurrenceBytes int `json:"preserved_last_occurrence_bytes"`
 	PreservedLastOccurrenceCount int `json:"preserved_last_occurrence_count"`
+	// PreservedCachePrefix counts spans left untouched because they sit inside
+	// Anthropic's prompt-cache prefix (a cache_control breakpoint covers them).
+	// Rewriting them would invalidate the cached prefix for the whole suffix,
+	// costing far more than the bytes saved — so the optimizer preserves them.
+	PreservedCachePrefixBytes int `json:"preserved_cache_prefix_bytes"`
+	PreservedCachePrefixCount int `json:"preserved_cache_prefix_count"`
 
 	// Size tracking.
 	LargestSpanBytes   int `json:"largest_span_bytes"`
@@ -120,21 +122,29 @@ type claudeOptimizerStats struct {
 }
 
 type claudeStreamStats struct {
-	Chunks            int
-	OutputText        int
-	OutputRawText     string
-	OutputTokens      int
-	Status            string
-	StatusCode        int
-	Cancelled         bool
-	Completed         bool
-	HasToolUse        bool
-	Provider          string // "anthropic" or "bedrock"
-	UpstreamErr       string
-	UpstreamErrorCode string
-	UpstreamErrorType string
-	UpstreamRequestID string
-	RetryAfter        time.Duration
+	Chunks        int
+	OutputText    int
+	OutputRawText string
+	OutputTokens  int
+	// Real upstream input accounting, captured from the message_start event's
+	// usage object. These are measured ground truth (not byte estimates).
+	// InputTokens excludes cached tokens; CacheReadInputTokens is context Anthropic
+	// served from its prompt cache (≈10% cost, the latency win); CacheCreation is
+	// context written into the cache this turn.
+	InputTokens              int
+	CacheReadInputTokens     int
+	CacheCreationInputTokens int
+	Status                   string
+	StatusCode               int
+	Cancelled                bool
+	Completed                bool
+	HasToolUse               bool
+	Provider                 string // "anthropic" or "bedrock"
+	UpstreamErr              string
+	UpstreamErrorCode        string
+	UpstreamErrorType        string
+	UpstreamRequestID        string
+	RetryAfter               time.Duration
 }
 
 type claudeUpstreamErrorMeta struct {
@@ -219,9 +229,7 @@ func (p *Proxy) handleClaudeMessages(w http.ResponseWriter, r *http.Request) {
 		Model string `json:"model"`
 	}
 	_ = json.Unmarshal(body, &earlyMeta)
-	auth := r.Header.Get("Authorization")
-	isSubscription := isSubscriptionAuth(auth)
-	ctx := context.WithValue(r.Context(), isSubscriptionKey, isSubscription)
+	ctx := r.Context()
 
 	forwardBody, meta, optStats, shape, err := p.prepareClaudeBody(ctx, cfg, sessionKey, body)
 	if err != nil {
@@ -251,7 +259,7 @@ func (p *Proxy) handleClaudeMessages(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 		p.logClaudeRequestComplete(r.Context(), requestID, cfg.Mode, meta.Model, sessionKey, len(body), effectiveOpt, streamStats, duration, missingReqID, requestID, velocityWarning)
-		p.emitClaudeUsageEvent(r, sessionKey, meta.Model, effectiveOpt, duration, streamStats.StatusCode, overheadMs)
+		p.emitClaudeUsageEvent(r, sessionKey, meta.Model, effectiveOpt, streamStats, duration, streamStats.StatusCode, overheadMs)
 		if os.Getenv("IQ_DUMP_PAYLOADS") == "1" {
 			dumpClaudePayloads(requestID, body, nil, streamStats, effectiveOpt)
 		}
@@ -361,17 +369,25 @@ func (p *Proxy) handleClaudeMessages(w http.ResponseWriter, r *http.Request) {
 	}
 	duration := time.Since(started)
 	if cfg.SessionStore != nil {
+		// Prefer measured upstream input over the byte estimate when Anthropic
+		// reported usage; fall back to the estimate when it didn't (e.g. errors).
+		tokensIn := streamStats.realInputTokens()
+		if tokensIn == 0 {
+			tokensIn = estimateTokens(len(body))
+		}
 		cfg.SessionStore.RecordUsage(sessionKey, memory.UsageTotals{
-			Requests:    1,
-			TokensIn:    estimateTokens(len(body)),
-			TokensOut:   streamStats.estimatedOutputTokens(),
-			TokensSaved: optStats.EstimatedTokensSaved,
-			BytesIn:     len(body),
-			BytesSaved:  optStats.BytesBefore - optStats.BytesAfter,
+			Requests:            1,
+			TokensIn:            tokensIn,
+			TokensOut:           streamStats.estimatedOutputTokens(),
+			TokensSaved:         optStats.EstimatedTokensSaved,
+			BytesIn:             len(body),
+			BytesSaved:          optStats.BytesBefore - optStats.BytesAfter,
+			CacheReadTokens:     streamStats.CacheReadInputTokens,
+			CacheCreationTokens: streamStats.CacheCreationInputTokens,
 		})
 	}
 	p.logClaudeRequestComplete(r.Context(), requestID, cfg.Mode, meta.Model, sessionKey, len(body), optStats, streamStats, duration, missingReqID, requestID, velocityWarning)
-	p.emitClaudeUsageEvent(r, sessionKey, meta.Model, optStats, duration, streamStats.StatusCode, overheadMs)
+	p.emitClaudeUsageEvent(r, sessionKey, meta.Model, optStats, streamStats, duration, streamStats.StatusCode, overheadMs)
 
 	if os.Getenv("IQ_DUMP_PAYLOADS") == "1" {
 		dumpClaudePayloads(requestID, body, forwardBody, streamStats, optStats)
@@ -516,6 +532,12 @@ type payloadDumpResponse struct {
 	Text         string `json:"text"`
 	OutputTokens int    `json:"output_tokens"`
 	Status       string `json:"status"`
+	// Raw upstream input usage exactly as Anthropic reported it, so a dump can
+	// distinguish "prompt caching not applied" (cache fields 0 with large input)
+	// from "applied but small". Zero on synthetic/probe turns (no upstream call).
+	InputTokens              int `json:"input_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
 }
 
 type payloadDumpRecord struct {
@@ -558,9 +580,12 @@ func appendSessionDump(sessionFile, requestID string, before, after []byte, stat
 		Before:      redactedJSONPayload(before),
 		After:       redactedJSONPayload(after),
 		Response: payloadDumpResponse{
-			Text:         redact.String(stats.OutputRawText),
-			OutputTokens: stats.OutputTokens,
-			Status:       stats.Status,
+			Text:                     redact.String(stats.OutputRawText),
+			OutputTokens:             stats.OutputTokens,
+			Status:                   stats.Status,
+			InputTokens:              stats.InputTokens,
+			CacheReadInputTokens:     stats.CacheReadInputTokens,
+			CacheCreationInputTokens: stats.CacheCreationInputTokens,
 		},
 		Optimizer: &payloadOptimizerStats{
 			BlocksPruned:         optStats.BlocksPruned,
@@ -973,6 +998,21 @@ func (p *Proxy) prepareClaudeBody(ctx context.Context, cfg ClaudeMessagesConfig,
 	systemAllKnown := true
 	hasSystemSpan := false
 
+	// Prompt-cache protection: Claude Code marks a rolling cache_control breakpoint
+	// on the latest user turn (and the system prompt) every request, so the prefix
+	// up to that breakpoint is served by Anthropic at cache-read price on the next
+	// turn. Rewriting any span inside that prefix invalidates the cache for the
+	// entire suffix — far more expensive than the bytes a prune would save. When
+	// the request uses prompt caching we therefore preserve cached-prefix spans.
+	cachePrefixMsgIdx := lastCacheControlMessageIndex(root)
+	systemCached := contentHasCacheControl(root["system"])
+	spanInCachedPrefix := func(span TextSpan) bool {
+		if span.Role == "system" {
+			return systemCached
+		}
+		return cachePrefixMsgIdx >= 0 && span.MessageIndex >= 0 && span.MessageIndex <= cachePrefixMsgIdx
+	}
+
 	for _, span := range spans {
 		if span.Bytes < minSpanBytes {
 			// FIX 4 & SQLite Optimization: register small spans in the session cache
@@ -1079,6 +1119,15 @@ func (p *Proxy) prepareClaudeBody(ctx context.Context, cfg ClaudeMessagesConfig,
 				continue
 			}
 
+			// Even a new span must not be rewritten if it sits inside the prompt-cache
+			// prefix — rewriting it breaks Anthropic's cached suffix for this turn.
+			if spanInCachedPrefix(span) {
+				stats.PreservedCachePrefixBytes += span.Bytes
+				stats.PreservedCachePrefixCount++
+				stats.BlocksNew++
+				continue
+			}
+
 			// FIX 7: SUGGESTION MODE injection cooldown. If a boilerplate span
 			// is new (unknown hash) but the last forward was <5 turns ago AND
 			// context delta is <10 KB, prune it anyway to suppress redundant
@@ -1148,6 +1197,14 @@ func (p *Proxy) prepareClaudeBody(ctx context.Context, cfg ClaudeMessagesConfig,
 			}
 		}
 
+		// Never rewrite content inside Anthropic's prompt-cache prefix; doing so
+		// invalidates the cached suffix and costs more than the prune saves.
+		if spanInCachedPrefix(span) {
+			stats.PreservedCachePrefixBytes += span.Bytes
+			stats.PreservedCachePrefixCount++
+			continue
+		}
+
 		if !isEligibleSpanClass(span.Class, cfg.Optimizer) {
 			switch span.Class {
 			case SpanClassSystemText:
@@ -1165,8 +1222,15 @@ func (p *Proxy) prepareClaudeBody(ctx context.Context, cfg ClaudeMessagesConfig,
 		prunableSpans = append(prunableSpans, span)
 	}
 
-	isSub, _ := ctx.Value(isSubscriptionKey).(bool)
-	wantPromptCache := cfg.Optimizer.EnablePromptCache && hasSystemSpan && systemAllKnown && !cfg.Bedrock.Enabled && !isSub
+	// Only inject our own cache_control when the client did NOT already manage
+	// prompt caching. Claude Code places its own breakpoints (system + rolling
+	// latest turn) on every request; adding another risks exceeding Anthropic's
+	// 4-breakpoint limit (a 400 for any user, not just subscription) and is
+	// redundant. Deferring to the client is the correct generalization of the old
+	// blunt "skip for subscription" rule — subscription users keep their cache
+	// benefit via Claude Code's own breakpoints, which E2 now preserves.
+	requestHasCacheControl := systemCached || cachePrefixMsgIdx >= 0
+	wantPromptCache := cfg.Optimizer.EnablePromptCache && hasSystemSpan && systemAllKnown && !cfg.Bedrock.Enabled && !requestHasCacheControl
 	if len(prunableSpans) == 0 && !wantPromptCache {
 		return body, req, stats, shape, nil
 	}
@@ -1251,6 +1315,48 @@ var protectedInstructionPathFragments = [...]string{
 	".cursorrules",
 	".cursor/rules/",
 	".github/copilot-instructions.md",
+}
+
+// contentHasCacheControl reports whether an Anthropic content value (an array of
+// content blocks) carries a cache_control breakpoint on any block.
+func contentHasCacheControl(content any) bool {
+	arr, ok := content.([]any)
+	if !ok {
+		return false
+	}
+	for _, raw := range arr {
+		b, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if _, has := b["cache_control"]; has {
+			return true
+		}
+	}
+	return false
+}
+
+// lastCacheControlMessageIndex returns the highest message index whose content
+// carries a cache_control breakpoint, or -1 if none. Claude Code places a
+// rolling breakpoint on the latest user turn each request, so this marks the end
+// of the prompt-cache prefix that Anthropic will serve at cache-read price on the
+// next turn. Content at or before this index must not be rewritten.
+func lastCacheControlMessageIndex(root map[string]any) int {
+	msgs, ok := root["messages"].([]any)
+	if !ok {
+		return -1
+	}
+	last := -1
+	for i, raw := range msgs {
+		m, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if contentHasCacheControl(m["content"]) {
+			last = i
+		}
+	}
+	return last
 }
 
 func isProtectedInstructionSpan(span TextSpan) bool {
@@ -1371,12 +1477,6 @@ func stripCacheControlRecursively(v any) {
 	}
 }
 
-func isSubscriptionAuth(auth string) bool {
-	return strings.HasPrefix(auth, "Bearer claudepro_") ||
-		strings.Contains(auth, "claudepro_") ||
-		strings.Contains(auth, "sk-ant-oat")
-}
-
 // forwardClaudeMessagesViaBedrock proxies /v1/messages to the Bedrock
 // InvokeModelWithResponseStream API. The Anthropic Messages body is forwarded
 // as-is except that `model` and `stream` are removed and
@@ -1486,10 +1586,8 @@ func (p *Proxy) forwardClaudeMessagesViaBedrock(w http.ResponseWriter, r *http.R
 			stats.Chunks++
 			stats.OutputText += anthropicDeltaTextLen(payloadStr)
 			stats.OutputRawText += anthropicDeltaText(payloadStr)
-		case "message_delta":
-			if tokens := anthropicUsageOutputTokens(payloadStr); tokens > 0 {
-				stats.OutputTokens = tokens
-			}
+		case "message_start", "message_delta":
+			stats.applyUpstreamUsage(parseAnthropicUsage(payloadStr))
 		}
 	}
 	if err := stream.Err(); err != nil {
@@ -1626,16 +1724,12 @@ func (p *Proxy) forwardClaudeMessages(w http.ResponseWriter, r *http.Request, cf
 		return p.forwardClaudeMessagesViaBedrock(w, r, cfg, body)
 	}
 
-	auth := r.Header.Get("Authorization")
-	if isSubscriptionAuth(auth) {
-		var root map[string]any
-		if err := json.Unmarshal(body, &root); err == nil {
-			stripCacheControlRecursively(root)
-			if cleaned, err := marshalJSONNoHTMLEscape(root); err == nil {
-				body = cleaned
-			}
-		}
-	}
+	// Preserve Claude Code's cache_control breakpoints on the direct Anthropic
+	// path. Subscription/OAuth auth supports prompt caching too — Claude Code
+	// relies on it — so stripping breakpoints here only disabled the cache:
+	// Anthropic then reported cache_read=0 / cache_creation=0 and billed full
+	// input every turn. Bedrock, which rejects Anthropic-only cache_control,
+	// strips it in its own path (see forwardClaudeMessagesViaBedrock).
 
 	upstreamURL, err := url.JoinPath(strings.TrimRight(cfg.AnthropicBaseURL, "/"), "v1", "messages")
 	if err != nil {
@@ -1825,10 +1919,8 @@ func proxyAnthropicStream(w http.ResponseWriter, r *http.Request, resp *http.Res
 				txt := anthropicDeltaText(payload)
 				stats.OutputText += len(txt)
 				stats.OutputRawText += txt
-			case "message_delta":
-				if tokens := anthropicUsageOutputTokens(payload); tokens > 0 {
-					stats.OutputTokens = tokens
-				}
+			case "message_start", "message_delta":
+				stats.applyUpstreamUsage(parseAnthropicUsage(payload))
 			}
 		}
 	}
@@ -1873,19 +1965,77 @@ func anthropicDeltaTextLen(payload string) int {
 	return len(ev.Delta.Text)
 }
 
-func anthropicUsageOutputTokens(payload string) int {
-	var ev struct {
-		Usage struct {
-			OutputTokens int `json:"output_tokens"`
-		} `json:"usage"`
-	}
-	if err := json.Unmarshal([]byte(payload), &ev); err != nil {
-		return 0
-	}
-	return ev.Usage.OutputTokens
+// anthropicUsage holds the token-usage fields Anthropic reports over SSE. Input
+// and cache counters arrive on message_start (inside message.usage); the final
+// cumulative output_tokens arrives on message_delta (top-level usage). All fields
+// are optional, so a payload that omits a field simply leaves it at zero.
+type anthropicUsage struct {
+	InputTokens              int
+	OutputTokens             int
+	CacheReadInputTokens     int
+	CacheCreationInputTokens int
 }
 
-func (p *Proxy) emitClaudeUsageEvent(r *http.Request, sessionKey, model string, optStats claudeOptimizerStats, duration time.Duration, upstreamStatus int, overheadMs int64) {
+// parseAnthropicUsage extracts usage from either a message_start payload
+// (usage nested under "message") or a message_delta payload (top-level "usage").
+func parseAnthropicUsage(payload string) anthropicUsage {
+	var ev struct {
+		Usage   *usageFields `json:"usage"`
+		Message *struct {
+			Usage *usageFields `json:"usage"`
+		} `json:"message"`
+	}
+	if err := json.Unmarshal([]byte(payload), &ev); err != nil {
+		return anthropicUsage{}
+	}
+	u := ev.Usage
+	if u == nil && ev.Message != nil {
+		u = ev.Message.Usage
+	}
+	if u == nil {
+		return anthropicUsage{}
+	}
+	return anthropicUsage{
+		InputTokens:              u.InputTokens,
+		OutputTokens:             u.OutputTokens,
+		CacheReadInputTokens:     u.CacheReadInputTokens,
+		CacheCreationInputTokens: u.CacheCreationInputTokens,
+	}
+}
+
+type usageFields struct {
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+}
+
+// applyUpstreamUsage folds a parsed usage object into streamStats, keeping the
+// max output_tokens seen (cumulative) and capturing input/cache counters when
+// present (they appear once, on message_start).
+func (s *claudeStreamStats) applyUpstreamUsage(u anthropicUsage) {
+	if u.OutputTokens > 0 {
+		s.OutputTokens = u.OutputTokens
+	}
+	if u.InputTokens > 0 {
+		s.InputTokens = u.InputTokens
+	}
+	if u.CacheReadInputTokens > 0 {
+		s.CacheReadInputTokens = u.CacheReadInputTokens
+	}
+	if u.CacheCreationInputTokens > 0 {
+		s.CacheCreationInputTokens = u.CacheCreationInputTokens
+	}
+}
+
+// realInputTokens returns the total measured input the model billed this turn:
+// fresh input + cache-creation + cache-read. Zero when upstream reported nothing
+// (e.g. synthetic probe / cache replay paths).
+func (s claudeStreamStats) realInputTokens() int {
+	return s.InputTokens + s.CacheReadInputTokens + s.CacheCreationInputTokens
+}
+
+func (p *Proxy) emitClaudeUsageEvent(r *http.Request, sessionKey, model string, optStats claudeOptimizerStats, streamStats claudeStreamStats, duration time.Duration, upstreamStatus int, overheadMs int64) {
 	if p.usageTracker != nil {
 		p.usageTracker.Track(telemetry.UsageEvent{
 			MachineID:            telemetry.GetMachineID(),
@@ -1897,6 +2047,9 @@ func (p *Proxy) emitClaudeUsageEvent(r *http.Request, sessionKey, model string, 
 			InputTokensAttempted: optStats.EstimatedTokensBefore,
 			InputTokensSent:      optStats.EstimatedTokensAfter,
 			TokensSaved:          optStats.EstimatedTokensSaved,
+			InputTokensReal:      streamStats.realInputTokens(),
+			CacheReadTokens:      streamStats.CacheReadInputTokens,
+			CacheCreationTokens:  streamStats.CacheCreationInputTokens,
 			ReductionRatio:       optStats.ReductionRatio * 100,
 			BlocksAnalyzed:       optStats.BlocksSeen,
 			BlocksPruned:         optStats.BlocksPruned,
@@ -1907,9 +2060,12 @@ func (p *Proxy) emitClaudeUsageEvent(r *http.Request, sessionKey, model string, 
 	}
 
 	outcome := telemetry.RequestOutcome{
-		TokensAttempted: optStats.EstimatedTokensBefore,
-		TokensSent:      optStats.EstimatedTokensAfter,
-		TokensSaved:     optStats.EstimatedTokensSaved,
+		TokensAttempted:     optStats.EstimatedTokensBefore,
+		TokensSent:          optStats.EstimatedTokensAfter,
+		TokensSaved:         optStats.EstimatedTokensSaved,
+		InputTokensReal:     streamStats.realInputTokens(),
+		CacheReadTokens:     streamStats.CacheReadInputTokens,
+		CacheCreationTokens: streamStats.CacheCreationInputTokens,
 	}
 	if p.sessionTracker != nil {
 		p.sessionTracker.Record(sessionKey, outcome)
@@ -2071,6 +2227,21 @@ func (p *Proxy) logClaudeRequestComplete(ctx context.Context, requestID, mode, m
 	if opt.PreservedInstructionCount > 0 {
 		attrs = append(attrs, slog.Int("preserved_instruction_count", opt.PreservedInstructionCount))
 		attrs = append(attrs, slog.Int("preserved_instruction_bytes", opt.PreservedInstructionBytes))
+	}
+	if opt.PreservedCachePrefixCount > 0 {
+		attrs = append(attrs, slog.Int("preserved_cache_prefix_count", opt.PreservedCachePrefixCount))
+		attrs = append(attrs, slog.Int("preserved_cache_prefix_bytes", opt.PreservedCachePrefixBytes))
+	}
+	// Live per-turn measured cache efficiency (E4): visible each turn in --dev logs
+	// and session dumps, not just in the post-exit summary. Emitted only when the
+	// upstream actually reported input usage (skips synthetic/cache-replay turns).
+	if realIn := stream.realInputTokens(); realIn > 0 {
+		attrs = append(attrs,
+			slog.Int("input_tokens_real", realIn),
+			slog.Int("cache_read_tokens", stream.CacheReadInputTokens),
+			slog.Int("cache_creation_tokens", stream.CacheCreationInputTokens),
+			slog.Float64("cache_hit_ratio", float64(stream.CacheReadInputTokens)/float64(realIn)),
+		)
 	}
 	for class, bytes := range opt.ClassBytesSeen {
 		if bytes > 0 {

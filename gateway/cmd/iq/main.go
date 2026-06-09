@@ -193,18 +193,21 @@ func printSessionSummary(sessionID string) {
 	defer db.Close()
 
 	var requestsTotal, tokensAttempted, tokensSent, tokensDeduplicated int64
+	var inputTokensReal, cacheReadTokens, cacheCreationTokens int64
 	var status string
 	queryID := "%"
 	if len(sessionID) >= 8 {
 		queryID = "%-" + sessionID[:8]
 	}
 	err = db.QueryRow(`
-		SELECT requests_total, tokens_attempted, tokens_sent, tokens_deduplicated, status
+		SELECT requests_total, tokens_attempted, tokens_sent, tokens_deduplicated,
+		       input_tokens_real, cache_read_tokens, cache_creation_tokens, status
 		FROM   agent_sessions
 		WHERE  session_id LIKE ?
 		ORDER BY last_seen_at DESC
 		LIMIT 1
-	`, queryID).Scan(&requestsTotal, &tokensAttempted, &tokensSent, &tokensDeduplicated, &status)
+	`, queryID).Scan(&requestsTotal, &tokensAttempted, &tokensSent, &tokensDeduplicated,
+		&inputTokensReal, &cacheReadTokens, &cacheCreationTokens, &status)
 	if err != nil {
 		return
 	}
@@ -218,8 +221,14 @@ func printSessionSummary(sessionID string) {
 		percent = float64(tokensDeduplicated) / float64(tokensAttempted) * 100
 	}
 
-	// Cost saved (estimate at $3 per million tokens for Claude 3.5 Sonnet inputs)
-	dollarsSaved := float64(tokensDeduplicated) * 0.000003
+	// Prompt-cache hit ratio: of the input the model actually billed this session,
+	// what fraction Anthropic served from its prompt cache (≈10% cost, the latency
+	// win) instead of re-reading at full price. This is the real, measured signal
+	// for a subscription user — not a fabricated dollar figure.
+	cacheHitRatio := 0.0
+	if inputTokensReal > 0 {
+		cacheHitRatio = float64(cacheReadTokens) / float64(inputTokensReal) * 100
+	}
 
 	fmt.Fprintln(os.Stderr)
 	fmt.Fprintln(os.Stderr, "  \033[1;36m┌────────────────────────────────────────────────────────┐\033[0m")
@@ -229,7 +238,7 @@ func printSessionSummary(sessionID string) {
 	fmt.Fprintf(os.Stderr, "  \033[1;36m│\033[0m  %-20s : \033[1;37m%-29s\033[0m\033[1;36m│\033[0m\n", "Tokens Attempted", formatNumber(tokensAttempted))
 	fmt.Fprintf(os.Stderr, "  \033[1;36m│\033[0m  %-20s : \033[1;37m%-29s\033[0m\033[1;36m│\033[0m\n", "Tokens Sent", formatNumber(tokensSent))
 	fmt.Fprintf(os.Stderr, "  \033[1;36m│\033[0m  %-20s : \033[1;35m%-29s\033[0m\033[1;36m│\033[0m\n", "Tokens Saved", fmt.Sprintf("%s  (%.1f%%)", formatNumber(tokensDeduplicated), percent))
-	fmt.Fprintf(os.Stderr, "  \033[1;36m│\033[0m  %-20s : \033[1;33m$%-28.2f\033[0m\033[1;36m│\033[0m\n", "Estimated Savings", dollarsSaved)
+	fmt.Fprintf(os.Stderr, "  \033[1;36m│\033[0m  %-20s : \033[1;36m%-29s\033[0m\033[1;36m│\033[0m\n", "Prompt-Cache Hits", fmt.Sprintf("%s tok  (%.1f%%)", formatNumber(cacheReadTokens), cacheHitRatio))
 	fmt.Fprintln(os.Stderr, "  \033[1;36m├────────────────────────────────────────────────────────┤\033[0m")
 	statusColor := "\033[1;32m" // green
 	if status == "killed" {
