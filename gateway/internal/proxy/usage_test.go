@@ -238,6 +238,44 @@ func TestClaudeMessages_CacheControlRequestForwardedByteIdentical(t *testing.T) 
 	}
 }
 
+// TestClaudeMessages_OptimizeMatchesObserveForCacheManagedRequest proves the
+// proxy-vs-direct parity that a live A/B can't cleanly show (the two arms share
+// Anthropic's warm cache and contaminate each other). For a cache-managed request
+// optimize mode must forward the exact same bytes as observe (== direct) and as
+// the original — so on the wire the proxy is a no-op and cannot bust the cache.
+func TestClaudeMessages_OptimizeMatchesObserveForCacheManagedRequest(t *testing.T) {
+	t.Parallel()
+	body := []byte(`{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":[{"type":"text","text":"` +
+		strings.Repeat("stable project context line ", 60) + `","cache_control":{"type":"ephemeral"}}]}]}`)
+
+	run := func(mode string) []byte {
+		p := New(&fakeGovernor{})
+		cfg := ClaudeMessagesConfig{
+			Mode:                 mode,
+			EnableBlockOptimizer: true,
+			SessionStore:         memory.NewStore(time.Hour),
+			Optimizer:            OptimizerConfig{MinSpanBytes: 512, EnableToolResultPruning: true},
+		}
+		// Two prepares so any "known block" pruning would have fired by turn 2.
+		if _, _, _, _, err := p.prepareClaudeBody(context.Background(), cfg, "parity", body); err != nil {
+			t.Fatalf("%s first prepare: %v", mode, err)
+		}
+		out, _, _, _, err := p.prepareClaudeBody(context.Background(), cfg, "parity", body)
+		if err != nil {
+			t.Fatalf("%s second prepare: %v", mode, err)
+		}
+		return out
+	}
+
+	obs, opt := run("observe"), run("optimize")
+	if string(opt) != string(obs) {
+		t.Fatalf("optimize must forward identical bytes to observe (direct) for cache-managed requests\nobserve=%s\noptimize=%s", obs, opt)
+	}
+	if string(opt) != string(body) {
+		t.Fatalf("cache-managed request must be byte-identical to the original; got:\n%s", opt)
+	}
+}
+
 // promptCacheCfg builds an optimize-mode config with prompt-cache injection on.
 func promptCacheCfg() ClaudeMessagesConfig {
 	return ClaudeMessagesConfig{
