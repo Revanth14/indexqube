@@ -341,7 +341,7 @@ func formatNumber(n int64) string {
 func runBench(args []string) {
 	fs := flag.NewFlagSet("bench", flag.ExitOnError)
 	prompt := fs.String("prompt", "List the files in the current directory, then stop.", "prompt used to drive both arms")
-	cooldown := fs.Duration("cooldown", 0, "wait between arms so Anthropic's prompt cache expires for an uncontaminated read (e.g. 6m)")
+	cooldown := fs.Duration("cooldown", 6*time.Minute, "wait between arms so Anthropic's prompt cache (5m TTL) expires for an uncontaminated read; below 5m the comparison is contaminated")
 	if err := fs.Parse(args); err != nil {
 		os.Exit(2)
 	}
@@ -390,8 +390,13 @@ func runBench(args []string) {
 		a.m, _ = readSessionMetrics(dbPath, a.sessionID)
 	}
 	// arms[0]=proxy, arms[1]=direct.
-	printBenchComparison(arms[1].label, arms[1].m, arms[0].label, arms[0].m, *cooldown > 0)
+	printBenchComparison(arms[1].label, arms[1].m, arms[0].label, arms[0].m, *cooldown)
 }
+
+// anthropicCacheTTL is Anthropic's prompt-cache lifetime. A bench cooldown below
+// this lets the second arm read the first arm's still-warm cache, contaminating
+// the comparison (it freeloads, looking artificially cheap).
+const anthropicCacheTTL = 5 * time.Minute
 
 func benchCacheRatio(m sessionMetrics) float64 {
 	if m.inputReal <= 0 {
@@ -427,7 +432,7 @@ func signedNumber(n int64) string {
 	}
 }
 
-func printBenchComparison(directLabel string, d sessionMetrics, proxyLabel string, p sessionMetrics, cooldownApplied bool) {
+func printBenchComparison(directLabel string, d sessionMetrics, proxyLabel string, p sessionMetrics, cooldown time.Duration) {
 	const (
 		green = "\033[1;32m"
 		red   = "\033[1;31m"
@@ -488,20 +493,21 @@ func printBenchComparison(directLabel string, d sessionMetrics, proxyLabel strin
 
 	de, pe := benchEffectiveInput(d), benchEffectiveInput(p)
 	switch {
+	case cooldown < anthropicCacheTTL:
+		// The second arm (direct) ran while the first arm's cache was still warm
+		// and read it, so direct looks artificially cheap. Don't print a verdict.
+		fmt.Fprintf(w, "  %s⚠ contaminated: cooldown %s < %s cache TTL — the 2nd arm read the 1st arm's\n    warm cache, biasing the comparison against the proxy. Re-run with --cooldown 6m.%s\n", red, cooldown, anthropicCacheTTL, reset)
+		fmt.Fprintf(w, "  %seach arm's own cache-hit ratio is still valid: proxy=%.1f%%, direct=%.1f%%%s\n", grey, pr, dr, reset)
 	case pe < de:
 		pct := float64(de-pe) / float64(de) * 100
 		fmt.Fprintf(w, "  %s✓ Proxy's cost-weighted input is %s lower than direct (%.1f%%).%s\n", green, formatNumber(de-pe), pct, reset)
 	case pe > de:
 		pct := float64(pe-de) / float64(de) * 100
-		fmt.Fprintf(w, "  %s✗ Proxy's cost-weighted input is %s HIGHER than direct (%.1f%%) — the optimizer is busting the cache.%s\n", red, formatNumber(pe-de), pct, reset)
+		fmt.Fprintf(w, "  %s✗ Proxy's cost-weighted input is %s HIGHER than direct (%.1f%%) — investigate.%s\n", red, formatNumber(pe-de), pct, reset)
 	default:
 		fmt.Fprintf(w, "  %s≈ Proxy and direct are at cost parity.%s\n", grey, reset)
 	}
 	fmt.Fprintf(w, "  %scost-wt: cache read×0.1, write×1.25, fresh×1.0 (Anthropic's standard weights)%s\n", grey, reset)
-
-	if !cooldownApplied {
-		fmt.Fprintf(w, "  %snote: no cooldown — the 2nd arm may have read the 1st arm's cache.\n        Re-run with --cooldown 6m for an uncontaminated read.%s\n", grey, reset)
-	}
 	fmt.Fprintln(w)
 }
 
