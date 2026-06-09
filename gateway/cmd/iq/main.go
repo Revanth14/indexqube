@@ -216,35 +216,65 @@ func printSessionSummary(sessionID string) {
 		return
 	}
 
-	percent := 0.0
-	if tokensAttempted > 0 {
-		percent = float64(tokensDeduplicated) / float64(tokensAttempted) * 100
-	}
-
 	// Prompt-cache hit ratio: of the input the model actually billed this session,
-	// what fraction Anthropic served from its prompt cache (≈10% cost, the latency
-	// win) instead of re-reading at full price. This is the real, measured signal
-	// for a subscription user — not a fabricated dollar figure.
+	// the fraction Anthropic served from its prompt cache (≈10% cost) instead of
+	// re-reading at full price. The headline signal for a subscription user — real,
+	// measured from upstream usage, not a byte estimate or a fabricated dollar figure.
 	cacheHitRatio := 0.0
 	if inputTokensReal > 0 {
 		cacheHitRatio = float64(cacheReadTokens) / float64(inputTokensReal) * 100
+	}
+	// Fresh = the only portion billed at full input price this session.
+	freshInput := inputTokensReal - cacheReadTokens - cacheCreationTokens
+	if freshInput < 0 {
+		freshInput = 0
+	}
+	// Estimated optimizer pruning (byte-based, pre-cache). A diagnostic only — it
+	// does NOT correspond to tokens Anthropic actually billed, so it is dimmed and
+	// kept below the real metrics rather than shown as "saved".
+	estPercent := 0.0
+	if tokensAttempted > 0 {
+		estPercent = float64(tokensDeduplicated) / float64(tokensAttempted) * 100
+	}
+
+	const (
+		cyan   = "\033[1;36m"
+		white  = "\033[1;37m"
+		green  = "\033[1;32m"
+		purple = "\033[1;35m"
+		grey   = "\033[90m"
+	)
+	row := func(label, color, value string) {
+		// Inner width 56 (2 + 20 label + 3 + 31 value) to match the box borders.
+		fmt.Fprintf(os.Stderr, "  \033[1;36m│\033[0m  %-20s : %s%-31s\033[0m\033[1;36m│\033[0m\n", label, color, value)
+	}
+	divider := func() {
+		fmt.Fprintln(os.Stderr, "  \033[1;36m├────────────────────────────────────────────────────────┤\033[0m")
 	}
 
 	fmt.Fprintln(os.Stderr)
 	fmt.Fprintln(os.Stderr, "  \033[1;36m┌────────────────────────────────────────────────────────┐\033[0m")
 	fmt.Fprintln(os.Stderr, "  \033[1;36m│\033[0m                  \033[1;37mIndexQube Session Summary\033[0m             \033[1;36m│\033[0m")
-	fmt.Fprintln(os.Stderr, "  \033[1;36m├────────────────────────────────────────────────────────┤\033[0m")
-	fmt.Fprintf(os.Stderr, "  \033[1;36m│\033[0m  %-20s : \033[1;32m%-29d\033[0m\033[1;36m│\033[0m\n", "Requests Processed", requestsTotal)
-	fmt.Fprintf(os.Stderr, "  \033[1;36m│\033[0m  %-20s : \033[1;37m%-29s\033[0m\033[1;36m│\033[0m\n", "Tokens Attempted", formatNumber(tokensAttempted))
-	fmt.Fprintf(os.Stderr, "  \033[1;36m│\033[0m  %-20s : \033[1;37m%-29s\033[0m\033[1;36m│\033[0m\n", "Tokens Sent", formatNumber(tokensSent))
-	fmt.Fprintf(os.Stderr, "  \033[1;36m│\033[0m  %-20s : \033[1;35m%-29s\033[0m\033[1;36m│\033[0m\n", "Tokens Saved", fmt.Sprintf("%s  (%.1f%%)", formatNumber(tokensDeduplicated), percent))
-	fmt.Fprintf(os.Stderr, "  \033[1;36m│\033[0m  %-20s : \033[1;36m%-29s\033[0m\033[1;36m│\033[0m\n", "Prompt-Cache Hits", fmt.Sprintf("%s tok  (%.1f%%)", formatNumber(cacheReadTokens), cacheHitRatio))
-	fmt.Fprintln(os.Stderr, "  \033[1;36m├────────────────────────────────────────────────────────┤\033[0m")
-	statusColor := "\033[1;32m" // green
+	divider()
+	row("Requests", green, formatNumber(requestsTotal))
+	if inputTokensReal > 0 {
+		// Real, Anthropic-reported numbers lead.
+		row("Prompt-Cache Hit", purple, fmt.Sprintf("%.1f%%", cacheHitRatio))
+		row("Input Billed (real)", white, formatNumber(inputTokensReal)+" tok")
+		row("  from cache", cyan, formatNumber(cacheReadTokens)+" tok")
+		row("  cache write", white, formatNumber(cacheCreationTokens)+" tok")
+		row("  fresh (full price)", white, formatNumber(freshInput)+" tok")
+	} else {
+		row("Prompt-Cache Hit", grey, "— (no upstream usage)")
+	}
+	divider()
+	// Dimmed diagnostic, explicitly not a billing figure.
+	row("Optimizer (est.)", grey, fmt.Sprintf("%s tok  (%.1f%%)", formatNumber(tokensDeduplicated), estPercent))
+	statusColor := green
 	if status == "killed" {
 		statusColor = "\033[1;31m" // red
 	}
-	fmt.Fprintf(os.Stderr, "  \033[1;36m│\033[0m  %-20s : %s%-29s\033[0m\033[1;36m│\033[0m\n", "Session Status", statusColor, strings.ToUpper(status))
+	row("Session Status", statusColor, strings.ToUpper(status))
 	fmt.Fprintln(os.Stderr, "  \033[1;36m└────────────────────────────────────────────────────────┘\033[0m")
 	fmt.Fprintln(os.Stderr)
 }
