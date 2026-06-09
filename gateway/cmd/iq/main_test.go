@@ -57,6 +57,10 @@ func TestReadSessionMetrics(t *testing.T) {
 	if got := benchFreshInput(m); got != 612374-521776-87694 {
 		t.Fatalf("fresh = %d, want %d", got, 612374-521776-87694)
 	}
+	// read*0.1 + write*1.25 + fresh = 52177.6 + 109617.5 + 2904 = 164699.1
+	if got := benchEffectiveInput(m); got != 164699 {
+		t.Fatalf("effective = %d, want 164699", got)
+	}
 
 	// Unknown session must report not-found rather than a bogus row.
 	if _, ok := readSessionMetrics(dbPath, "0000000000000000"); ok {

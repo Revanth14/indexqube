@@ -408,6 +408,14 @@ func benchFreshInput(m sessionMetrics) int64 {
 	return f
 }
 
+// benchEffectiveInput weights input by Anthropic's standard multipliers
+// (cache read ≈0.1×, cache write ≈1.25×, fresh =1.0×) so the comparison reflects
+// real cost / rate-limit weight. Raw token sums hide that a cache miss (write)
+// costs ~12× a cache hit (read) — which is exactly the optimizer's failure mode.
+func benchEffectiveInput(m sessionMetrics) int64 {
+	return int64(float64(m.cacheRead)*0.1 + float64(m.cacheCreation)*1.25 + float64(benchFreshInput(m)))
+}
+
 func signedNumber(n int64) string {
 	switch {
 	case n > 0:
@@ -472,19 +480,24 @@ func printBenchComparison(directLabel string, d sessionMetrics, proxyLabel strin
 	fmt.Fprintf(w, "  %-22s %13.1f%% %13.1f%% %s%+13.1f%s\n",
 		"Cache-hit ratio", dr, pr, rcol, pr-dr, "pp"+reset)
 
+	// The bottom line: cost-weighted input. This is what actually moves billing
+	// and rate-limit headroom (read×0.1, write×1.25, fresh×1.0).
+	row("Effective (cost-wt)", benchEffectiveInput(d), benchEffectiveInput(p), true)
+
 	fmt.Fprintln(w, "  ──────────────────────────────────────────────────────────────")
 
+	de, pe := benchEffectiveInput(d), benchEffectiveInput(p)
 	switch {
-	case p.inputReal < d.inputReal:
-		saved := d.inputReal - p.inputReal
-		pct := float64(saved) / float64(d.inputReal) * 100
-		fmt.Fprintf(w, "  %s✓ Proxy billed %s fewer real input tokens than direct (%.1f%%).%s\n", green, formatNumber(saved), pct, reset)
-	case p.inputReal > d.inputReal:
-		extra := p.inputReal - d.inputReal
-		fmt.Fprintf(w, "  %s✗ Proxy billed %s MORE real input than direct — investigate.%s\n", red, formatNumber(extra), reset)
+	case pe < de:
+		pct := float64(de-pe) / float64(de) * 100
+		fmt.Fprintf(w, "  %s✓ Proxy's cost-weighted input is %s lower than direct (%.1f%%).%s\n", green, formatNumber(de-pe), pct, reset)
+	case pe > de:
+		pct := float64(pe-de) / float64(de) * 100
+		fmt.Fprintf(w, "  %s✗ Proxy's cost-weighted input is %s HIGHER than direct (%.1f%%) — the optimizer is busting the cache.%s\n", red, formatNumber(pe-de), pct, reset)
 	default:
-		fmt.Fprintf(w, "  %s≈ Proxy and direct billed the same real input (parity).%s\n", grey, reset)
+		fmt.Fprintf(w, "  %s≈ Proxy and direct are at cost parity.%s\n", grey, reset)
 	}
+	fmt.Fprintf(w, "  %scost-wt: cache read×0.1, write×1.25, fresh×1.0 (Anthropic's standard weights)%s\n", grey, reset)
 
 	if !cooldownApplied {
 		fmt.Fprintf(w, "  %snote: no cooldown — the 2nd arm may have read the 1st arm's cache.\n        Re-run with --cooldown 6m for an uncontaminated read.%s\n", grey, reset)
