@@ -182,6 +182,10 @@ func (b *Builder) Finish() error {
 	if err := b.bw.Flush(); err != nil {
 		return err
 	}
+	if err := b.f.Sync(); err != nil {
+		_ = b.f.Close()
+		return err
+	}
 	return b.f.Close()
 }
 

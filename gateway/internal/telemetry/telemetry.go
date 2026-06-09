@@ -46,6 +46,9 @@ type UsageEvent struct {
 	InputTokensAttempted int            `json:"input_tokens_attempted"`
 	InputTokensSent      int            `json:"input_tokens_sent"`
 	TokensSaved          int            `json:"tokens_saved"`
+	InputTokensReal      int            `json:"input_tokens_real"`
+	CacheReadTokens      int            `json:"cache_read_tokens"`
+	CacheCreationTokens  int            `json:"cache_creation_tokens"`
 	ReductionRatio       float64        `json:"reduction_ratio"`
 	BlocksAnalyzed       int            `json:"blocks_analyzed"`
 	BlocksPruned         int            `json:"blocks_pruned"`

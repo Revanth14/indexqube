@@ -21,6 +21,16 @@ const (
 	headerAWSRegion     = "X-IQ-AWS-Region"
 )
 
+func validateSessionKey(sk string) error {
+	if len(sk) == 0 {
+		return nil // optional
+	}
+	if len(sk) > 256 {
+		return fmt.Errorf("session key too long: %d bytes (max 256)", len(sk))
+	}
+	return nil
+}
+
 var (
 	errMissingProvider = errors.New("missing X-IQ-Provider header")
 	errUnknownProvider = errors.New("unknown provider in X-IQ-Provider header")
@@ -62,6 +72,9 @@ func (p *Proxy) parseInferenceRequest(w http.ResponseWriter, r *http.Request) (*
 	req.Credential = cred
 	req.ProjectMemory = r.Header.Get(headerProjectMemory)
 	req.SessionKey = r.Header.Get(headerSessionKey)
+	if err := validateSessionKey(req.SessionKey); err != nil {
+		return nil, err
+	}
 	req.AzureEndpoint = r.Header.Get(headerAzureEndpoint)
 	req.AWSRegion = r.Header.Get(headerAWSRegion)
 	return &req, nil

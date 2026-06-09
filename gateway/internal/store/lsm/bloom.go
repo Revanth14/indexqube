@@ -1,3 +1,4 @@
+// Optimized double-hashing Bloom Filter.
 package lsm
 
 import (

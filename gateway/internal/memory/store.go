@@ -48,6 +48,10 @@ type UsageTotals struct {
 	TokensSaved int
 	BytesIn     int
 	BytesSaved  int
+	// Measured upstream input usage (ground truth from Anthropic's usage object).
+	// CacheReadTokens is context served from Anthropic's prompt cache this turn.
+	CacheReadTokens     int
+	CacheCreationTokens int
 }
 
 func NewStore(ttl time.Duration) *Store {
@@ -121,6 +125,8 @@ func (s *Store) RecordUsage(sessionKey string, usage UsageTotals) {
 	session.Totals.TokensSaved += usage.TokensSaved
 	session.Totals.BytesIn += usage.BytesIn
 	session.Totals.BytesSaved += usage.BytesSaved
+	session.Totals.CacheReadTokens += usage.CacheReadTokens
+	session.Totals.CacheCreationTokens += usage.CacheCreationTokens
 }
 
 func (s *Store) CleanupExpired() {

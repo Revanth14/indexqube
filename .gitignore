@@ -41,11 +41,15 @@ gateway/logs/
 gateway/docs/
 tmp/
 build/
+gateway/iq
 
 commands.txt
 gateway/.claude/
+.kimchi/
 
 # Local planning & Claude config — never commit
 CONTEXT.md
 .claudeignore
 CLAUDE.md
+refer.txt
+AGENTS.md

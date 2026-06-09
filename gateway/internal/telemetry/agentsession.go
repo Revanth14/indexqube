@@ -16,11 +16,17 @@ type AgentSession struct {
 	TokensAttempted    int64  `json:"tokens_attempted"`
 	TokensSent         int64  `json:"tokens_sent"`
 	TokensDeduplicated int64  `json:"tokens_deduplicated"`
-	RequestsTotal      int    `json:"requests_total"`
-	LoopDetected       int    `json:"loop_detected"` // velocity/circuit warn events
-	KillEvents         int    `json:"kill_events"`   // guard blocks (HTTP 429)
-	KillReason         string `json:"kill_reason"`   // most recent block reason
-	Status             string `json:"status"`        // "active" | "killed" | "ended"
+	// Measured upstream token usage (ground truth from Anthropic's usage object,
+	// not byte estimates). InputTokensReal is fresh+cache-creation+cache-read;
+	// CacheReadTokens is context served from Anthropic's prompt cache.
+	InputTokensReal     int64  `json:"input_tokens_real"`
+	CacheReadTokens     int64  `json:"cache_read_tokens"`
+	CacheCreationTokens int64  `json:"cache_creation_tokens"`
+	RequestsTotal       int    `json:"requests_total"`
+	LoopDetected        int    `json:"loop_detected"` // velocity/circuit warn events
+	KillEvents          int    `json:"kill_events"`   // guard blocks (HTTP 429)
+	KillReason          string `json:"kill_reason"`   // most recent block reason
+	Status              string `json:"status"`        // "active" | "killed" | "ended"
 }
 
 // KillEvent is emitted whenever a guard blocks a request (HTTP 429).
@@ -40,9 +46,15 @@ type RequestOutcome struct {
 	TokensAttempted int
 	TokensSent      int
 	TokensSaved     int // tokens stripped by the optimizer (deduplicated)
-	GuardReason     string
-	Killed          bool // guard returned !Allow (HTTP 429 was sent)
-	Warned          bool // guard returned Allow+Warn
+	// Measured upstream usage for this request (0 when nothing was sent upstream,
+	// e.g. synthetic probe / cache replay). InputTokensReal = fresh + cache_creation
+	// + cache_read; CacheReadTokens = context served from Anthropic's prompt cache.
+	InputTokensReal     int
+	CacheReadTokens     int
+	CacheCreationTokens int
+	GuardReason         string
+	Killed              bool // guard returned !Allow (HTTP 429 was sent)
+	Warned              bool // guard returned Allow+Warn
 }
 
 // AgentSessionStore tracks per-session observability in memory.
@@ -94,6 +106,9 @@ func (s *AgentSessionStore) Record(sessionKey string, out RequestOutcome) {
 	entry.TokensAttempted += int64(out.TokensAttempted)
 	entry.TokensSent += int64(out.TokensSent)
 	entry.TokensDeduplicated += int64(out.TokensSaved)
+	entry.InputTokensReal += int64(out.InputTokensReal)
+	entry.CacheReadTokens += int64(out.CacheReadTokens)
+	entry.CacheCreationTokens += int64(out.CacheCreationTokens)
 
 	if out.Killed {
 		entry.KillEvents++

@@ -18,6 +18,13 @@ const (
 	SpanClassToolResultOld       = "tool_result_old"
 	SpanClassToolUse             = "tool_use"
 	SpanClassUnknownText         = "unknown_text"
+
+	// SpanClassSystemBoilerplate identifies system blocks that contain known
+	// harness-injected meta-prompts (e.g. SUGGESTION MODE, system-reminder).
+	// Unlike SpanClassSystemText, these are eligible for pruning after the first
+	// occurrence — the model has already processed the instruction and the
+	// block adds no new information on subsequent turns.
+	SpanClassSystemBoilerplate = "system_boilerplate"
 )
 
 // TextSpan is one text-bearing unit extracted from an Anthropic messages request.
@@ -125,7 +132,7 @@ func toolUseInputPath(item map[string]any) string {
 	if !ok {
 		return ""
 	}
-	for _, key := range []string{"file_path", "path", "notebook_path"} {
+	for _, key := range []string{"file_path", "path", "notebook_path", "command"} {
 		if path, ok := input[key].(string); ok && strings.TrimSpace(path) != "" {
 			return path
 		}
@@ -133,14 +140,40 @@ func toolUseInputPath(item map[string]any) string {
 	return ""
 }
 
+// boilerplateSystemPatterns are substrings that identify harness-injected
+// meta-prompts inside system blocks. Matches are case-insensitive.
+var boilerplateSystemPatterns = []string{
+	"suggestion mode",
+	"<system-reminder>",
+	"system-reminder",
+	"autonomous-loop",
+	"<<autonomous-loop",
+}
+
+// isBoilerplateSystemText returns true when text matches a known pattern for
+// harness-injected meta-prompts that repeat unchanged across turns.
+func isBoilerplateSystemText(text string) bool {
+	lower := strings.ToLower(text)
+	for _, p := range boilerplateSystemPatterns {
+		if strings.Contains(lower, p) {
+			return true
+		}
+	}
+	return false
+}
+
 func extractSystemSpans(sys any) []TextSpan {
 	switch v := sys.(type) {
 	case string:
 		if strings.TrimSpace(v) != "" {
+			class := SpanClassSystemText
+			if isBoilerplateSystemText(v) {
+				class = SpanClassSystemBoilerplate
+			}
 			return []TextSpan{{
 				Path:         "system",
 				Role:         "system",
-				Class:        SpanClassSystemText,
+				Class:        class,
 				MessageIndex: -1,
 				ContentIndex: -1,
 				Text:         v,
@@ -158,11 +191,15 @@ func extractSystemSpans(sys any) []TextSpan {
 			}
 			if typ, _ := m["type"].(string); typ == "text" {
 				if text, ok := m["text"].(string); ok && strings.TrimSpace(text) != "" {
+					class := SpanClassSystemText
+					if isBoilerplateSystemText(text) {
+						class = SpanClassSystemBoilerplate
+					}
 					spans = append(spans, TextSpan{
 						Path:         fmt.Sprintf("system[%d].text", i),
 						Role:         "system",
 						BlockType:    "text",
-						Class:        SpanClassSystemText,
+						Class:        class,
 						MessageIndex: -1,
 						ContentIndex: i,
 						Text:         text,

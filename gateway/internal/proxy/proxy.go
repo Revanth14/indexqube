@@ -10,6 +10,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/Revanth14/indexqube/gateway/internal/domain"
@@ -37,12 +38,130 @@ type Proxy struct {
 	mux             *http.ServeMux
 	maxRequestSize  int64
 	optimizeTimeout time.Duration
+	streamTimeout   time.Duration
 	metrics         *telemetry.Metrics
 	claude          ClaudeMessagesConfig
 	usageTracker    telemetry.Sink
 	sessionTracker  *telemetry.AgentSessionStore
 	sessionPersist  *sessions.Tracker
 	supabaseStats   *StatsHandler
+
+	// sessionTurnCounters tracks the number of turns per session key.
+	// Used for synthetic request ID generation (FIX 3).
+	sessionTurnCounters sync.Map // map[string]*sessionTurnState
+
+	// sessionWarmUpDone tracks which sessions have completed cache warm-up.
+	// Set after pre-registering system spans on the first turn (FIX 6).
+	sessionWarmUpDone sync.Map // map[string]bool
+
+	// sessionBoilerplateState tracks the last turn/byte-offset where system
+	// boilerplate was forwarded for injection cooldown logic (FIX 7).
+	sessionBoilerplateState sync.Map // map[string]*boilerplateState
+
+	// inFlightRequests prevents simultaneous duplicate upstream dispatches.
+	// When a second identical prompt arrives while the first is in-flight it
+	// waits for the first to complete before dispatching (FIX 2).
+	inFlightRequests *inFlightTracker
+
+	// sessionPrefixHints stores per-session (hash → byteLength) entries for
+	// spans shorter than SmallFileBytes. When a larger span arrives, its prefix
+	// is checked against these hints to detect "small payload is prefix of
+	// large payload" reuse patterns (FIX 3).
+	sessionPrefixHints sync.Map // map[string]*prefixHintSet
+
+	// sessionLastUsed tracks the last access time for each session key.
+	// Used by the background cleanup goroutine to evict idle entries.
+	sessionLastUsed sync.Map // map[string]time.Time
+
+	// cleanupCtx/cleanupCancel manage the background TTL eviction goroutine.
+	cleanupCtx    context.Context
+	cleanupCancel context.CancelFunc
+	cleanupDone   chan struct{}
+
+	// sessionSuggestionTs tracks the last time a suggestion-mode request was
+	// processed per session. Used to rate-limit harness meta-prompt injections
+	// to max 1 per 10 seconds so ephemeral payloads don't pollute the chunk store.
+	sessionSuggestionTs sync.Map // map[string]time.Time
+}
+
+// inFlightTracker serialises duplicate identical requests so they do not
+// all fire upstream concurrently. The first arrival dispatches normally;
+// subsequent arrivals with the same prompt hash block until it finishes.
+type inFlightTracker struct {
+	mu       sync.Mutex
+	inflight map[string]chan struct{} // prompt_hash → done channel
+}
+
+func newInFlightTracker() *inFlightTracker {
+	return &inFlightTracker{inflight: make(map[string]chan struct{})}
+}
+
+// acquire attempts to register promptHash as in-flight.
+// Returns (doneFn, nil) when this is the first arrival — the caller must call
+// doneFn exactly once after the request completes.
+// Returns (nil, waitChan) when a duplicate is already in-flight — the caller
+// should wait on waitChan before dispatching.
+func (t *inFlightTracker) acquire(promptHash string) (doneFn func(), waitChan chan struct{}) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if ch, ok := t.inflight[promptHash]; ok {
+		return nil, ch
+	}
+	done := make(chan struct{})
+	t.inflight[promptHash] = done
+	return func() {
+		t.mu.Lock()
+		delete(t.inflight, promptHash)
+		t.mu.Unlock()
+		close(done)
+	}, nil
+}
+
+// prefixHintSet stores (hash → byteLength) entries for small spans so that
+// larger spans can be checked for prefix reuse (FIX 3).
+type prefixHintSet struct {
+	mu    sync.Mutex
+	hints map[string]int // content-hash → byte-length of the small chunk
+}
+
+type cachedResponse struct {
+	promptHash string
+	payload    []byte
+}
+
+// sessionTurnState holds per-session counters needed for FIX 3 and FIX 7.
+type sessionTurnState struct {
+	mu                     sync.Mutex
+	turnIndex              int
+	missingIDWindow        []int64 // Unix timestamps of turns with missing request IDs
+	contextBytesCumulative int64   // running total of context bytes seen across turns
+	cachedResponses        []cachedResponse
+}
+
+func (s *sessionTurnState) getCachedResponse(promptHash string) ([]byte, bool) {
+	for _, cr := range s.cachedResponses {
+		if cr.promptHash == promptHash {
+			return cr.payload, true
+		}
+	}
+	return nil, false
+}
+
+func (s *sessionTurnState) saveCachedResponse(promptHash string, payload []byte) {
+	if len(s.cachedResponses) >= 10 {
+		s.cachedResponses = s.cachedResponses[1:]
+	}
+	s.cachedResponses = append(s.cachedResponses, cachedResponse{
+		promptHash: promptHash,
+		payload:    append([]byte(nil), payload...),
+	})
+}
+
+// boilerplateState tracks when system boilerplate was last forwarded.
+type boilerplateState struct {
+	mu                    sync.Mutex
+	lastForwardedTurn     int
+	lastForwardedCtxBytes int
 }
 
 // BedrockConfig routes /v1/messages to AWS Bedrock instead of Anthropic's API.
@@ -61,13 +180,26 @@ type BedrockConfig struct {
 // safe defaults via claudeDefaults().
 type OptimizerConfig struct {
 	MinSpanBytes            int  // minimum span size to consider for pruning (default 512)
-	TargetChunkBytes        int  // target chunk size for future long-block strategy (default 2048)
+	TargetChunkBytes        int  // target chunk size for Rabin-Karp chunker (default 2048)
 	MaxChunkBytes           int  // maximum chunk size (default 8192)
 	MinSavedTokens          int  // skip rewrite if savings below this threshold (default 10)
 	EnableToolResultPruning bool // prune old tool_result spans (default true via claudeDefaults)
 	EnableAssistantPruning  bool // prune old assistant text spans (default false)
 	EnableSystemPruning     bool // deprecated; system text spans are never pruned
 	Diagnostics             bool // emit verbose per-class diagnostics in logs
+
+	// Sub-span chunking: splits large tool_result spans with Rabin-Karp CDC so
+	// that only spans whose every chunk is known get pruned. This preserves
+	// context when a file is partially edited while still deduplicating unchanged
+	// sections across turns.
+	EnableSubspanChunking bool // split large spans for chunk-level dedup (default true)
+	SmallFileBytes        int  // content shorter than this bypasses the chunker (default 4096)
+
+	// EnablePromptCache injects Anthropic cache_control: {type: "ephemeral"} on
+	// the last system block when the system prompt is identical to the prior turn.
+	// Anthropic's server-side cache then covers the stable prefix, reducing
+	// billable input tokens for sessions with a large, unchanged system prompt.
+	EnablePromptCache bool
 }
 
 type ClaudeMessagesConfig struct {
@@ -124,6 +256,15 @@ func WithOptimizeTimeout(d time.Duration) Option {
 	}
 }
 
+// WithStreamTimeout caps the duration of streaming governor requests.
+// A non-positive value uses the default (5 minutes).
+func WithStreamTimeout(d time.Duration) Option {
+	return func(p *Proxy) {
+		if d > 0 {
+			p.streamTimeout = d
+		}
+	}
+}
 func WithClaudeMessages(cfg ClaudeMessagesConfig) Option {
 	return func(p *Proxy) {
 		p.claude = cfg
@@ -173,11 +314,13 @@ func New(gov Governor, opts ...Option) *Proxy {
 		panic("proxy: governor is required")
 	}
 	p := &Proxy{
-		governor:        gov,
-		logger:          slog.Default(),
-		mux:             http.NewServeMux(),
-		maxRequestSize:  8 << 20, // default 8 MiB
-		optimizeTimeout: 30 * time.Second,
+		governor:         gov,
+		logger:           slog.Default(),
+		mux:              http.NewServeMux(),
+		maxRequestSize:   8 << 20, // default 8 MiB
+		optimizeTimeout:  30 * time.Second,
+		streamTimeout:    0, // disabled by default; use WithStreamTimeout to enable
+		inFlightRequests: newInFlightTracker(),
 	}
 	for _, opt := range opts {
 		opt(p)

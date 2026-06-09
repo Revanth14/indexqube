@@ -10,11 +10,14 @@
 // The schema uses two tables:
 //   - agent_sessions: one row per session, upserted on every request
 //   - kill_events:    append-only audit log, one row per guard kill
+//
+// Hardened for high-concurrency.
 package sessions
 
 import (
 	"database/sql"
 	"log/slog"
+	"os"
 	"sync"
 	"time"
 
@@ -28,17 +31,20 @@ PRAGMA journal_mode = WAL;
 PRAGMA synchronous  = NORMAL;
 
 CREATE TABLE IF NOT EXISTS agent_sessions (
-    session_id          TEXT    PRIMARY KEY,
-    started_at          INTEGER NOT NULL,
-    last_seen_at        INTEGER NOT NULL,
-    tokens_attempted    INTEGER NOT NULL DEFAULT 0,
-    tokens_sent         INTEGER NOT NULL DEFAULT 0,
-    tokens_deduplicated INTEGER NOT NULL DEFAULT 0,
-    requests_total      INTEGER NOT NULL DEFAULT 0,
-    loop_detected       INTEGER NOT NULL DEFAULT 0,
-    kill_events         INTEGER NOT NULL DEFAULT 0,
-    kill_reason         TEXT    NOT NULL DEFAULT '',
-    status              TEXT    NOT NULL DEFAULT 'active'
+    session_id            TEXT    PRIMARY KEY,
+    started_at            INTEGER NOT NULL,
+    last_seen_at          INTEGER NOT NULL,
+    tokens_attempted      INTEGER NOT NULL DEFAULT 0,
+    tokens_sent           INTEGER NOT NULL DEFAULT 0,
+    tokens_deduplicated   INTEGER NOT NULL DEFAULT 0,
+    input_tokens_real     INTEGER NOT NULL DEFAULT 0,
+    cache_read_tokens     INTEGER NOT NULL DEFAULT 0,
+    cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+    requests_total        INTEGER NOT NULL DEFAULT 0,
+    loop_detected         INTEGER NOT NULL DEFAULT 0,
+    kill_events           INTEGER NOT NULL DEFAULT 0,
+    kill_reason           TEXT    NOT NULL DEFAULT '',
+    status                TEXT    NOT NULL DEFAULT 'active'
 );
 
 CREATE TABLE IF NOT EXISTS kill_events (
@@ -52,17 +58,20 @@ CREATE TABLE IF NOT EXISTS kill_events (
 
 // SessionRow is the read-side representation of one row in agent_sessions.
 type SessionRow struct {
-	SessionID          string `json:"session_id"`
-	StartedAt          int64  `json:"started_at"`
-	LastSeenAt         int64  `json:"last_seen_at"`
-	TokensAttempted    int64  `json:"tokens_attempted"`
-	TokensSent         int64  `json:"tokens_sent"`
-	TokensDeduplicated int64  `json:"tokens_deduplicated"`
-	RequestsTotal      int64  `json:"requests_total"`
-	LoopDetected       int64  `json:"loop_detected"`
-	KillEvents         int64  `json:"kill_events"`
-	KillReason         string `json:"kill_reason"`
-	Status             string `json:"status"`
+	SessionID           string `json:"session_id"`
+	StartedAt           int64  `json:"started_at"`
+	LastSeenAt          int64  `json:"last_seen_at"`
+	TokensAttempted     int64  `json:"tokens_attempted"`
+	TokensSent          int64  `json:"tokens_sent"`
+	TokensDeduplicated  int64  `json:"tokens_deduplicated"`
+	InputTokensReal     int64  `json:"input_tokens_real"`
+	CacheReadTokens     int64  `json:"cache_read_tokens"`
+	CacheCreationTokens int64  `json:"cache_creation_tokens"`
+	RequestsTotal       int64  `json:"requests_total"`
+	LoopDetected        int64  `json:"loop_detected"`
+	KillEvents          int64  `json:"kill_events"`
+	KillReason          string `json:"kill_reason"`
+	Status              string `json:"status"`
 }
 
 // KillRow is the read-side representation of one row in kill_events.
@@ -104,8 +113,25 @@ func Open(path string, logger *slog.Logger) (*Tracker, error) {
 		return nil, err
 	}
 
+	// Backfill columns added after the original schema for databases created by
+	// an earlier IndexQube version. SQLite has no "ADD COLUMN IF NOT EXISTS", so
+	// each ALTER is best-effort: a "duplicate column name" error means the column
+	// already exists and is safely ignored.
+	for _, col := range []string{
+		"input_tokens_real",
+		"cache_read_tokens",
+		"cache_creation_tokens",
+	} {
+		_, _ = db.Exec("ALTER TABLE agent_sessions ADD COLUMN " + col + " INTEGER NOT NULL DEFAULT 0")
+	}
+
 	if logger == nil {
 		logger = slog.Default()
+	}
+
+	if err := os.Chmod(path, 0o600); err != nil {
+		db.Close()
+		return nil, err
 	}
 
 	t := &Tracker{
@@ -135,12 +161,40 @@ func (t *Tracker) Record(sessionID string, outcome telemetry.RequestOutcome) {
 	}
 }
 
+// SessionByID retrieves a single agent session by its unique session ID.
+func (t *Tracker) SessionByID(sessionID string) (SessionRow, bool, error) {
+	var r SessionRow
+	err := t.db.QueryRow(`
+		SELECT session_id, started_at, last_seen_at,
+		       tokens_attempted, tokens_sent, tokens_deduplicated,
+		       input_tokens_real, cache_read_tokens, cache_creation_tokens,
+		       requests_total, loop_detected, kill_events,
+		       kill_reason, status
+		FROM   agent_sessions
+		WHERE  session_id = ?
+	`, sessionID).Scan(
+		&r.SessionID, &r.StartedAt, &r.LastSeenAt,
+		&r.TokensAttempted, &r.TokensSent, &r.TokensDeduplicated,
+		&r.InputTokensReal, &r.CacheReadTokens, &r.CacheCreationTokens,
+		&r.RequestsTotal, &r.LoopDetected, &r.KillEvents,
+		&r.KillReason, &r.Status,
+	)
+	if err == sql.ErrNoRows {
+		return r, false, nil
+	}
+	if err != nil {
+		return r, false, err
+	}
+	return r, true, nil
+}
+
 // Sessions returns all rows from agent_sessions, ordered by last_seen_at
 // descending (most recently active first).
 func (t *Tracker) Sessions() ([]SessionRow, error) {
 	rows, err := t.db.Query(`
 		SELECT session_id, started_at, last_seen_at,
 		       tokens_attempted, tokens_sent, tokens_deduplicated,
+		       input_tokens_real, cache_read_tokens, cache_creation_tokens,
 		       requests_total, loop_detected, kill_events,
 		       kill_reason, status
 		FROM   agent_sessions
@@ -157,6 +211,7 @@ func (t *Tracker) Sessions() ([]SessionRow, error) {
 		if err := rows.Scan(
 			&r.SessionID, &r.StartedAt, &r.LastSeenAt,
 			&r.TokensAttempted, &r.TokensSent, &r.TokensDeduplicated,
+			&r.InputTokensReal, &r.CacheReadTokens, &r.CacheCreationTokens,
 			&r.RequestsTotal, &r.LoopDetected, &r.KillEvents,
 			&r.KillReason, &r.Status,
 		); err != nil {
@@ -195,17 +250,20 @@ func (t *Tracker) KillLog() ([]KillRow, error) {
 // in-memory store and the /v1/agent-sessions API response.
 func ToAgentSession(r SessionRow) telemetry.AgentSession {
 	return telemetry.AgentSession{
-		SessionID:          r.SessionID,
-		StartedAt:          r.StartedAt,
-		LastSeenAt:         r.LastSeenAt,
-		TokensAttempted:    r.TokensAttempted,
-		TokensSent:         r.TokensSent,
-		TokensDeduplicated: r.TokensDeduplicated,
-		RequestsTotal:      int(r.RequestsTotal),
-		LoopDetected:       int(r.LoopDetected),
-		KillEvents:         int(r.KillEvents),
-		KillReason:         r.KillReason,
-		Status:             r.Status,
+		SessionID:           r.SessionID,
+		StartedAt:           r.StartedAt,
+		LastSeenAt:          r.LastSeenAt,
+		TokensAttempted:     r.TokensAttempted,
+		TokensSent:          r.TokensSent,
+		TokensDeduplicated:  r.TokensDeduplicated,
+		InputTokensReal:     r.InputTokensReal,
+		CacheReadTokens:     r.CacheReadTokens,
+		CacheCreationTokens: r.CacheCreationTokens,
+		RequestsTotal:       int(r.RequestsTotal),
+		LoopDetected:        int(r.LoopDetected),
+		KillEvents:          int(r.KillEvents),
+		KillReason:          r.KillReason,
+		Status:              r.Status,
 	}
 }
 
@@ -279,26 +337,31 @@ func (t *Tracker) write(ev writeEvent) {
 		INSERT INTO agent_sessions
 		    (session_id, started_at, last_seen_at,
 		     tokens_attempted, tokens_sent, tokens_deduplicated,
+		     input_tokens_real, cache_read_tokens, cache_creation_tokens,
 		     requests_total, loop_detected, kill_events, kill_reason, status)
 		VALUES
-		    (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
+		    (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
 		ON CONFLICT(session_id) DO UPDATE SET
-		    last_seen_at        = excluded.last_seen_at,
-		    tokens_attempted    = tokens_attempted    + excluded.tokens_attempted,
-		    tokens_sent         = tokens_sent         + excluded.tokens_sent,
-		    tokens_deduplicated = tokens_deduplicated + excluded.tokens_deduplicated,
-		    requests_total      = requests_total      + 1,
-		    loop_detected       = loop_detected       + excluded.loop_detected,
-		    kill_events         = kill_events         + excluded.kill_events,
-		    kill_reason         = CASE WHEN excluded.kill_reason != ''
-		                              THEN excluded.kill_reason
-		                              ELSE kill_reason END,
-		    status              = CASE WHEN excluded.status = 'killed'
-		                              THEN 'killed'
-		                              ELSE status END
+		    last_seen_at          = excluded.last_seen_at,
+		    tokens_attempted      = tokens_attempted      + excluded.tokens_attempted,
+		    tokens_sent           = tokens_sent           + excluded.tokens_sent,
+		    tokens_deduplicated   = tokens_deduplicated   + excluded.tokens_deduplicated,
+		    input_tokens_real     = input_tokens_real     + excluded.input_tokens_real,
+		    cache_read_tokens     = cache_read_tokens     + excluded.cache_read_tokens,
+		    cache_creation_tokens = cache_creation_tokens + excluded.cache_creation_tokens,
+		    requests_total        = requests_total        + 1,
+		    loop_detected         = loop_detected         + excluded.loop_detected,
+		    kill_events           = kill_events           + excluded.kill_events,
+		    kill_reason           = CASE WHEN excluded.kill_reason != ''
+		                                THEN excluded.kill_reason
+		                                ELSE kill_reason END,
+		    status                = CASE WHEN excluded.status = 'killed'
+		                                THEN 'killed'
+		                                ELSE status END
 	`,
 		ev.sessionID, ev.ts, ev.ts,
 		ev.outcome.TokensAttempted, ev.outcome.TokensSent, tokensDeduplicated,
+		ev.outcome.InputTokensReal, ev.outcome.CacheReadTokens, ev.outcome.CacheCreationTokens,
 		loopInc, killInc, killReason, status,
 	)
 	if err != nil {
