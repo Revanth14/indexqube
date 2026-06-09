@@ -184,6 +184,60 @@ func TestClaudeMessages_PromptCachePrefixIsNotPruned(t *testing.T) {
 	}
 }
 
+// TestClaudeMessages_CacheControlRequestForwardedByteIdentical verifies that when
+// the client manages prompt caching, the optimizer forwards the body byte-for-byte
+// — even when it contains an older duplicate tool_result that sits AFTER the cache
+// breakpoint and would otherwise be pruned. Re-marshaling such a request reorders
+// JSON keys in the cached prefix and busts Anthropic's cache (measured ~6x worse
+// than direct), so byte fidelity must win.
+func TestClaudeMessages_CacheControlRequestForwardedByteIdentical(t *testing.T) {
+	t.Parallel()
+	p := New(&fakeGovernor{})
+	cfg := ClaudeMessagesConfig{
+		Mode:                 "optimize",
+		EnableBlockOptimizer: true,
+		SessionStore:         memory.NewStore(time.Hour),
+		Optimizer: OptimizerConfig{
+			MinSpanBytes:            512,
+			EnableToolResultPruning: true,
+		},
+	}
+	// Breakpoint on messages[1]. The same tool_result content appears at messages
+	// [1], [3], [5]; the copy at [3] is an older duplicate AFTER the breakpoint and
+	// is NOT the last occurrence, so without the cache-fidelity short-circuit the
+	// optimizer would prune it and re-marshal the whole body.
+	fileBody := strings.Repeat("ordinary source code output line\n", 80)
+	body := []byte(fmt.Sprintf(
+		`{"model":"claude-sonnet-4-6","messages":[`+
+			`{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"/repo/a.go"}}]},`+
+			`{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":%q,"cache_control":{"type":"ephemeral"}}]},`+
+			`{"role":"assistant","content":[{"type":"tool_use","id":"t2","name":"Read","input":{"file_path":"/repo/a.go"}}]},`+
+			`{"role":"user","content":[{"type":"tool_result","tool_use_id":"t2","content":%q}]},`+
+			`{"role":"assistant","content":[{"type":"tool_use","id":"t3","name":"Read","input":{"file_path":"/repo/a.go"}}]},`+
+			`{"role":"user","content":[{"type":"tool_result","tool_use_id":"t3","content":%q}]},`+
+			`{"role":"user","content":[{"type":"text","text":"continue"}]}]}`,
+		fileBody, fileBody, fileBody,
+	))
+
+	// Warm the session so the duplicate is "known" and would be eligible to prune.
+	if _, _, _, _, err := p.prepareClaudeBody(context.Background(), cfg, "fidelity-test", body); err != nil {
+		t.Fatalf("first prepare: %v", err)
+	}
+	forward, _, stats, _, err := p.prepareClaudeBody(context.Background(), cfg, "fidelity-test", body)
+	if err != nil {
+		t.Fatalf("second prepare: %v", err)
+	}
+	if string(forward) != string(body) {
+		t.Fatalf("cache_control request must be forwarded byte-identical (no re-marshal); got:\n%s", forward)
+	}
+	if stats.BlocksPruned != 0 {
+		t.Fatalf("blocks_pruned=%d, want 0 (cache fidelity)", stats.BlocksPruned)
+	}
+	if !stats.PreservedCacheFidelity {
+		t.Fatalf("PreservedCacheFidelity=false, want true")
+	}
+}
+
 // promptCacheCfg builds an optimize-mode config with prompt-cache injection on.
 func promptCacheCfg() ClaudeMessagesConfig {
 	return ClaudeMessagesConfig{

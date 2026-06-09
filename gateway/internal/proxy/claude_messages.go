@@ -116,6 +116,11 @@ type claudeOptimizerStats struct {
 	PreservedCachePrefixBytes int `json:"preserved_cache_prefix_bytes"`
 	PreservedCachePrefixCount int `json:"preserved_cache_prefix_count"`
 
+	// PreservedCacheFidelity is set when the whole body was forwarded byte-for-byte
+	// because the client manages prompt caching (cache_control present). Any rewrite
+	// would re-serialize the cached prefix and bust Anthropic's cache.
+	PreservedCacheFidelity bool `json:"preserved_cache_fidelity"`
+
 	// Size tracking.
 	LargestSpanBytes   int `json:"largest_span_bytes"`
 	LargestPrunedBytes int `json:"largest_pruned_bytes"`
@@ -1230,6 +1235,21 @@ func (p *Proxy) prepareClaudeBody(ctx context.Context, cfg ClaudeMessagesConfig,
 	// blunt "skip for subscription" rule — subscription users keep their cache
 	// benefit via Claude Code's own breakpoints, which E2 now preserves.
 	requestHasCacheControl := systemCached || cachePrefixMsgIdx >= 0
+
+	// Cache fidelity beats pruning. When the client manages prompt caching — Claude
+	// Code sets a rolling cache_control breakpoint every turn — forward the body
+	// byte-for-byte. Any rewrite here re-serializes the whole request (Go sorts JSON
+	// map keys), changing the bytes of the cached prefix even when no prefix content
+	// is pruned. Anthropic then misses the cache every turn, turning 0.1x cache reads
+	// into 1.25x writes. `iq bench` measured this at ~6x more expensive than going
+	// direct (optimize 0% hit vs observe 91%). The span loop above already recorded
+	// blocks for dedup, and redundant-call elimination runs upstream of this; pruning
+	// is only safe to attempt when the client is NOT caching.
+	if requestHasCacheControl {
+		stats.PreservedCacheFidelity = true
+		return body, req, stats, shape, nil
+	}
+
 	wantPromptCache := cfg.Optimizer.EnablePromptCache && hasSystemSpan && systemAllKnown && !cfg.Bedrock.Enabled && !requestHasCacheControl
 	if len(prunableSpans) == 0 && !wantPromptCache {
 		return body, req, stats, shape, nil
