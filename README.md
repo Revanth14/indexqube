@@ -314,12 +314,3 @@ The governor package's velocity guard and circuit breaker exist in the codebase 
 
 The correct fix: (1) derive session key from a stable client fingerprint that never collapses multiple real sessions, (2) estimate tokens from message content only — not raw body size, (3) make guards opt-in via `INDEXQUBE_GUARDS_ENABLED=1` so they never fire in default deployments.
 
-### LSM engine not yet in the critical path
-
-The LSM engine (`internal/store/lsm/`) is fully built and benchmarked but the production request path still uses SQLite (via `go-sqlite3`) for the receipts cache. This is a deliberate deferral: the LSM engine needs production traffic validation before replacing a working component.
-
-**Consequence:** the Dockerfile requires `CGO_ENABLED=1` and a C compiler (`zig cc`) for cross-compilation targets. Migrating the receipts cache from SQLite to the LSM engine eliminates the CGO dependency entirely, producing a pure-Go binary.
-
-### System pruning disabled
-
-`EnableSystemPruning` defaults to `false` (see Debugging section 2). Sessions with genuinely large, redundant system content pay the full token cost for that content on every turn. Semantic classification of instruction files vs. generic system text would recover these tokens safely.
