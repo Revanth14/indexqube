@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Revanth14/indexqube/gateway/internal/chunker"
+	"github.com/Revanth14/indexqube/gateway/internal/contextopt"
 	"github.com/Revanth14/indexqube/gateway/internal/memory"
 )
 
@@ -573,15 +574,6 @@ func isEligibleSpanClass(class string, cfg OptimizerConfig) bool {
 	}
 }
 
-var protectedInstructionPathFragments = [...]string{
-	"claude.md",
-	"context.md",
-	"agents.md",
-	".cursorrules",
-	".cursor/rules/",
-	".github/copilot-instructions.md",
-}
-
 // contentHasCacheControl reports whether an Anthropic content value (an array of
 // content blocks) carries a cache_control breakpoint on any block.
 func contentHasCacheControl(content any) bool {
@@ -625,28 +617,7 @@ func lastCacheControlMessageIndex(root map[string]any) int {
 }
 
 func isProtectedInstructionSpan(span TextSpan) bool {
-	return containsProtectedInstructionPath(span.SourcePath) || containsProtectedInstructionPath(span.Text) || containsCredentialMarker(span.Text)
-}
-
-func containsCredentialMarker(s string) bool {
-	lower := strings.ToLower(s)
-	return strings.Contains(lower, "api-key") ||
-		strings.Contains(lower, "bearer ") ||
-		strings.Contains(lower, "x-anthropic-api-key") ||
-		strings.Contains(lower, "authorization")
-}
-
-func containsProtectedInstructionPath(s string) bool {
-	s = strings.ToLower(strings.ReplaceAll(s, "\\", "/"))
-	if strings.TrimSpace(s) == "" {
-		return false
-	}
-	for _, fragment := range protectedInstructionPathFragments {
-		if strings.Contains(s, fragment) {
-			return true
-		}
-	}
-	return false
+	return contextopt.IsProtectedContent(span.SourcePath, span.Text)
 }
 
 // classSpecificReplacement returns a human-readable placeholder for a pruned
