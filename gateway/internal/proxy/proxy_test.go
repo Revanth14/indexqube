@@ -479,6 +479,54 @@ func TestClaudeMessages_AnthropicPassthroughStreaming(t *testing.T) {
 	}
 }
 
+func TestClaudeMessages_PassesThroughInboundAPIKey(t *testing.T) {
+	t.Parallel()
+	var gotKey, gotAuth string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotKey = r.Header.Get("x-api-key")
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "event: message_stop\n")
+		_, _ = io.WriteString(w, `data: {"type":"message_stop"}`+"\n\n")
+	}))
+	t.Cleanup(upstream.Close)
+
+	p := New(&fakeGovernor{}, WithClaudeMessages(ClaudeMessagesConfig{
+		Mode:             "observe",
+		DevToken:         "iq-dev-local",
+		AnthropicBaseURL: upstream.URL,
+		AnthropicVersion: "2023-06-01",
+		SessionStore:     memory.NewStore(time.Hour),
+	}))
+	srv := httptest.NewServer(p.Handler())
+	t.Cleanup(srv.Close)
+
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/v1/messages", strings.NewReader(`{"model":"claude-sonnet-4-6","stream":true,"messages":[{"role":"user","content":"hi"}]}`))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("x-api-key", "sk-ant-user")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST /v1/messages: %v", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, body)
+	}
+	if gotKey != "sk-ant-user" {
+		t.Fatalf("x-api-key=%q, want inbound key", gotKey)
+	}
+	if gotAuth != "" {
+		t.Fatalf("Authorization=%q, want empty", gotAuth)
+	}
+}
+
 func TestClaudeMessages_ResponseCacheReplaysRepeatedPromptWithPriorToolHistory(t *testing.T) {
 	t.Parallel()
 	var calls atomic.Int32
@@ -616,7 +664,7 @@ func TestClaudeMessages_MissingAuth(t *testing.T) {
 	t.Cleanup(upstream.Close)
 	srv := newClaudeTestServer(t, upstream.URL, memory.NewStore(time.Hour), "observe", false)
 
-	// No Authorization header — gateway must reject with 401.
+	// No Anthropic credential header — gateway must reject with 401.
 	req, err := http.NewRequest(http.MethodPost, srv.URL+"/v1/messages", strings.NewReader(`{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hi"}]}`))
 	if err != nil {
 		t.Fatalf("new request: %v", err)
@@ -730,6 +778,53 @@ func TestClaudeCountTokens_Passthrough(t *testing.T) {
 	}
 	if !strings.Contains(string(body), `"input_tokens":123`) {
 		t.Fatalf("body=%s, want input_tokens response", body)
+	}
+}
+
+func TestClaudeCountTokens_PassesThroughInboundBearer(t *testing.T) {
+	t.Parallel()
+	var gotKey, gotAuth string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotKey = r.Header.Get("x-api-key")
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"input_tokens":123}`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	p := New(&fakeGovernor{}, WithClaudeMessages(ClaudeMessagesConfig{
+		Mode:             "observe",
+		DevToken:         "iq-dev-local",
+		AnthropicBaseURL: upstream.URL,
+		AnthropicVersion: "2023-06-01",
+		SessionStore:     memory.NewStore(time.Hour),
+	}))
+	srv := httptest.NewServer(p.Handler())
+	t.Cleanup(srv.Close)
+
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/v1/messages/count_tokens", strings.NewReader(`{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hi"}]}`))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer sk-ant-oat-user")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST /v1/messages/count_tokens: %v", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s, want 200", resp.StatusCode, body)
+	}
+	if gotKey != "" {
+		t.Fatalf("x-api-key=%q, want empty", gotKey)
+	}
+	if gotAuth != "Bearer sk-ant-oat-user" {
+		t.Fatalf("Authorization=%q, want inbound bearer", gotAuth)
 	}
 }
 

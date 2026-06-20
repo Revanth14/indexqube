@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -30,5 +31,16 @@ func TestProvidedRequestIDPreserved(t *testing.T) {
 	}
 	if id != "client-req-42" {
 		t.Fatalf("expected client-req-42, got %q", id)
+	}
+}
+
+func TestClaudeSessionKeyAcceptsShortEnvSessionID(t *testing.T) {
+	t.Setenv("IQ_SESSION_ID", "abc")
+	req := httptest.NewRequest("POST", "/v1/messages", nil)
+	req.Header.Set("Authorization", "Bearer sk-test")
+
+	key := claudeSessionKey(req, "fallback")
+	if !strings.HasSuffix(key, "-abc") {
+		t.Fatalf("session key %q does not include short session suffix", key)
 	}
 }

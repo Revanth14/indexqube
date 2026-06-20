@@ -499,8 +499,14 @@ func (c ClaudeMessagesConfig) validate() error {
 
 func validClaudeDevToken(r *http.Request, want string) bool {
 	_ = want
+	if strings.TrimSpace(r.Header.Get("x-api-key")) != "" {
+		return true
+	}
 	auth := strings.TrimSpace(r.Header.Get("Authorization"))
-	token := strings.TrimSpace(strings.TrimPrefix(auth, "Bearer "))
+	if !strings.HasPrefix(strings.ToLower(auth), "bearer ") {
+		return false
+	}
+	token := strings.TrimSpace(auth[len("Bearer "):])
 	return token != ""
 }
 
@@ -870,7 +876,10 @@ func claudeSessionKey(r *http.Request, fallback string) string {
 		// Suffix with the per-invocation session ID so the circuit breaker
 		// scopes similar-request counts to this iq session, not across sessions.
 		if sid := os.Getenv("IQ_SESSION_ID"); sid != "" {
-			return key + "-" + sid[:8]
+			if len(sid) > 8 {
+				sid = sid[:8]
+			}
+			return key + "-" + sid
 		}
 		return key
 	}
@@ -1762,12 +1771,7 @@ func (p *Proxy) forwardClaudeMessages(w http.ResponseWriter, r *http.Request, cf
 		return claudeStreamStats{Status: "error", StatusCode: http.StatusInternalServerError, UpstreamErr: err.Error()}
 	}
 	copyAnthropicHeaders(upReq.Header, r.Header)
-	if cfg.AnthropicAPIKey != "" {
-		upReq.Header.Set("x-api-key", cfg.AnthropicAPIKey)
-	} else if auth := r.Header.Get("Authorization"); auth != "" {
-		// Passthrough mode: user's OAuth Bearer token flows through unchanged.
-		upReq.Header.Set("Authorization", auth)
-	}
+	applyAnthropicAuthHeaders(upReq.Header, r.Header, cfg)
 	upReq.Header.Set("anthropic-version", cfg.AnthropicVersion)
 	upReq.Header.Set("content-type", "application/json")
 	upReq.Header.Set("accept", "text/event-stream")
@@ -1808,7 +1812,7 @@ func (p *Proxy) forwardClaudeJSON(w http.ResponseWriter, r *http.Request, cfg Cl
 		return http.StatusInternalServerError
 	}
 	copyAnthropicHeaders(upReq.Header, r.Header)
-	upReq.Header.Set("x-api-key", cfg.AnthropicAPIKey)
+	applyAnthropicAuthHeaders(upReq.Header, r.Header, cfg)
 	upReq.Header.Set("anthropic-version", cfg.AnthropicVersion)
 	upReq.Header.Set("content-type", "application/json")
 	upReq.Header.Set("accept", "application/json")
@@ -1843,6 +1847,21 @@ func copyAnthropicHeaders(dst, src http.Header) {
 		for _, value := range values {
 			dst.Add(key, value)
 		}
+	}
+}
+
+func applyAnthropicAuthHeaders(dst, src http.Header, cfg ClaudeMessagesConfig) {
+	if cfg.AnthropicAPIKey != "" {
+		dst.Set("x-api-key", cfg.AnthropicAPIKey)
+		return
+	}
+	if apiKey := strings.TrimSpace(src.Get("x-api-key")); apiKey != "" {
+		dst.Set("x-api-key", apiKey)
+		return
+	}
+	if auth := strings.TrimSpace(src.Get("Authorization")); auth != "" {
+		// Passthrough mode: user's OAuth Bearer token flows through unchanged.
+		dst.Set("Authorization", auth)
 	}
 }
 

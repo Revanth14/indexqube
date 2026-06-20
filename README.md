@@ -1,6 +1,6 @@
 # IndexQube
 
-A stateless L7 proxy written in Go that sits between Claude Code and Anthropic's API. It deduplicates file context using content-defined chunking, detects agentic loops via a velocity guard, and records tail latency with a from-scratch HDR Histogram. The storage layer is a custom LSM-tree engine with skiplist MemTable, 4KB-page SSTables, Bloom filters, and leveled compaction.
+A stateless L7 proxy written in Go that sits between Claude Code and Anthropic's API. It deduplicates repeated coding context using content-defined chunking, preserves Claude Code's streaming and prompt-cache semantics, and records tail latency with a from-scratch HDR Histogram. The storage layer includes a custom LSM-tree engine with skiplist MemTable, 4KB-page SSTables, Bloom filters, and leveled compaction.
 
 ---
 
@@ -27,9 +27,9 @@ graph LR
 ## How a request flows
 
 1. **TCP ingress** — `net.Listener` accepts; `net/http` spawns a goroutine per connection
-2. **Guard check** — `governor` estimates token spend via `len(body)/4`; velocity guard blocks sessions burning >$0.75 in 60s
-3. **Deduplication** — Rabin-Karp chunker splits `tool_result` blocks into variable-size content-addressed chunks; known chunks are stripped and replaced with `[iq:ref <12-byte-hash>]`
-4. **Upstream dispatch** — re-marshaled JSON forwarded with user's `x-api-key`; custom `http.Transport` with connection pooling and TLS 1.3 session resumption
+2. **Request shaping** — the proxy caps body size, assigns missing request IDs, preserves protected instruction content, and applies conservative missing-ID backpressure
+3. **Deduplication** — Rabin-Karp chunker splits old `tool_result` blocks into variable-size content-addressed chunks; known spans are replaced with readable placeholders when doing so will not break Claude prompt caching
+4. **Upstream dispatch** — JSON is forwarded with the user's Anthropic credential; custom `http.Transport` provides connection pooling and TLS session reuse
 5. **SSE streaming** — `http.Flusher` flushes each upstream chunk immediately; sub-millisecond local latency, zero buffering
 6. **Latency recording** — HDR Histogram captures end-to-end microseconds per request
 7. **Out-of-band telemetry** — deferred goroutine sends session data to Supabase; times out silently so the hot path is never blocked
@@ -38,7 +38,7 @@ graph LR
 
 ## Custom LSM Storage Engine
 
-The metadata cache (`internal/store/lsm/`) is a purpose-built LSM-tree engine — not a wrapper around RocksDB or LevelDB. The IndexQube workload is append-heavy (new file chunks written constantly, rarely updated), which is exactly the access pattern where LSM outperforms B-trees.
+The local response-cache backend (`internal/store/lsm/`) is a purpose-built LSM-tree engine — not a wrapper around RocksDB or LevelDB. The IndexQube workload is append-heavy (new cache entries written constantly, rarely updated), which is exactly the access pattern where LSM outperforms B-trees.
 
 ### Why LSM over B-tree
 
@@ -195,7 +195,7 @@ gateway/Dockerfile    — multi-stage Go build
 | Endpoint | Probe | Returns |
 |----------|-------|---------|
 | `/healthz` | Liveness | 200 always — if it responds, the process is alive |
-| `/readyz` | Readiness | 200 when cache warm + DB connected + upstream reachable; 503 during startup/drain |
+| `/readyz` | Readiness | 200 when local governor/adapters are configured; no tenant credential or upstream probe |
 | `/metrics` | Scrape | Prometheus-compatible: `p50_ms`, `p99_ms`, `cache_hit_rate`, `tokens_saved_total` |
 
 ### Graceful shutdown — why SSE makes this non-trivial
@@ -204,7 +204,7 @@ Standard HTTP: a request completes in milliseconds. A hard `SIGKILL` mid-request
 
 SSE connections are long-lived — a Claude Code session can hold a stream open for minutes. A hard kill mid-stream corrupts the TUI: the client receives a truncated SSE frame with no `data: [DONE]` sentinel, leaving the terminal in a broken state.
 
-The gateway handles `SIGTERM` with a 30-second drain:
+The gateway handles `SIGTERM` with a 15-second drain:
 
 ```go
 ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -213,14 +213,14 @@ defer stop()
 go func() {
     <-ctx.Done()
     // /readyz returns 503 immediately — k8s stops routing new connections
-    // server.Shutdown waits up to 30s for in-flight SSE streams to complete
-    shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+    // server.Shutdown waits up to 15s for in-flight SSE streams to complete
+    shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
     defer cancel()
     server.Shutdown(shutdownCtx)
 }()
 ```
 
-When k8s sends `SIGTERM`, `/readyz` immediately returns 503 — the load balancer stops routing new connections within seconds. The 30-second window lets active SSE streams reach their natural `[DONE]` boundary before the process exits.
+When k8s sends `SIGTERM`, `/readyz` immediately returns 503 — the load balancer stops routing new connections within seconds. The 15-second window lets active SSE streams reach their natural `[DONE]` boundary before the process exits.
 
 ---
 
@@ -236,7 +236,7 @@ Each SSTable block includes a CRC32 checksum. A read that fails the checksum ret
 If a long-running reader holds its Read Mark for an extended period, the checkpoint cannot advance and the WAL file grows unboundedly. Mitigation: `PRAGMA wal_checkpoint(TRUNCATE)` is triggered when WAL size exceeds 50MB, and all queries use `defer rows.Close()` to release Read Marks promptly.
 
 **Upstream timeout:**
-`http.Transport` has explicit dial, TLS handshake, and response header timeouts. A hung upstream returns a 504 to the client without leaking the goroutine. The HDR Histogram records the timeout duration, making upstream degradation visible in p99 before it affects average latency.
+`http.Transport` has explicit dial, TLS handshake, idle-connection, and expect-continue timeouts. Streaming response bodies intentionally rely on request cancellation rather than a fixed write deadline, so long Claude Code generations are not cut off by the proxy.
 
 ---
 
@@ -305,20 +305,20 @@ Disabling system pruning entirely leaves tokens on the table for sessions with l
 
 ## Known Limitations and Future Work
 
-### Velocity guard and circuit breaker deleted
+### Velocity guard disabled
 
-The governor package's velocity guard and circuit breaker exist in the codebase (`internal/governor/`) but the proxy no longer invokes them (removed in `c9214ca`). Two bugs made them fire on legitimate sessions rather than only runaway loops:
+The Claude-specific velocity guard is not active in the request path. The provider circuit breaker in `internal/governor` still protects upstream dispatch after repeated provider failures. Two bugs made the old Claude velocity guard fire on legitimate sessions rather than only runaway loops:
 
 1. **Session key collapse** — sessions without the expected `x-session-id` header fell back to the literal key `"no-session"`, collapsing all such sessions into one velocity bucket. One heavy session would block all others sharing the fallback key.
 2. **Token estimation overcounting** — `len(body)/4` counted JSON structural overhead (keys, brackets, nesting) as billable token content, inflating estimates by 30–40% and making normal large sessions appear to exceed the block threshold.
 
 The correct fix: (1) derive session key from a stable client fingerprint that never collapses multiple real sessions, (2) estimate tokens from message content only — not raw body size, (3) make guards opt-in via `INDEXQUBE_GUARDS_ENABLED=1` so they never fire in default deployments.
 
-### LSM engine not yet in the critical path
+### LSM cache crash durability
 
-The LSM engine (`internal/store/lsm/`) is fully built and benchmarked but the production request path still uses SQLite (via `go-sqlite3`) for the receipts cache. This is a deliberate deferral: the LSM engine needs production traffic validation before replacing a working component.
+The LSM engine (`internal/store/lsm/`) is built, benchmarked, and wired behind the local response cache when `CACHE_ENABLED=true` and Supabase cache is unavailable. It persists flushed SSTables across clean restarts, but it does not yet have a write-ahead log, so entries still resident in the active MemTable can be lost on process crash.
 
-**Consequence:** the Dockerfile requires `CGO_ENABLED=1` and a C compiler (`zig cc`) for cross-compilation targets. Migrating the receipts cache from SQLite to the LSM engine eliminates the CGO dependency entirely, producing a pure-Go binary.
+**Consequence:** the cache is useful as a best-effort local accelerator, but the next storage milestone is a WAL if the project wants to claim crash durability for every accepted cache write.
 
 ### System pruning disabled
 
