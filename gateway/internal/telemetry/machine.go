@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/Revanth14/indexqube/gateway/internal/localstate"
 )
 
 var (
@@ -20,7 +22,8 @@ type machineIDFile struct {
 }
 
 // GetMachineID returns a stable anonymous identifier for this machine,
-// created on first call and persisted to ~/.indexqube/telemetry.json.
+// created on first call and persisted to INDEXQUBE_HOME/telemetry.json (or
+// ~/.indexqube/telemetry.json when no override is configured).
 func GetMachineID() string {
 	machineIDOnce.Do(func() {
 		machineID = loadOrCreateMachineID()
@@ -29,12 +32,11 @@ func GetMachineID() string {
 }
 
 func loadOrCreateMachineID() string {
-	homeDir, err := os.UserHomeDir()
-	if err != nil || strings.TrimSpace(homeDir) == "" {
+	dir, err := localstate.Ensure()
+	if err != nil || strings.TrimSpace(dir) == "" {
 		return generateEphemeralMachineID()
 	}
 
-	dir := filepath.Join(homeDir, ".indexqube")
 	path := filepath.Join(dir, "telemetry.json")
 
 	if data, err := os.ReadFile(path); err == nil {
@@ -45,10 +47,6 @@ func loadOrCreateMachineID() string {
 	}
 
 	id := generateEphemeralMachineID()
-
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return id
-	}
 
 	data, err := json.Marshal(machineIDFile{ID: id})
 	if err != nil {

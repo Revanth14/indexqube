@@ -96,16 +96,16 @@ func (o *Options) setDefaults() {
 // Open it with Open; close it with Close when done.
 type Engine struct {
 	mu  sync.RWMutex
-	mem *MemTable   // active mutable MemTable
-	imm *MemTable   // immutable MemTable waiting to be flushed (nil if none)
+	mem *MemTable // active mutable MemTable
+	imm *MemTable // immutable MemTable waiting to be flushed (nil if none)
 
 	// levels[0] = L0 (may have overlapping key ranges)
 	// levels[k] = Lk (non-overlapping after compaction)
 	levels [][]*SSTable
 
-	dir      string
-	opts     Options
-	seq      atomic.Int64 // monotonically increasing SSTable sequence number
+	dir  string
+	opts Options
+	seq  atomic.Int64 // monotonically increasing SSTable sequence number
 
 	compactC chan struct{} // signal background compactor to wake up
 	done     chan struct{}

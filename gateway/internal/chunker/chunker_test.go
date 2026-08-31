@@ -119,7 +119,7 @@ func TestSplitExactlyMaxSize(t *testing.T) {
 // original input byte-for-byte.
 func TestSplitReconstitutes(t *testing.T) {
 	c := chunker.Default()
-	sizes := []int{1, 512, 1024, 4*1024, 32*1024, 256*1024}
+	sizes := []int{1, 512, 1024, 4 * 1024, 32 * 1024, 256 * 1024}
 	for _, sz := range sizes {
 		data := randBytes(t, sz)
 		chunks := c.Split(data)

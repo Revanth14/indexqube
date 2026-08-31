@@ -106,7 +106,7 @@ func (a *Adapter) Dispatch(ctx context.Context, req *domain.InferenceRequest, tw
 
 	chunkID := newChunkID()
 	created := time.Now().Unix()
-	
+
 	stream := output.GetStream()
 	defer stream.Close()
 
@@ -155,7 +155,7 @@ func (a *Adapter) getClient(ctx context.Context, req *domain.InferenceRequest) (
 	}
 
 	cred := req.Credential.APIKey
-	
+
 	cfgOpts := []func(*config.LoadOptions) error{
 		config.WithRegion(region),
 	}

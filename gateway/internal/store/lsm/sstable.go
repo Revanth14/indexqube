@@ -60,9 +60,9 @@ type indexEntry struct {
 //	b.Add(key2, val2)  // key2 > key1
 //	b.Finish()
 type Builder struct {
-	path  string
-	f     *os.File
-	bw    *bufio.Writer
+	path string
+	f    *os.File
+	bw   *bufio.Writer
 
 	blockBuf bytes.Buffer // current data block accumulator
 	blockOff int64        // file offset where blockBuf started
@@ -151,8 +151,8 @@ func (b *Builder) Finish() error {
 	var ibuf bytes.Buffer
 	binary.Write(&ibuf, binary.LittleEndian, uint32(len(b.index))) //nolint:errcheck
 	for _, e := range b.index {
-		binary.Write(&ibuf, binary.LittleEndian, e.offset)          //nolint:errcheck
-		binary.Write(&ibuf, binary.LittleEndian, e.blockLen)        //nolint:errcheck
+		binary.Write(&ibuf, binary.LittleEndian, e.offset)                //nolint:errcheck
+		binary.Write(&ibuf, binary.LittleEndian, e.blockLen)              //nolint:errcheck
 		binary.Write(&ibuf, binary.LittleEndian, uint16(len(e.firstKey))) //nolint:errcheck
 		ibuf.Write(e.firstKey)
 	}

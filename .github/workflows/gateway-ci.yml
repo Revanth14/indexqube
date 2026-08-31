@@ -4,11 +4,15 @@ on:
   pull_request:
     paths:
       - 'gateway/**'
+      - 'Makefile'
+      - 'install.sh'
       - '.github/workflows/gateway-ci.yml'
   push:
     branches: [main]
     paths:
       - 'gateway/**'
+      - 'Makefile'
+      - 'install.sh'
       - '.github/workflows/gateway-ci.yml'
 
 permissions:
@@ -16,7 +20,7 @@ permissions:
 
 jobs:
   test:
-    name: vet + test
+    name: format + vet + test + build
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -32,8 +36,18 @@ jobs:
       - name: Verify module checksums
         run: go mod verify
 
+      - name: Check formatting
+        run: |
+          unformatted="$(gofmt -l .)"
+          test -z "$unformatted" || { printf 'The following Go files need gofmt:\n%s\n' "$unformatted"; exit 1; }
+
       - name: Vet
         run: go vet ./...
 
       - name: Test (race detector enabled)
         run: go test -race -count=1 ./...
+
+      - name: Build gateway and CLI
+        run: |
+          go build -trimpath ./cmd/gateway
+          go build -trimpath ./cmd/iq

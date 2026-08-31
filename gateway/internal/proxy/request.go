@@ -82,16 +82,35 @@ func (p *Proxy) parseInferenceRequest(w http.ResponseWriter, r *http.Request) (*
 
 func extractCredential(r *http.Request) (domain.Credential, error) {
 	raw := strings.ToLower(strings.TrimSpace(r.Header.Get(headerProvider)))
-	if raw == "" {
-		return domain.Credential{}, errMissingProvider
+	if raw != "" {
+		p := domain.Provider(raw)
+		if !p.IsValid() {
+			return domain.Credential{}, fmt.Errorf("%w: %q", errUnknownProvider, raw)
+		}
+		k := strings.TrimSpace(r.Header.Get(headerKey))
+		if k == "" {
+			return domain.Credential{}, errMissingKey
+		}
+		return domain.Credential{Provider: p, APIKey: k}, nil
 	}
-	p := domain.Provider(raw)
-	if !p.IsValid() {
-		return domain.Credential{}, fmt.Errorf("%w: %q", errUnknownProvider, raw)
+
+	if key := bearerToken(r.Header.Get("Authorization")); key != "" {
+		return domain.Credential{Provider: domain.ProviderOpenAI, APIKey: key}, nil
 	}
-	k := strings.TrimSpace(r.Header.Get(headerKey))
-	if k == "" {
-		return domain.Credential{}, errMissingKey
+	if key := strings.TrimSpace(r.Header.Get("api-key")); key != "" {
+		return domain.Credential{Provider: domain.ProviderAzure, APIKey: key}, nil
 	}
-	return domain.Credential{Provider: p, APIKey: k}, nil
+	return domain.Credential{}, errMissingProvider
+}
+
+func bearerToken(auth string) string {
+	auth = strings.TrimSpace(auth)
+	if auth == "" {
+		return ""
+	}
+	prefix := "bearer "
+	if !strings.HasPrefix(strings.ToLower(auth), prefix) {
+		return ""
+	}
+	return strings.TrimSpace(auth[len(prefix):])
 }

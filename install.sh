@@ -49,8 +49,10 @@ fi
 
 echo ""
 echo "  Usage:"
-echo "    iq claude       # Start Claude Code via IndexQube"
+echo "    iq start        # Start the local IndexQube daemon"
+echo "    iq setup        # Configure detected agents with backups"
+echo "    iq claude       # One-shot Claude Code wrapper"
 echo "    iq help         # Show all commands"
 echo ""
-echo "  No API key needed. Works with Claude Pro."
+echo "  Local-first by default. Works with Claude Pro and OpenAI-compatible agents."
 echo ""

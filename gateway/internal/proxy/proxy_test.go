@@ -134,6 +134,19 @@ func TestExtractCredential(t *testing.T) {
 	}
 }
 
+func TestExtractCredentialNativeOpenAIAuth(t *testing.T) {
+	t.Parallel()
+	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	r.Header.Set("Authorization", "Bearer sk-native")
+	cred, err := extractCredential(r)
+	if err != nil {
+		t.Fatalf("extractCredential: %v", err)
+	}
+	if cred.Provider != domain.ProviderOpenAI || cred.APIKey != "sk-native" {
+		t.Fatalf("credential = %+v", cred)
+	}
+}
+
 func TestSSEWriter_FramesAndFlushes(t *testing.T) {
 	t.Parallel()
 	rec := httptest.NewRecorder()
@@ -169,6 +182,77 @@ func TestSSEWriter_FramesAndFlushes(t *testing.T) {
 	}
 	if ab := rec.Header().Get("X-Accel-Buffering"); ab != "no" {
 		t.Errorf("X-Accel-Buffering=%q, want no", ab)
+	}
+}
+
+func TestOpenAIResponsesNativeIngressPreservesUnknownFieldsAndStreams(t *testing.T) {
+	var upstreamBody map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/responses" {
+			t.Errorf("path=%q, want /v1/responses", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer sk-native" {
+			t.Errorf("Authorization=%q", got)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&upstreamBody); err != nil {
+			t.Errorf("decode upstream body: %v", err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n"))
+	}))
+	defer upstream.Close()
+	t.Setenv("INDEXQUBE_OPENAI_BASE_URL", upstream.URL)
+
+	gov := &fakeGovernor{
+		optimizeFunc: func(ctx context.Context, tenant string, messages []domain.Message, projectMemory string) ([]domain.Message, domain.PruneStats, error) {
+			if len(messages) != 1 || messages[0].Content != "hello" {
+				t.Fatalf("messages = %+v", messages)
+			}
+			return []domain.Message{{Role: "user", Content: "hello optimized"}}, domain.PruneStats{BlocksSeen: 1}, nil
+		},
+	}
+	p := New(gov, WithClaudeMessages(ClaudeMessagesConfig{HTTPClient: upstream.Client()}))
+	srv := httptest.NewServer(p.Handler())
+	defer srv.Close()
+
+	body := `{
+		"model":"gpt-5.5",
+		"stream":true,
+		"input":[{"role":"user","content":[{"type":"input_text","text":"hello"}]}],
+		"metadata":{"keep":"yes"}
+	}`
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/v1/responses", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer sk-native")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST /v1/responses: %v", err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, raw)
+	}
+	if !strings.Contains(string(raw), "response.output_text.delta") {
+		t.Fatalf("missing streamed event body=%q", raw)
+	}
+	meta := upstreamBody["metadata"].(map[string]any)
+	if meta["keep"] != "yes" {
+		t.Fatalf("metadata not preserved: %+v", meta)
+	}
+	input := upstreamBody["input"].([]any)
+	msg := input[0].(map[string]any)
+	content := msg["content"].([]any)
+	textBlock := content[0].(map[string]any)
+	if textBlock["text"] != "hello optimized" {
+		t.Fatalf("optimized text=%q", textBlock["text"])
 	}
 }
 

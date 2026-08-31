@@ -177,7 +177,6 @@ func New(opts ...Option) (*Governor, error) {
 	return g, nil
 }
 
-
 func (g *Governor) effectivePruneMaxLines() int {
 	if g.pruneMaxLines > 0 {
 		return g.pruneMaxLines
@@ -590,7 +589,7 @@ func (g *Governor) dispatchOne(ctx context.Context, provider domain.Provider, wo
 		}
 
 		err := a.Dispatch(ctx, work, tw)
-		done(err == nil)   // record the actual outcome
+		done(err == nil)       // record the actual outcome
 		done = func(_ bool) {} // prevent the deferred call from double-recording
 		return err
 	}

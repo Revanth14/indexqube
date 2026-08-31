@@ -16,7 +16,7 @@ const (
 // skipNode is one node in the probabilistic skip list.
 type skipNode struct {
 	key  []byte
-	val  []byte     // nil signals a tombstone (deleted key)
+	val  []byte      // nil signals a tombstone (deleted key)
 	next []*skipNode // len(next) == node level
 }
 

@@ -326,8 +326,8 @@ func TestEngine_FlushAndRecover(t *testing.T) {
 func TestEngine_L0Compaction(t *testing.T) {
 	dir := t.TempDir()
 	opts := lsm.DefaultOptions()
-	opts.MemTableSize = 1024       // flush every ~1 KB
-	opts.MaxL0Tables = 2           // compact L0 after 2 tables
+	opts.MemTableSize = 1024 // flush every ~1 KB
+	opts.MaxL0Tables = 2     // compact L0 after 2 tables
 	opts.BloomExpected = 32
 
 	e, err := lsm.Open(dir, opts)

@@ -1,6 +1,6 @@
 # IndexQube
 
-A stateless L7 proxy written in Go that sits between Claude Code and Anthropic's API. It deduplicates repeated coding context using content-defined chunking, preserves Claude Code's streaming and prompt-cache semantics, and records tail latency with a from-scratch HDR Histogram. The storage layer includes a custom LSM-tree engine with skiplist MemTable, 4KB-page SSTables, Bloom filters, and leveled compaction.
+A local L7 proxy written in Go for agentic coding workloads. IndexQube can run as a one-shot `iq claude` wrapper or as a persistent `iq start` daemon that supported agents route through locally. Its deepest path today is Claude Code/Anthropic Messages optimization; it also exposes OpenAI-compatible ingress for Codex and other clients that can point their base URL at a local gateway.
 
 ---
 
@@ -9,18 +9,74 @@ A stateless L7 proxy written in Go that sits between Claude Code and Anthropic's
 ```mermaid
 graph LR
     A[Claude Code] -->|POST /v1/messages| B[iq proxy :8080]
+    O[Codex / OpenAI-compatible clients] -->|POST /v1/responses| B
     B --> C[Optimizer]
     C --> D[Rabin-Karp Chunker]
     D --> E[LSM / SQLite Cache]
     E -->|cache hit: strip block| C
-    C -->|compressed request| F[Anthropic API]
+    C -->|compressed request| F[Upstream model API]
     F -->|SSE stream| B
     B -->|zero-copy flush| A
+    B -->|flushed stream| O
     B --> G[HDR Histogram]
-    B --> H[Supabase telemetry]
+    B --> H[Local metrics / optional telemetry]
 ```
 
 **Request reduction:** a 190,000-token payload with repeated file reads compresses to ~47,000 tokens after deduplication — 75% fewer tokens forwarded upstream.
+
+---
+
+## Local Usage
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Revanth14/indexqube/main/install.sh | bash
+
+iq start          # starts the local daemon at http://127.0.0.1:17373
+iq setup          # configures detected supported agents with backups
+iq status
+iq doctor
+```
+
+Supported setup targets:
+
+```bash
+iq setup claude   # adds ANTHROPIC_BASE_URL for direct Claude Code usage
+iq setup codex    # adds an IndexQube Responses provider to ~/.codex/config.toml
+iq unsetup        # restores recorded backups
+```
+
+Security report from an audited Claude session:
+
+```bash
+cd gateway
+./iq claude --dev --dump-payloads
+./iq audit latest
+```
+
+`iq audit` reads the latest `.indexqube/dumps/iq-session-*.jsonl` file plus the
+current git diff and writes a local Markdown report under `.indexqube/reports`.
+The first rule set flags secret exposure, sensitive file references, prompt
+injection text, dangerous commands, risky dependency changes, and high-signal
+generated-code vulnerability patterns.
+
+The daemon defaults to local-only telemetry. It stores state, logs, backups,
+sessions, and cache data under `~/.indexqube`.
+
+---
+
+## Development
+
+The supported repository checks are Go-only; the retired browser and VS Code
+extension surfaces are not part of the current build.
+
+```bash
+make check       # format check, vet, unit tests, and both binary builds
+make test-race   # race-enabled suite used by CI
+make build       # writes bin/iq and bin/indexqube-gateway
+```
+
+Use `INDEXQUBE_HOME=/path/to/state` to isolate daemon state, logs, cache,
+session data, setup backups, and the anonymous local machine identifier.
 
 ---
 
@@ -29,10 +85,10 @@ graph LR
 1. **TCP ingress** — `net.Listener` accepts; `net/http` spawns a goroutine per connection
 2. **Request shaping** — the proxy caps body size, assigns missing request IDs, preserves protected instruction content, and applies conservative missing-ID backpressure
 3. **Deduplication** — Rabin-Karp chunker splits old `tool_result` blocks into variable-size content-addressed chunks; known spans are replaced with readable placeholders when doing so will not break Claude prompt caching
-4. **Upstream dispatch** — JSON is forwarded with the user's Anthropic credential; custom `http.Transport` provides connection pooling and TLS session reuse
+4. **Upstream dispatch** — JSON is forwarded with the user's provider credential; custom `http.Transport` provides connection pooling and TLS session reuse
 5. **SSE streaming** — `http.Flusher` flushes each upstream chunk immediately; sub-millisecond local latency, zero buffering
 6. **Latency recording** — HDR Histogram captures end-to-end microseconds per request
-7. **Out-of-band telemetry** — deferred goroutine sends session data to Supabase; times out silently so the hot path is never blocked
+7. **Observability** — local session and cache metrics are recorded; remote telemetry is optional and never on the daemon by default
 
 ---
 
