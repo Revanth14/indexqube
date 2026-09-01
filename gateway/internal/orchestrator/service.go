@@ -337,6 +337,12 @@ func (s *Service) execute(ctx context.Context, task taskstore.Task, turn tasksto
 		}
 		verificationResult := s.verifier.Verify(ctx, verification.Request{
 			Workspace: identity.Root, ChangedPaths: changedPaths, Guard: processGuard,
+			Change: &verification.ChangeEvidence{
+				BeforeDiff: pre.BoundedDiff, AfterDiff: post.BoundedDiff,
+				CurrentFilePaths: changedUntrackedPaths(post, changedPaths),
+				DiffTruncated: strings.Contains(pre.BoundedDiff, "[indexqube: truncated]") ||
+					strings.Contains(post.BoundedDiff, "[indexqube: truncated]"),
+			},
 		})
 		if len(verificationResult.Checks) > 0 {
 			verificationPost, captureErr := workspace.Capture(context.Background(), identity, task.ID, turn.ID, "verification_post")
@@ -474,11 +480,28 @@ func (s *Service) execute(ctx context.Context, task taskstore.Task, turn tasksto
 	})
 }
 
+func changedUntrackedPaths(snapshot taskstore.WorkspaceSnapshot, changedPaths []string) []string {
+	changed := make(map[string]bool, len(changedPaths))
+	for _, path := range changedPaths {
+		changed[filepath.ToSlash(filepath.Clean(path))] = true
+	}
+	paths := make([]string, 0)
+	for _, state := range snapshot.Files {
+		if changed[state.Path] && (state.IndexStatus == "?" || state.WorktreeStatus == "?") {
+			paths = append(paths, state.Path)
+		}
+	}
+	sort.Strings(paths)
+	return paths
+}
+
 func persistedVerification(taskID, turnID string, result verification.Result) taskstore.VerificationRun {
 	status := taskstore.VerificationSkipped
 	switch result.Status {
 	case verification.StatusVerified:
 		status = taskstore.VerificationPassed
+	case verification.StatusWarnings:
+		status = taskstore.VerificationWarnings
 	case verification.StatusFailed:
 		status = taskstore.VerificationFailed
 	}
@@ -497,7 +520,10 @@ func persistedVerification(taskID, turnID string, result verification.Result) ta
 	}
 	for index, check := range result.Checks {
 		checkStatus := taskstore.VerificationCheckPassed
-		if check.Status == verification.CheckFailed {
+		switch check.Status {
+		case verification.CheckWarning:
+			checkStatus = taskstore.VerificationCheckWarning
+		case verification.CheckFailed:
 			checkStatus = taskstore.VerificationCheckFailed
 		}
 		checkStarted := check.StartedAt
@@ -508,12 +534,22 @@ func persistedVerification(taskID, turnID string, result verification.Result) ta
 		if checkCompleted.IsZero() {
 			checkCompleted = completed
 		}
-		run.Checks = append(run.Checks, taskstore.VerificationCheck{
+		persistedCheck := taskstore.VerificationCheck{
 			ID: taskstore.NewID("verify_check"), VerificationRunID: run.ID, Ordinal: index + 1,
 			Name: check.Name, Kind: check.Kind, Command: check.Command, CWD: check.CWD,
 			Status: checkStatus, ExitCode: check.ExitCode, Output: check.Output,
 			StartedAt: checkStarted, CompletedAt: &checkCompleted,
-		})
+			Findings: make([]taskstore.VerificationFinding, 0, len(check.Findings)),
+		}
+		for findingIndex, finding := range check.Findings {
+			persistedCheck.Findings = append(persistedCheck.Findings, taskstore.VerificationFinding{
+				ID: taskstore.NewID("verify_finding"), VerificationCheckID: persistedCheck.ID, Ordinal: findingIndex + 1,
+				RuleID: finding.RuleID, Severity: string(finding.Severity), Category: finding.Category,
+				Scope: string(finding.Scope), Source: finding.Source, Path: finding.Path, Line: finding.Line,
+				Evidence: finding.Evidence, Detail: finding.Detail, Count: finding.Count,
+			})
+		}
+		run.Checks = append(run.Checks, persistedCheck)
 	}
 	return run
 }

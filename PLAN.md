@@ -47,7 +47,7 @@ The original plan described a greenfield project. That is no longer accurate. Th
 | Codex task backend | Shipped foundation | Read-only execution plus guarded App Server workspace-write execution, durable command/file approvals, event parsing, evidence, native-session resume, and lost-session detection work. |
 | Claude task backend | Missing | Claude traffic can use the proxy, but Claude Code is not yet an orchestrated task backend. |
 | Routing and handoff | Partial | Backend selection is explicit and a lost session can recover within one backend; there is no policy router or cross-backend handoff. |
-| Verification | Advanced foundation | Successful write turns persist verification runs/checks; strict configured recipes plus conservative Go, Node, Python, and Rust detection run with bounded output, timeouts, offline dependency controls, and workspace-stability checks. Audit integration remains. |
+| Verification | Advanced foundation | Successful write turns persist verification runs/checks; strict configured recipes plus conservative Go, Node, Python, and Rust detection run with bounded output, timeouts, offline dependency controls, workspace-stability checks, and task-scoped security findings with explicit severity policy. |
 | User experience | Partial | Durable task listing, evidence inspection, and approval commands work; there is no TUI or active dashboard, and bare `iq` still opens the legacy Claude wrapper. |
 | Data plane | Advanced | Claude Messages and OpenAI Responses ingress, provider adapters, streaming, optimization, prompt-cache preservation, LSM/SQLite caches, telemetry, setup, audit, and benchmarking exist. |
 | Distributed coordination | Deferred | Redis is absent and is not required for the local product. Kubernetes assets apply to the gateway, not the canonical local task engine. |
@@ -190,7 +190,7 @@ Goal: IndexQube reports evidence, not merely an agent's claim of completion.
 - [x] Add strict explicit/configured recipes plus safe detection for Go, Node, Python, Rust, and monorepo subprojects.
 - [x] Run checks after successful mutation-capable turns, with inherited lock lifetime, timeouts, bounded output, and captured exit status.
 - [x] Distinguish `agent_succeeded`, `verified`, `verification_failed`, and `verification_skipped`.
-- Integrate the existing audit engine as a separate security check with severity and evidence.
+- [x] Integrate the existing audit engine as a separate security check with severity and evidence.
 - [x] Include verification output in `TaskEvidence`, task events, and CLI task summaries.
 - [ ] Include verification output in future handoff packets.
 

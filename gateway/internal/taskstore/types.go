@@ -274,17 +274,19 @@ type Cancellation struct {
 type VerificationStatus string
 
 const (
-	VerificationRunning VerificationStatus = "running"
-	VerificationPassed  VerificationStatus = "verified"
-	VerificationFailed  VerificationStatus = "verification_failed"
-	VerificationSkipped VerificationStatus = "verification_skipped"
+	VerificationRunning  VerificationStatus = "running"
+	VerificationPassed   VerificationStatus = "verified"
+	VerificationWarnings VerificationStatus = "verified_with_warnings"
+	VerificationFailed   VerificationStatus = "verification_failed"
+	VerificationSkipped  VerificationStatus = "verification_skipped"
 )
 
 type VerificationCheckStatus string
 
 const (
-	VerificationCheckPassed VerificationCheckStatus = "passed"
-	VerificationCheckFailed VerificationCheckStatus = "failed"
+	VerificationCheckPassed  VerificationCheckStatus = "passed"
+	VerificationCheckWarning VerificationCheckStatus = "warning"
+	VerificationCheckFailed  VerificationCheckStatus = "failed"
 )
 
 // VerificationRun is the durable outcome of IndexQube's own post-agent check
@@ -315,6 +317,23 @@ type VerificationCheck struct {
 	Output            string                  `json:"output,omitempty"`
 	StartedAt         time.Time               `json:"started_at"`
 	CompletedAt       *time.Time              `json:"completed_at,omitempty"`
+	Findings          []VerificationFinding   `json:"findings,omitempty"`
+}
+
+type VerificationFinding struct {
+	ID                  string `json:"verification_finding_id"`
+	VerificationCheckID string `json:"verification_check_id"`
+	Ordinal             int    `json:"ordinal"`
+	RuleID              string `json:"rule_id"`
+	Severity            string `json:"severity"`
+	Category            string `json:"category"`
+	Scope               string `json:"scope"`
+	Source              string `json:"source"`
+	Path                string `json:"path,omitempty"`
+	Line                int    `json:"line,omitempty"`
+	Evidence            string `json:"evidence"`
+	Detail              string `json:"detail"`
+	Count               int    `json:"count"`
 }
 
 // TaskEvidence is the canonical read model consumed by CLI, TUI, and dashboard

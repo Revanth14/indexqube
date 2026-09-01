@@ -41,7 +41,7 @@ The operating rule is simple: **the agent is temporary; the task is not.**
 | Durable command/file approvals and retry-safe cancellation | Shipped foundation |
 | Changed-file, command, route, snapshot, and session evidence | Shipped foundation |
 | Configured recipes plus automatic Go, Node, Python, and Rust verification | Shipped foundation |
-| Security audit integration as a separate verification check | Next |
+| Task-scoped security audit findings with severity and evidence | Shipped foundation |
 | Claude Code as an orchestrated task backend and explicit handoff | Planned |
 | TUI, authenticated control API, and release installer | Planned |
 
@@ -208,11 +208,40 @@ or renames the recipe during a turn, IndexQube records a configuration failure
 instead of executing the new instructions. A reviewed workspace-relative
 script can be invoked directly.
 
+### Automatic security audit
+
+Every successful write turn with authoritative changed paths also gets a
+separate rule-based security check. IndexQube compares findings in its bounded
+pre/post Git-diff evidence, so a finding already present in a dirty baseline is
+not attributed to the turn merely because its line number moved. Changed
+untracked files, which Git diffs do not contain, are scanned as bounded
+current-file evidence and labeled clearly because their content may predate the
+turn.
+
+Findings are normalized into durable records with a stable rule ID, severity,
+category, scope, path and line when available, redacted evidence, explanation,
+and occurrence count. They appear in the control API and `iq task show` rather
+than living only in a generated report.
+
+The automatic policy is explicit:
+
+- **high** severity fails verification and moves the task to
+  `needs_attention`;
+- **medium** and **low** severity produce `verified_with_warnings` while the
+  task remains open;
+- no findings produces a passed security check.
+
+A truncated stored diff, an oversized file, a symlink, or another unscannable
+changed untracked file becomes an audit-coverage warning. This scanner is local
+heuristic triage, not proof that code is safe or exploitable; high findings
+still require human review before commit or release.
+
 Every executed check has bounded output, a bounded process group, and the
 existing workspace lock. If verification changes tracked or unignored Git
 workspace state, the run fails closed. A failed check preserves the agent's
-completed turn but moves the task to `needs_attention`. Changes with no
-supported recipe are recorded honestly as `verification_skipped`.
+completed turn but moves the task to `needs_attention`. When no project test
+recipe or supported ecosystem matches, the durable security check still makes
+clear what was reviewed rather than implying that tests ran.
 
 Verification executes repository code. Offline package-manager settings prevent
 implicit dependency downloads, but they are not a complete OS or network
@@ -305,6 +334,7 @@ gateway/internal/taskstore/        SQLite state and evidence
 gateway/internal/workspace/        locks, fencing, and Git snapshots
 gateway/internal/agent/            agent contracts and backends
 gateway/internal/verification/     post-task verification
+gateway/internal/securityaudit/    shared rule-based security scanner
 gateway/internal/proxy/            optional model traffic data plane
 web/                               indexqube.com
 PLAN.md                            product gates and implementation order
@@ -314,11 +344,10 @@ PLAN.md                            product gates and implementation order
 
 Work is currently focused on:
 
-1. security audit evidence as a separate verification check;
-2. control API authentication;
-3. Claude Code task execution and deterministic handoff;
-4. an attachable local TUI;
-5. signed release packaging and real-repository alpha feedback.
+1. control API authentication;
+2. Claude Code task execution and deterministic handoff;
+3. an attachable local TUI;
+4. signed release packaging and real-repository alpha feedback.
 
 The acceptance gates and non-negotiable safety invariants live in
 [PLAN.md](./PLAN.md).

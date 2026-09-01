@@ -161,6 +161,11 @@ func TestTaskEvidenceSurvivesStoreReopen(t *testing.T) {
 			Command: "go test -mod=readonly ./...", CWD: ".", Status: VerificationCheckPassed,
 			ExitCode: &verificationExit, Output: "ok", StartedAt: now.Add(3500 * time.Millisecond),
 			CompletedAt: &verificationCompleted,
+			Findings: []VerificationFinding{{
+				ID: "verify_finding_1", Ordinal: 1, RuleID: "code.tls_verification_disabled",
+				Severity: "medium", Category: "generated_code_risk", Scope: "diff_added", Source: "git diff client.go",
+				Path: "client.go", Line: 12, Evidence: "verify = False", Detail: "TLS verification disabled", Count: 1,
+			}},
 		}},
 	}); err != nil {
 		t.Fatal(err)
@@ -202,7 +207,8 @@ func TestTaskEvidenceSurvivesStoreReopen(t *testing.T) {
 	}
 	if len(evidence.VerificationRuns) != 1 || evidence.VerificationRuns[0].Status != VerificationPassed ||
 		len(evidence.VerificationRuns[0].Checks) != 1 || evidence.VerificationRuns[0].Checks[0].ExitCode == nil ||
-		*evidence.VerificationRuns[0].Checks[0].ExitCode != 0 {
+		*evidence.VerificationRuns[0].Checks[0].ExitCode != 0 || len(evidence.VerificationRuns[0].Checks[0].Findings) != 1 ||
+		evidence.VerificationRuns[0].Checks[0].Findings[0].RuleID != "code.tls_verification_disabled" {
 		t.Fatalf("verification=%+v", evidence.VerificationRuns)
 	}
 }

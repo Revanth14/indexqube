@@ -12,12 +12,15 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/Revanth14/indexqube/gateway/internal/securityaudit"
 )
 
 type Status string
 
 const (
 	StatusVerified Status = "verified"
+	StatusWarnings Status = "verified_with_warnings"
 	StatusFailed   Status = "verification_failed"
 	StatusSkipped  Status = "verification_skipped"
 )
@@ -25,13 +28,22 @@ const (
 type CheckStatus string
 
 const (
-	CheckPassed CheckStatus = "passed"
-	CheckFailed CheckStatus = "failed"
+	CheckPassed  CheckStatus = "passed"
+	CheckWarning CheckStatus = "warning"
+	CheckFailed  CheckStatus = "failed"
 )
+
+type ChangeEvidence struct {
+	BeforeDiff       string
+	AfterDiff        string
+	CurrentFilePaths []string
+	DiffTruncated    bool
+}
 
 type Request struct {
 	Workspace    string
 	ChangedPaths []string
+	Change       *ChangeEvidence
 	Guard        ProcessGuard
 }
 
@@ -49,6 +61,7 @@ type CheckResult struct {
 	Output      string
 	StartedAt   time.Time
 	CompletedAt time.Time
+	Findings    []securityaudit.Finding
 }
 
 type Result struct {
@@ -108,7 +121,7 @@ func (v *LocalVerifier) Verify(ctx context.Context, request Request) Result {
 		result.CompletedAt = now
 		return result
 	}
-	if len(checks) == 0 {
+	if len(checks) == 0 && (request.Change == nil || len(request.ChangedPaths) == 0) {
 		result.Summary = skipSummary
 		if result.Summary == "" {
 			result.Summary = "no supported project verification detected for the changed paths"
@@ -188,17 +201,30 @@ func (v *LocalVerifier) Verify(ctx context.Context, request Request) Result {
 			StartedAt: checkStarted, CompletedAt: time.Now().UTC(),
 		})
 	}
+	if request.Change != nil && len(request.ChangedPaths) > 0 {
+		result.Checks = append(result.Checks, securityCheck(request))
+	}
 	result.CompletedAt = time.Now().UTC()
-	if result.Status == StatusVerified {
-		result.Summary = fmt.Sprintf("%d verification check(s) passed", len(result.Checks))
-	} else {
-		failed := 0
-		for _, check := range result.Checks {
-			if check.Status == CheckFailed {
-				failed++
-			}
+	failed := 0
+	warnings := 0
+	for _, check := range result.Checks {
+		switch check.Status {
+		case CheckFailed:
+			failed++
+		case CheckWarning:
+			warnings++
 		}
+	}
+	switch {
+	case failed > 0:
+		result.Status = StatusFailed
 		result.Summary = fmt.Sprintf("%d of %d verification check(s) failed", failed, len(result.Checks))
+	case warnings > 0:
+		result.Status = StatusWarnings
+		result.Summary = fmt.Sprintf("%d verification check(s) completed with %d warning(s)", len(result.Checks), warnings)
+	default:
+		result.Status = StatusVerified
+		result.Summary = fmt.Sprintf("%d verification check(s) passed", len(result.Checks))
 	}
 	return result
 }

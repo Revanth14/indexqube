@@ -84,6 +84,70 @@ func TestLocalVerifierSkipsUnsupportedChanges(t *testing.T) {
 	}
 }
 
+func TestSecurityAuditUsesTaskScopedDiffAndSeverityPolicy(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		added      string
+		wantStatus Status
+		wantCheck  CheckStatus
+		wantRule   string
+	}{
+		{name: "high blocks", added: `child_process.exec(req.query.cmd)`, wantStatus: StatusFailed, wantCheck: CheckFailed, wantRule: "code.shell_injection"},
+		{name: "medium warns", added: `verify = False`, wantStatus: StatusWarnings, wantCheck: CheckWarning, wantRule: "code.tls_verification_disabled"},
+		{name: "clean passes", added: `const safe = true`, wantStatus: StatusVerified, wantCheck: CheckPassed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			after := "diff --git a/server.js b/server.js\n--- a/server.js\n+++ b/server.js\n@@ -0,0 +1 @@\n+" + tc.added + "\n"
+			result := NewLocalVerifier().Verify(context.Background(), Request{
+				Workspace: t.TempDir(), ChangedPaths: []string{"server.js"},
+				Change: &ChangeEvidence{AfterDiff: after},
+			})
+			if result.Status != tc.wantStatus || len(result.Checks) != 1 || result.Checks[0].Status != tc.wantCheck || result.Checks[0].Kind != "security" {
+				t.Fatalf("result=%+v", result)
+			}
+			if tc.wantRule != "" && (len(result.Checks[0].Findings) != 1 || result.Checks[0].Findings[0].RuleID != tc.wantRule) {
+				t.Fatalf("findings=%+v", result.Checks[0].Findings)
+			}
+		})
+	}
+}
+
+func TestSecurityAuditSubtractsDirtyBaseline(t *testing.T) {
+	before := "diff --git a/config.py b/config.py\n--- a/config.py\n+++ b/config.py\n@@ -0,0 +1 @@\n+verify = False\n"
+	after := "diff --git a/config.py b/config.py\n--- a/config.py\n+++ b/config.py\n@@ -0,0 +1,2 @@\n+verify = False\n+safe = True\n"
+	result := NewLocalVerifier().Verify(context.Background(), Request{
+		Workspace: t.TempDir(), ChangedPaths: []string{"config.py"},
+		Change: &ChangeEvidence{BeforeDiff: before, AfterDiff: after},
+	})
+	if result.Status != StatusVerified || len(result.Checks) != 1 || len(result.Checks[0].Findings) != 0 {
+		t.Fatalf("result=%+v", result)
+	}
+}
+
+func TestSecurityAuditSkipsWhenWriteTurnHasNoChangedPaths(t *testing.T) {
+	result := NewLocalVerifier().Verify(context.Background(), Request{
+		Workspace: t.TempDir(), Change: &ChangeEvidence{},
+	})
+	if result.Status != StatusSkipped || len(result.Checks) != 0 {
+		t.Fatalf("result=%+v", result)
+	}
+}
+
+func TestSecurityAuditScansChangedUntrackedFile(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "new.py"), []byte("auth = false\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result := NewLocalVerifier().Verify(context.Background(), Request{
+		Workspace: root, ChangedPaths: []string{"new.py"},
+		Change: &ChangeEvidence{CurrentFilePaths: []string{"new.py"}},
+	})
+	if result.Status != StatusWarnings || len(result.Checks) != 1 || len(result.Checks[0].Findings) != 1 ||
+		result.Checks[0].Findings[0].Scope != "current_file" {
+		t.Fatalf("result=%+v", result)
+	}
+}
+
 func TestDetectGoChecksRejectsSymlinkEscape(t *testing.T) {
 	root := t.TempDir()
 	outside := t.TempDir()

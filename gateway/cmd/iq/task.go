@@ -263,6 +263,17 @@ func renderTaskEvidence(out io.Writer, evidence taskstore.TaskEvidence) {
 				if check.Output != "" {
 					fmt.Fprintf(out, "      %s\n", oneLine(check.Output, 180))
 				}
+				for _, finding := range check.Findings {
+					location := finding.Path
+					if location != "" && finding.Line > 0 {
+						location += fmt.Sprintf(":%d", finding.Line)
+					}
+					if location == "" {
+						location = finding.Source
+					}
+					fmt.Fprintf(out, "      - %s %s at %s: %s\n", finding.Severity, finding.RuleID,
+						oneLine(location, 120), oneLine(finding.Evidence, 160))
+				}
 			}
 		}
 	}

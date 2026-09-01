@@ -39,7 +39,7 @@ func TestOrchestratorCodexProcess(t *testing.T) {
 		os.Exit(3)
 	}
 	prompt, _ := io.ReadAll(os.Stdin)
-	writeChange := (mode == "write" || mode == "write-go" || mode == "write-recipe" || mode == "unreported-write" || mode == "failed-write") &&
+	writeChange := (mode == "write" || mode == "write-go" || mode == "write-recipe" || mode == "write-risk-high" || mode == "write-risk-medium" || mode == "unreported-write" || mode == "failed-write") &&
 		!strings.Contains(string(prompt), "inspect the durable change")
 	changePath := "codex-orchestrated-write.txt"
 	changeContent := "durable write evidence\n"
@@ -49,6 +49,12 @@ func TestOrchestratorCodexProcess(t *testing.T) {
 	} else if mode == "write-recipe" {
 		changePath = verification.RecipePath
 		changeContent = "{\"version\":1,\"checks\":[{\"name\":\"Agent recipe\",\"command\":[\"go\",\"version\"]}]}\n"
+	} else if mode == "write-risk-high" {
+		changePath = "risky.js"
+		changeContent = "child_process.exec(req.query.cmd)\n"
+	} else if mode == "write-risk-medium" {
+		changePath = "risky.py"
+		changeContent = "verify = False\n"
 	}
 	if writeChange {
 		if os.Getenv("INDEXQUBE_WORKSPACE_LOCK_FD") == "" {
@@ -70,7 +76,7 @@ func TestOrchestratorCodexProcess(t *testing.T) {
 		"id": "command-1", "type": "command_execution", "command": "go test ./...", "status": "completed",
 		"exit_code": 0, "aggregated_output": "ok",
 	}})
-	if writeChange && (mode == "write" || mode == "write-go" || mode == "write-recipe") {
+	if writeChange && (mode == "write" || mode == "write-go" || mode == "write-recipe" || mode == "write-risk-high" || mode == "write-risk-medium") {
 		_ = enc.Encode(map[string]any{"type": "item.completed", "item": map[string]any{
 			"id": "file-1", "type": "file_change", "changes": []map[string]any{{"path": changePath, "kind": "add"}},
 		}})
@@ -191,7 +197,9 @@ func TestCodexWriteTaskPersistsEvidenceAndContinues(t *testing.T) {
 	if len(evidence.Files) != 1 || evidence.Files[0].Path != "codex-orchestrated-write.txt" {
 		t.Fatalf("files=%+v", evidence.Files)
 	}
-	if len(evidence.Snapshots) != 2 || !evidence.Routes[0].MutationObserved {
+	if len(evidence.Snapshots) != 3 || len(evidence.VerificationRuns) != 1 ||
+		len(evidence.VerificationRuns[0].Checks) != 1 || evidence.VerificationRuns[0].Checks[0].Kind != "security" ||
+		!evidence.Routes[0].MutationObserved {
 		t.Fatalf("snapshots=%d routes=%+v", len(evidence.Snapshots), evidence.Routes)
 	}
 
@@ -296,9 +304,53 @@ func TestSuccessfulGoChangeRunsAutomaticPostTurnVerification(t *testing.T) {
 	}
 	if evidence.Task.Status != taskstore.TaskOpen || len(evidence.VerificationRuns) != 1 ||
 		evidence.VerificationRuns[0].Status != taskstore.VerificationPassed ||
-		len(evidence.VerificationRuns[0].Checks) != 1 ||
+		len(evidence.VerificationRuns[0].Checks) != 2 ||
 		evidence.VerificationRuns[0].Checks[0].Command != "go test -mod=readonly ./..." {
 		t.Fatalf("evidence=%+v", evidence)
+	}
+}
+
+func TestAutomaticSecurityAuditPersistsSeverityAndAppliesPolicy(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		mode       string
+		wantTask   taskstore.TaskStatus
+		wantRun    taskstore.VerificationStatus
+		wantCheck  taskstore.VerificationCheckStatus
+		wantRuleID string
+	}{
+		{name: "high blocks", mode: "write-risk-high", wantTask: taskstore.TaskNeedsAttention, wantRun: taskstore.VerificationFailed, wantCheck: taskstore.VerificationCheckFailed, wantRuleID: "code.shell_injection"},
+		{name: "medium warns", mode: "write-risk-medium", wantTask: taskstore.TaskOpen, wantRun: taskstore.VerificationWarnings, wantCheck: taskstore.VerificationCheckWarning, wantRuleID: "code.tls_verification_disabled"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			service, store, root := newTestService(t)
+			binary, err := os.Executable()
+			if err != nil {
+				t.Fatal(err)
+			}
+			service.registry = NewRegistry(codexbackend.NewCommand(agent.NewRunner(), binary,
+				[]string{"-test.run=TestOrchestratorCodexProcess", "--"},
+				[]string{"INDEXQUBE_ORCHESTRATOR_CODEX_HELPER=" + tc.mode}, "codex-cli test"))
+			task, err := service.StartTask(context.Background(), StartTaskInput{
+				Workspace: root, Prompt: "make a security-audited change", Backend: agent.BackendCodex, Permission: agent.PermissionWrite,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			events := waitForTerminal(t, service, task.ID)
+			if events[len(events)-1].Type != agent.EventCompleted {
+				t.Fatalf("terminal=%+v", events[len(events)-1])
+			}
+			evidence, ok, err := store.TaskEvidence(context.Background(), task.ID)
+			if err != nil || !ok || evidence.Task.Status != tc.wantTask || len(evidence.VerificationRuns) != 1 {
+				t.Fatalf("evidence=%+v ok=%v err=%v", evidence, ok, err)
+			}
+			run := evidence.VerificationRuns[0]
+			if run.Status != tc.wantRun || len(run.Checks) != 1 || run.Checks[0].Status != tc.wantCheck ||
+				len(run.Checks[0].Findings) != 1 || run.Checks[0].Findings[0].RuleID != tc.wantRuleID {
+				t.Fatalf("verification=%+v", run)
+			}
+		})
 	}
 }
 

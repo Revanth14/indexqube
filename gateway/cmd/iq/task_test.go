@@ -44,6 +44,10 @@ func TestTaskShowRendersDurableVerification(t *testing.T) {
 			Checks: []taskstore.VerificationCheck{{
 				Name: "Go tests", Command: "go test -mod=readonly ./...", CWD: "gateway",
 				Status: taskstore.VerificationCheckFailed, ExitCode: &exit, Output: "FAIL example.com/package",
+				Findings: []taskstore.VerificationFinding{{
+					RuleID: "code.shell_injection", Severity: "high", Path: "server.js", Line: 8,
+					Evidence: "child_process.exec(",
+				}},
 			}},
 		}},
 	}
@@ -52,6 +56,7 @@ func TestTaskShowRendersDurableVerification(t *testing.T) {
 	for _, want := range []string{
 		"Verification:", "verification_failed", "[failed exit=1] Go tests — go test -mod=readonly ./... (cwd gateway)",
 		"FAIL example.com/package",
+		"high code.shell_injection at server.js:8: child_process.exec(",
 	} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("output missing %q:\n%s", want, out.String())

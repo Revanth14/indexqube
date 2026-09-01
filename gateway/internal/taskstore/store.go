@@ -199,7 +199,25 @@ CREATE TABLE IF NOT EXISTS verification_checks (
     UNIQUE(verification_run_id, ordinal)
 );
 
+CREATE TABLE IF NOT EXISTS verification_findings (
+    verification_finding_id TEXT PRIMARY KEY,
+    verification_check_id   TEXT NOT NULL REFERENCES verification_checks(verification_check_id) ON DELETE CASCADE,
+    ordinal                 INTEGER NOT NULL,
+    rule_id                 TEXT NOT NULL,
+    severity                TEXT NOT NULL,
+    category                TEXT NOT NULL,
+    scope                   TEXT NOT NULL,
+    source                  TEXT NOT NULL DEFAULT '',
+    path                    TEXT NOT NULL DEFAULT '',
+    line_number             INTEGER NOT NULL DEFAULT 0,
+    evidence                TEXT NOT NULL DEFAULT '',
+    detail                  TEXT NOT NULL DEFAULT '',
+    occurrence_count        INTEGER NOT NULL DEFAULT 1,
+    UNIQUE(verification_check_id, ordinal)
+);
+
 CREATE INDEX IF NOT EXISTS verification_runs_task_idx ON verification_runs(task_id, started_at);
+CREATE INDEX IF NOT EXISTS verification_findings_check_idx ON verification_findings(verification_check_id, ordinal);
 
 CREATE TABLE IF NOT EXISTS events (
     event_id            TEXT PRIMARY KEY,
@@ -580,6 +598,24 @@ func (s *Store) RecordVerificationRun(ctx context.Context, run VerificationRun) 
 			check.Command, check.CWD, check.Status, exitCode, check.Output, check.StartedAt.UnixMilli(),
 			checkCompleted); err != nil {
 			return err
+		}
+		for findingIndex, finding := range check.Findings {
+			if finding.ID == "" {
+				finding.ID = NewID("verify_finding")
+			}
+			if finding.Ordinal <= 0 {
+				finding.Ordinal = findingIndex + 1
+			}
+			if finding.Count <= 0 {
+				finding.Count = 1
+			}
+			if _, err := tx.ExecContext(ctx, `INSERT INTO verification_findings
+				(verification_finding_id,verification_check_id,ordinal,rule_id,severity,category,scope,source,path,line_number,evidence,detail,occurrence_count)
+				VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`, finding.ID, check.ID, finding.Ordinal, finding.RuleID,
+				finding.Severity, finding.Category, finding.Scope, finding.Source, finding.Path, finding.Line,
+				finding.Evidence, finding.Detail, finding.Count); err != nil {
+				return err
+			}
 		}
 	}
 	return tx.Commit()
@@ -1234,7 +1270,6 @@ func (s *Store) verificationChecks(ctx context.Context, runID string) ([]Verific
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	checks := make([]VerificationCheck, 0)
 	for rows.Next() {
 		var check VerificationCheck
@@ -1256,7 +1291,41 @@ func (s *Store) verificationChecks(ctx context.Context, runID string) ([]Verific
 		}
 		checks = append(checks, check)
 	}
-	return checks, rows.Err()
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	for index := range checks {
+		checks[index].Findings, err = s.verificationFindings(ctx, checks[index].ID)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return checks, nil
+}
+
+func (s *Store) verificationFindings(ctx context.Context, checkID string) ([]VerificationFinding, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT verification_finding_id,verification_check_id,ordinal,rule_id,
+		severity,category,scope,source,path,line_number,evidence,detail,occurrence_count
+		FROM verification_findings WHERE verification_check_id=? ORDER BY ordinal`, checkID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	findings := make([]VerificationFinding, 0)
+	for rows.Next() {
+		var finding VerificationFinding
+		if err := rows.Scan(&finding.ID, &finding.VerificationCheckID, &finding.Ordinal, &finding.RuleID,
+			&finding.Severity, &finding.Category, &finding.Scope, &finding.Source, &finding.Path, &finding.Line,
+			&finding.Evidence, &finding.Detail, &finding.Count); err != nil {
+			return nil, err
+		}
+		findings = append(findings, finding)
+	}
+	return findings, rows.Err()
 }
 
 func (s *Store) turns(ctx context.Context, taskID string) ([]Turn, error) {
