@@ -37,6 +37,12 @@ func runTask(args []string) {
 				os.Exit(1)
 			}
 			return
+		case "close", "reopen":
+			if err := runTaskLifecycleCommand(ctx, args[1:], args[0], os.Stdout); err != nil {
+				fmt.Fprintf(os.Stderr, "iq: task %s failed: %v\n", args[0], err)
+				os.Exit(1)
+			}
+			return
 		}
 	}
 	if err := runTaskCommand(ctx, args, os.Stdout, os.Stderr); err != nil {
@@ -130,6 +136,9 @@ func runTaskStatus(ctx context.Context, args []string, out io.Writer) error {
 			fmt.Fprintf(out, "Error: %s: %s\n", state.LatestTurn.ErrorCode, state.LatestTurn.ErrorMessage)
 		}
 	}
+	if state.Cancellation != nil {
+		fmt.Fprintf(out, "Cancellation: %s (%s)\n", state.Cancellation.ID, state.Cancellation.Status)
+	}
 	if state.Session != nil {
 		fmt.Fprintf(out, "Native session: %s (%s)\n", state.Session.NativeSessionID, state.Session.Status)
 	}
@@ -219,6 +228,12 @@ func renderTaskEvidence(out io.Writer, evidence taskstore.TaskEvidence) {
 			}
 			fmt.Fprintf(out, "  %s — %s %s%s: %s\n", approval.ID, approval.Status, approval.Kind,
 				decision, approvalSummary(approval))
+		}
+	}
+	if len(evidence.Cancellations) > 0 {
+		fmt.Fprintln(out, "\nCancellations:")
+		for _, cancellation := range evidence.Cancellations {
+			fmt.Fprintf(out, "  %s — turn %s: %s\n", cancellation.ID, cancellation.TurnID, cancellation.Status)
 		}
 	}
 	if len(evidence.Routes) > 0 {

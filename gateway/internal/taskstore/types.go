@@ -10,11 +10,17 @@ import (
 type TaskStatus string
 
 const (
-	TaskOpen             TaskStatus = "open"
+	// TaskOpen is idle and accepts a continuation.
+	TaskOpen TaskStatus = "open"
+	// TaskRunning and TaskAwaitingApproval have one active turn and reject
+	// continuations and lifecycle transitions.
 	TaskRunning          TaskStatus = "running"
-	TaskNeedsAttention   TaskStatus = "needs_attention"
 	TaskAwaitingApproval TaskStatus = "awaiting_approval"
-	TaskClosed           TaskStatus = "closed"
+	// TaskNeedsAttention blocks continuation until an explicit reopen
+	// acknowledges that the workspace has been inspected.
+	TaskNeedsAttention TaskStatus = "needs_attention"
+	// TaskClosed is an idle archived task; reopen restores it to TaskOpen.
+	TaskClosed TaskStatus = "closed"
 )
 
 type TurnStatus string
@@ -164,20 +170,22 @@ type CreateTurnInput struct {
 // InterruptedRun is the minimal canonical state needed to reconcile a turn
 // that was queued or running when the daemon stopped unexpectedly.
 type InterruptedRun struct {
-	TaskID         string
-	TurnID         string
-	AttemptID      string
-	WorkspaceID    string
-	WorkspacePath  string
-	Permission     agent.PermissionMode
-	TurnStatus     TurnStatus
-	PreFingerprint string
+	TaskID                string
+	TurnID                string
+	AttemptID             string
+	WorkspaceID           string
+	WorkspacePath         string
+	Permission            agent.PermissionMode
+	TurnStatus            TurnStatus
+	PreFingerprint        string
+	CancellationRequested bool
 }
 
 type TaskState struct {
-	Task       Task            `json:"task"`
-	LatestTurn *Turn           `json:"latest_turn,omitempty"`
-	Session    *BackendSession `json:"latest_backend_session,omitempty"`
+	Task         Task            `json:"task"`
+	LatestTurn   *Turn           `json:"latest_turn,omitempty"`
+	Session      *BackendSession `json:"latest_backend_session,omitempty"`
+	Cancellation *Cancellation   `json:"latest_cancellation,omitempty"`
 }
 
 // CommandEvidence and FileEvidence are projections over normalized events.
@@ -244,6 +252,25 @@ type CreateApprovalInput struct {
 	Now time.Time
 }
 
+type CancellationStatus string
+
+const (
+	CancellationRequested CancellationStatus = "requested"
+	CancellationCompleted CancellationStatus = "completed"
+)
+
+// Cancellation is the durable intent to stop one turn. The request is written
+// before the orchestrator signals the backend, so daemon recovery can honor a
+// cancellation even when the process exits between those two operations.
+type Cancellation struct {
+	ID          string             `json:"cancellation_id"`
+	TaskID      string             `json:"task_id"`
+	TurnID      string             `json:"turn_id"`
+	Status      CancellationStatus `json:"status"`
+	RequestedAt time.Time          `json:"requested_at"`
+	CompletedAt *time.Time         `json:"completed_at,omitempty"`
+}
+
 // TaskEvidence is the canonical read model consumed by CLI, TUI, and dashboard
 // clients. It is assembled from normalized durable records rather than stored
 // as another source of truth.
@@ -257,6 +284,7 @@ type TaskEvidence struct {
 	Files            []FileEvidence      `json:"files_changed"`
 	ReportedFiles    []FileEvidence      `json:"agent_reported_files"`
 	Approvals        []Approval          `json:"approvals"`
+	Cancellations    []Cancellation      `json:"cancellations"`
 	EvidenceMismatch bool                `json:"evidence_mismatch"`
 	Events           []agent.Event       `json:"events"`
 }

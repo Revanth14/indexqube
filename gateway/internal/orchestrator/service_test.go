@@ -339,12 +339,17 @@ func TestFakeCancellationStopsChildAndCommitsCancelledEvent(t *testing.T) {
 		}
 		for _, event := range events {
 			if event.Type == agent.EventSessionStarted {
-				if !service.Cancel(task.ID) {
-					t.Fatal("cancel returned false")
+				requested, err := service.Cancel(context.Background(), task.ID)
+				if err != nil || requested.Cancellation.Status != taskstore.CancellationRequested {
+					t.Fatalf("cancel: %v", err)
 				}
 				events = waitForTerminal(t, service, task.ID)
 				if events[len(events)-1].Type != agent.EventCancelled {
 					t.Fatalf("terminal event=%s want cancelled", events[len(events)-1].Type)
+				}
+				completed, err := service.Cancel(context.Background(), task.ID)
+				if err != nil || completed.Cancellation.ID != requested.Cancellation.ID || completed.Cancellation.Status != taskstore.CancellationCompleted {
+					t.Fatalf("repeated cancellation=%+v err=%v", completed, err)
 				}
 				return
 			}
@@ -425,8 +430,8 @@ func TestDurableApprovalApproveDenyCancelAndTimeout(t *testing.T) {
 					t.Fatal(err)
 				}
 			case "cancel":
-				if !service.Cancel(task.ID) {
-					t.Fatal("cancel returned false")
+				if _, err := service.Cancel(context.Background(), task.ID); err != nil {
+					t.Fatalf("cancel: %v", err)
 				}
 			case "timeout":
 			}
@@ -609,6 +614,63 @@ func TestReconcileInterruptedTurns(t *testing.T) {
 			}
 			events, err := service.EventsAfter(context.Background(), task.ID, 0)
 			if err != nil || len(events) != 1 || events[0].Metadata["error_code"] != tc.wantCode {
+				t.Fatalf("events=%+v err=%v", events, err)
+			}
+		})
+	}
+}
+
+func TestReconcileCompletesDurableCancellation(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		permission agent.PermissionMode
+		wantTask   taskstore.TaskStatus
+	}{
+		{name: "read only reopens", permission: agent.PermissionReadOnly, wantTask: taskstore.TaskOpen},
+		{name: "write requires inspection", permission: agent.PermissionWrite, wantTask: taskstore.TaskNeedsAttention},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			service, store, root := newTestService(t)
+			identity, err := workspace.Resolve(context.Background(), root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			now := time.Now().UTC()
+			task, turn, attempt, err := store.CreateTask(context.Background(), taskstore.CreateTaskInput{
+				TaskID: taskstore.NewID("task"), TurnID: taskstore.NewID("turn"), RouteAttemptID: taskstore.NewID("route"),
+				WorkspaceID: identity.ID, WorkspacePath: identity.Root, Goal: "cancel before restart", Permission: tc.permission,
+				PreferredBackend: agent.BackendFake, Now: now,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := store.StartTurn(context.Background(), task.ID, turn.ID, attempt.ID, 1, now.Add(time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			_, requested, err := store.RequestCancellation(context.Background(), task.ID, now.Add(2*time.Second))
+			if err != nil || requested.Status != taskstore.CancellationRequested {
+				t.Fatalf("request=%+v err=%v", requested, err)
+			}
+			report, err := service.ReconcileInterrupted(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.wantTask == taskstore.TaskNeedsAttention && report.NeedsAttention != 1 {
+				t.Fatalf("report=%+v", report)
+			}
+			if tc.wantTask == taskstore.TaskOpen && report.Recovered != 1 {
+				t.Fatalf("report=%+v", report)
+			}
+			state, ok, err := service.TaskState(context.Background(), task.ID)
+			if err != nil || !ok || state.Task.Status != tc.wantTask || state.LatestTurn.Status != taskstore.TurnCancelled {
+				t.Fatalf("state=%+v ok=%v err=%v", state, ok, err)
+			}
+			completed, ok, err := store.CancellationForTurn(context.Background(), turn.ID)
+			if err != nil || !ok || completed.Status != taskstore.CancellationCompleted || completed.ID != requested.ID {
+				t.Fatalf("cancellation=%+v ok=%v err=%v", completed, ok, err)
+			}
+			events, err := service.EventsAfter(context.Background(), task.ID, 0)
+			if err != nil || len(events) != 1 || events[0].Type != agent.EventCancelled {
 				t.Fatalf("events=%+v err=%v", events, err)
 			}
 		})

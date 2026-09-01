@@ -273,11 +273,135 @@ func TestTerminalTurnCancelsPendingApproval(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, cancellation, err := store.RequestCancellation(ctx, task.ID, now.Add(time.Second)); err != nil || cancellation.Status != CancellationRequested {
+		t.Fatalf("cancellation=%+v err=%v", cancellation, err)
+	}
+	if _, err := store.ResolveApproval(ctx, approval.ID, agent.ApprovalAccept, ApprovalApproved, now.Add(2*time.Second)); !errors.Is(err, ErrCancellationRequested) {
+		t.Fatalf("approval after cancellation error=%v", err)
+	}
 	if err := store.CancelTurn(ctx, task.ID, turn.ID, attempt.ID, "cancelled", "", false, now.Add(time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	stored, ok, err := store.ApprovalByID(ctx, approval.ID)
 	if err != nil || !ok || stored.Status != ApprovalCancelled || stored.Decision != agent.ApprovalCancel {
 		t.Fatalf("approval=%+v ok=%v err=%v", stored, ok, err)
+	}
+}
+
+func TestCancellationIsDurableIdempotentAndWinsTerminalRace(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tasks.db")
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	now := time.Date(2026, 9, 1, 18, 0, 0, 0, time.UTC)
+	task, turn, attempt, err := store.CreateTask(ctx, CreateTaskInput{
+		TaskID: "task_cancel", TurnID: "turn_cancel", RouteAttemptID: "route_cancel",
+		WorkspaceID: "ws", WorkspacePath: "/repo", Goal: "wait", Permission: agent.PermissionReadOnly,
+		PreferredBackend: agent.BackendFake, Now: now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.StartTurn(ctx, task.ID, turn.ID, attempt.ID, 0, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	firstTask, first, err := store.RequestCancellation(ctx, task.ID, now.Add(2*time.Second))
+	if err != nil || first.Status != CancellationRequested || firstTask.Revision != task.Revision+2 {
+		t.Fatalf("first task=%+v cancellation=%+v err=%v", firstTask, first, err)
+	}
+	secondTask, second, err := store.RequestCancellation(ctx, task.ID, now.Add(3*time.Second))
+	if err != nil || second.ID != first.ID || second.RequestedAt != first.RequestedAt || secondTask.Revision != firstTask.Revision {
+		t.Fatalf("second task=%+v cancellation=%+v err=%v", secondTask, second, err)
+	}
+	if err := store.CompleteTurn(ctx, task.ID, turn.ID, attempt.ID, "too late", "", false, false, now.Add(4*time.Second)); !errors.Is(err, ErrCancellationRequested) {
+		t.Fatalf("complete error=%v", err)
+	}
+	if err := store.CancelTurn(ctx, task.ID, turn.ID, attempt.ID, "cancelled", "", false, now.Add(5*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	thirdTask, third, err := store.RequestCancellation(ctx, task.ID, now.Add(6*time.Second))
+	if err != nil || third.ID != first.ID || third.Status != CancellationCompleted || third.CompletedAt == nil || thirdTask.Status != TaskOpen {
+		t.Fatalf("third task=%+v cancellation=%+v err=%v", thirdTask, third, err)
+	}
+	state, ok, err := store.TaskState(ctx, task.ID)
+	if err != nil || !ok || state.Cancellation == nil || state.Cancellation.ID != first.ID || state.LatestTurn.Status != TurnCancelled {
+		t.Fatalf("state=%+v ok=%v err=%v", state, ok, err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	evidence, ok, err := reopened.TaskEvidence(ctx, task.ID)
+	if err != nil || !ok || len(evidence.Cancellations) != 1 || evidence.Cancellations[0].Status != CancellationCompleted {
+		t.Fatalf("evidence=%+v ok=%v err=%v", evidence, ok, err)
+	}
+	if len(evidence.Turns) != 1 || evidence.Turns[0].Status != TurnCancelled {
+		t.Fatalf("turns=%+v", evidence.Turns)
+	}
+}
+
+func TestCloseAndReopenTaskTransitionsAreIdempotent(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	task, turn, attempt, err := store.CreateTask(ctx, CreateTaskInput{
+		TaskID: "task_lifecycle", TurnID: "turn_lifecycle", RouteAttemptID: "route_lifecycle",
+		WorkspaceID: "ws", WorkspacePath: "/repo", Goal: "lifecycle", Permission: agent.PermissionReadOnly,
+		PreferredBackend: agent.BackendFake, Now: now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.CloseTask(ctx, task.ID, now); !errors.Is(err, ErrTaskActive) {
+		t.Fatalf("close active error=%v", err)
+	}
+	if err := store.CancelTurn(ctx, task.ID, turn.ID, attempt.ID, "cancelled", "", false, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	closed, changed, err := store.CloseTask(ctx, task.ID, now.Add(2*time.Second))
+	if err != nil || !changed || closed.Status != TaskClosed {
+		t.Fatalf("closed=%+v changed=%v err=%v", closed, changed, err)
+	}
+	closedAgain, changed, err := store.CloseTask(ctx, task.ID, now.Add(3*time.Second))
+	if err != nil || changed || closedAgain.Revision != closed.Revision {
+		t.Fatalf("closed again=%+v changed=%v err=%v", closedAgain, changed, err)
+	}
+	if _, _, err := store.CreateTurn(ctx, CreateTurnInput{
+		TurnID: "turn_closed", RouteAttemptID: "route_closed", TaskID: task.ID, Message: "no",
+		Permission: agent.PermissionReadOnly, Backend: agent.BackendFake, Now: now.Add(4 * time.Second),
+	}); err == nil {
+		t.Fatal("closed task accepted a continuation")
+	}
+	open, changed, err := store.ReopenTask(ctx, task.ID, now.Add(5*time.Second))
+	if err != nil || !changed || open.Status != TaskOpen {
+		t.Fatalf("open=%+v changed=%v err=%v", open, changed, err)
+	}
+	openAgain, changed, err := store.ReopenTask(ctx, task.ID, now.Add(6*time.Second))
+	if err != nil || changed || openAgain.Revision != open.Revision {
+		t.Fatalf("open again=%+v changed=%v err=%v", openAgain, changed, err)
+	}
+
+	attentionTask, attentionTurn, attentionAttempt, err := store.CreateTask(ctx, CreateTaskInput{
+		TaskID: "task_attention", TurnID: "turn_attention", RouteAttemptID: "route_attention",
+		WorkspaceID: "ws", WorkspacePath: "/repo", Goal: "inspect", Permission: agent.PermissionWrite,
+		PreferredBackend: agent.BackendFake, Now: now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.FailTurn(ctx, attentionTask.ID, attentionTurn.ID, attentionAttempt.ID,
+		"failed", "inspect changes", "", true, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	acknowledged, changed, err := store.ReopenTask(ctx, attentionTask.ID, now.Add(2*time.Second))
+	if err != nil || !changed || acknowledged.Status != TaskOpen {
+		t.Fatalf("acknowledged=%+v changed=%v err=%v", acknowledged, changed, err)
 	}
 }
