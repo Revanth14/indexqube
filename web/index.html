@@ -1,38 +1,60 @@
-<!-- landing page -->
 <!doctype html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>IndexQube — touch less grass</title>
+    <meta name="theme-color" content="#f2efe6" />
+    <title>IndexQube — A durable control plane for coding agents</title>
     <meta
       name="description"
-      content="Your AI coding agent re-reads the same files on every turn. IndexQube strips the redundant context before it hits the API — 15–17% fewer tokens, measured on real sessions."
+      content="IndexQube gives coding agents durable task state, guarded workspace writes, explicit approvals, restart recovery, and evidence of what changed."
     />
-    <meta property="og:title" content="IndexQube — touch less grass" />
+    <meta property="og:title" content="IndexQube — Agent work should survive the terminal" />
     <meta
       property="og:description"
-      content="Your AI coding agent re-reads the same files on every turn. IndexQube strips the redundant context before it hits the API — 15–17% fewer tokens, measured on real sessions."
+      content="A local-first control plane for durable, permissioned, inspectable coding-agent work."
     />
     <meta property="og:type" content="website" />
+    <meta
+      property="og:image"
+      content="https://raw.githubusercontent.com/Revanth14/indexqube/main/web/og.png"
+    />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta
+      property="og:image:alt"
+      content="IndexQube — Agent work should survive the terminal."
+    />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="IndexQube — Agent work should survive the terminal" />
+    <meta
+      name="twitter:description"
+      content="A local-first control plane for durable, permissioned, inspectable coding-agent work."
+    />
+    <meta
+      name="twitter:image"
+      content="https://raw.githubusercontent.com/Revanth14/indexqube/main/web/og.png"
+    />
     <style>
       *,
       *::before,
       *::after {
         box-sizing: border-box;
-        margin: 0;
-        padding: 0;
       }
 
       :root {
-        --bg: #0d0f0d;
-        --surface: #121612;
-        --border: #1e261e;
-        --text: #cccccc;
-        --muted: #aaaaaa;
-        --green: #00ff88;
-        --green-dim: #00cc6a;
-        --red: #ff4455;
+        --paper: #f2efe6;
+        --paper-deep: #e8e3d6;
+        --ink: #111311;
+        --ink-soft: #45483f;
+        --line: rgba(17, 19, 17, 0.18);
+        --acid: #b7f35b;
+        --acid-deep: #91d32e;
+        --blue: #5a62f2;
+        --white: #fffdf7;
+        --mono: "SFMono-Regular", "Cascadia Code", "Roboto Mono", Consolas, monospace;
+        --sans: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        --display: "Arial Narrow", "Roboto Condensed", Impact, sans-serif;
       }
 
       html {
@@ -40,901 +62,2030 @@
       }
 
       body {
-        background: var(--bg);
-        color: var(--text);
-        font-family: "Courier New", Courier, monospace;
+        margin: 0;
+        color: var(--ink);
+        background:
+          radial-gradient(circle at 75% 16%, rgba(183, 243, 91, 0.3), transparent 23rem),
+          linear-gradient(rgba(17, 19, 17, 0.035) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(17, 19, 17, 0.035) 1px, transparent 1px),
+          var(--paper);
+        background-size: auto, 28px 28px, 28px 28px, auto;
+        font-family: var(--sans);
         min-height: 100vh;
-        display: flex;
-        flex-direction: column;
       }
 
-      /* ── NAV ── */
-      nav {
-        display: flex;
-        justify-content: space-between;
+      a {
+        color: inherit;
+      }
+
+      .skip-link {
+        position: fixed;
+        z-index: 100;
+        top: 0.75rem;
+        left: 0.75rem;
+        padding: 0.7rem 1rem;
+        color: var(--white);
+        background: var(--ink);
+        transform: translateY(-180%);
+      }
+
+      .skip-link:focus {
+        transform: translateY(0);
+      }
+
+      .site-nav {
+        position: relative;
+        z-index: 10;
+        display: grid;
+        grid-template-columns: 1fr auto 1fr;
         align-items: center;
-        padding: 1.25rem 2rem;
-        border-bottom: 1px solid var(--border);
+        width: min(1440px, 100%);
+        margin: 0 auto;
+        padding: 1.2rem clamp(1.1rem, 3vw, 3.5rem);
+        border-bottom: 1px solid var(--line);
       }
 
-      .logo {
-        font-size: 1rem;
-        font-weight: 700;
-        color: var(--green);
-        letter-spacing: -0.5px;
-      }
-
-      .logo span {
-        color: var(--text);
-      }
-
-      .nav-links {
-        display: flex;
-        align-items: center;
-        gap: 1.75rem;
-      }
-
-      nav a {
-        color: var(--muted);
-        text-decoration: none;
-        font-size: 0.8rem;
-        transition: color 0.15s;
-      }
-
-      nav a:hover {
-        color: var(--text);
-      }
-
-      /* ── HERO ── */
-      .hero {
-        flex: 1;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: flex-start;
-        padding: 2rem 2rem 3rem;
-        text-align: center;
-        gap: 2rem;
-      }
-
-      .badge {
+      .brand {
         display: inline-flex;
         align-items: center;
-        gap: 0.5rem;
-        background: #0d1f16;
-        border: 1px solid #1a3d2a;
-        color: var(--green);
-        font-size: 0.72rem;
-        padding: 0.35rem 0.85rem;
-        border-radius: 999px;
-        letter-spacing: 0.05em;
+        gap: 0.7rem;
+        width: max-content;
+        font-family: var(--mono);
+        font-size: 0.86rem;
+        font-weight: 800;
+        letter-spacing: -0.04em;
+        text-decoration: none;
       }
 
-      .badge::before {
-        content: "";
+      .brand-mark {
+        display: grid;
+        grid-template-columns: repeat(2, 5px);
+        grid-template-rows: repeat(2, 5px);
+        gap: 2px;
+        padding: 5px;
+        background: var(--ink);
+      }
+
+      .brand-mark i {
         display: block;
-        width: 6px;
-        height: 6px;
-        background: var(--green);
-        border-radius: 50%;
-        animation: pulse 2s ease-in-out infinite;
+        background: var(--acid);
       }
 
-      @keyframes pulse {
-        0%,
-        100% {
-          opacity: 1;
-        }
-        50% {
-          opacity: 0.3;
-        }
+      .brand-mark i:nth-child(2),
+      .brand-mark i:nth-child(3) {
+        opacity: 0.45;
+      }
+
+      .nav-center,
+      .nav-end {
+        display: flex;
+        align-items: center;
+        gap: 1.4rem;
+      }
+
+      .nav-center a,
+      .nav-end a {
+        font-family: var(--mono);
+        font-size: 0.72rem;
+        font-weight: 700;
+        letter-spacing: 0.05em;
+        text-decoration: none;
+        text-transform: uppercase;
+      }
+
+      .nav-center a:hover,
+      .nav-center a:focus-visible {
+        text-decoration: underline;
+        text-underline-offset: 4px;
+      }
+
+      .nav-end {
+        justify-content: flex-end;
+      }
+
+      .nav-status {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.45rem;
+        font-family: var(--mono);
+        font-size: 0.68rem;
+        color: var(--ink-soft);
+      }
+
+      .nav-status::before {
+        width: 7px;
+        height: 7px;
+        background: var(--acid-deep);
+        border: 1px solid var(--ink);
+        border-radius: 50%;
+        content: "";
+      }
+
+      .github-link {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.45rem;
+        padding: 0.65rem 0.85rem;
+        border: 1px solid var(--ink);
+        box-shadow: 3px 3px 0 var(--ink);
+        transition: transform 150ms ease, box-shadow 150ms ease;
+      }
+
+      .github-link:hover,
+      .github-link:focus-visible {
+        box-shadow: 1px 1px 0 var(--ink);
+        transform: translate(2px, 2px);
+      }
+
+      .hero {
+        position: relative;
+        display: grid;
+        grid-template-columns: minmax(0, 0.92fr) minmax(34rem, 1.08fr);
+        gap: clamp(2.5rem, 5vw, 6.5rem);
+        align-items: center;
+        width: min(1440px, 100%);
+        min-height: calc(100vh - 78px);
+        margin: 0 auto;
+        padding: clamp(4.5rem, 8vw, 8.5rem) clamp(1.1rem, 3vw, 3.5rem) 4rem;
+        overflow: hidden;
+      }
+
+      .hero-copy {
+        position: relative;
+        z-index: 2;
+      }
+
+      .eyebrow {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.65rem;
+        margin: 0 0 1.6rem;
+        font-family: var(--mono);
+        font-size: 0.72rem;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .eyebrow::before {
+        width: 2.75rem;
+        height: 2px;
+        background: var(--ink);
+        content: "";
       }
 
       h1 {
-        font-size: clamp(2.2rem, 6vw, 4.2rem);
-        font-weight: 700;
-        line-height: 1.05;
-        letter-spacing: -1.5px;
-        max-width: 720px;
+        max-width: 780px;
+        margin: 0;
+        font-family: var(--display);
+        font-size: clamp(4.2rem, 7.6vw, 8.3rem);
+        font-stretch: condensed;
+        font-weight: 900;
+        letter-spacing: -0.065em;
+        line-height: 0.83;
+        text-transform: uppercase;
       }
 
-      h1 .green {
-        color: var(--green);
-      }
-
-      .hero-text {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        gap: 0.75rem;
-      }
-
-      .sub {
-        font-size: clamp(0.9rem, 2vw, 1.05rem);
-        color: var(--muted);
-        max-width: 520px;
-        line-height: 1.7;
-      }
-
-      /* ── TERMINAL CARD ── */
-      .terminal {
-        background: var(--surface);
-        border: 1px solid var(--border);
-        border-radius: 10px;
-        width: 100%;
-        max-width: 560px;
-        overflow: hidden;
-        text-align: left;
-      }
-
-      .terminal-bar {
-        background: #1a1a1a;
-        padding: 0.6rem 1rem;
-        display: flex;
-        align-items: center;
-        gap: 0.5rem;
-        border-bottom: 1px solid var(--border);
-      }
-
-      .dot {
-        width: 10px;
-        height: 10px;
-        border-radius: 50%;
-      }
-      .dot.red {
-        background: #ff5f57;
-      }
-      .dot.yellow {
-        background: #febc2e;
-      }
-      .dot.green {
-        background: #28c840;
-      }
-
-      .terminal-title {
-        font-size: 0.72rem;
-        color: var(--muted);
-        margin-left: auto;
-        margin-right: auto;
-      }
-
-      .terminal-body {
-        padding: 1.25rem 1.5rem;
-        font-size: 0.82rem;
-        line-height: 1.8;
-      }
-
-      .line-before {
-        color: var(--red);
-      }
-      .line-after {
-        color: var(--green);
-      }
-      .line-dim {
-        color: var(--muted);
-      }
-      .line-label {
-        display: inline-block;
-        width: 7ch;
-        color: var(--muted);
-      }
-
-      .savings-row {
-        margin-top: 1rem;
-        padding-top: 1rem;
-        border-top: 1px solid var(--border);
-        display: flex;
-        justify-content: space-between;
-      }
-
-      .stat {
-        text-align: center;
-      }
-      .stat-value {
-        font-size: 1.2rem;
-        font-weight: 700;
-        color: var(--green);
-      }
-      .stat-label {
-        font-size: 0.68rem;
-        color: var(--muted);
-        margin-top: 0.15rem;
-      }
-
-      /* ── LIVE STATS BAND ── */
-      .live-stats {
-        border: 1px solid var(--border);
-        border-radius: 10px;
-        background: var(--surface);
-        padding: 1.25rem 1rem;
-        display: flex;
-        justify-content: center;
-        gap: 0;
-        width: 100%;
-        max-width: 560px;
-      }
-
-      .ls-item {
-        flex: 1;
-        max-width: 220px;
-        text-align: center;
-        padding: 0 1.5rem;
+      h1 .survive {
         position: relative;
+        display: inline-block;
+        z-index: 0;
       }
 
-      .ls-item + .ls-item::before {
-        content: "";
+      h1 .survive::after {
         position: absolute;
-        left: 0;
-        top: 15%;
-        height: 70%;
-        width: 1px;
-        background: var(--border);
-      }
-
-      .ls-value {
-        font-size: clamp(1.5rem, 3vw, 2.2rem);
-        font-weight: 700;
-        color: var(--green);
-        letter-spacing: -1px;
-        transition: color 0.3s;
-        font-variant-numeric: tabular-nums;
-      }
-
-      .ls-label {
-        font-size: 0.7rem;
-        color: var(--muted);
-        margin-top: 0.3rem;
-        letter-spacing: 0.06em;
-      }
-
-      .ls-live {
-        display: inline-flex;
-        align-items: center;
-        gap: 0.35rem;
-        font-size: 0.65rem;
-        color: var(--muted);
-        margin-top: 0.2rem;
-      }
-
-      .ls-live::before {
+        z-index: -1;
+        right: -0.08em;
+        bottom: 0.02em;
+        left: -0.08em;
+        height: 0.34em;
+        background: var(--acid);
         content: "";
-        display: block;
-        width: 5px;
-        height: 5px;
-        background: var(--green);
-        border-radius: 50%;
-        animation: pulse 2s ease-in-out infinite;
+        transform: rotate(-1deg);
       }
 
-      @media (max-width: 600px) {
-        .live-stats {
-          flex-wrap: wrap;
-          gap: 1.5rem;
-          padding: 1.5rem 1rem;
-        }
-        .ls-item {
-          flex: 0 0 calc(50% - 0.75rem);
-          max-width: none;
-          padding: 0;
-        }
-        .ls-item + .ls-item::before {
-          display: none;
-        }
+      .lede {
+        max-width: 43rem;
+        margin: 2rem 0 0;
+        color: var(--ink-soft);
+        font-size: clamp(1.05rem, 1.45vw, 1.32rem);
+        line-height: 1.55;
       }
 
-      /* ── FEATURES ── */
-      .features {
+      .lede strong {
+        color: var(--ink);
+        font-weight: 750;
+      }
+
+      .hero-actions {
         display: flex;
         flex-wrap: wrap;
+        gap: 0.75rem;
+        margin-top: 2.25rem;
+      }
+
+      .button {
+        display: inline-flex;
+        align-items: center;
         justify-content: center;
-        gap: 1rem;
-        max-width: 720px;
-        width: 100%;
-      }
-
-      .chip {
-        background: var(--surface);
-        border: 1px solid var(--border);
-        border-radius: 8px;
-        padding: 0.6rem 1rem;
-        font-size: 0.78rem;
-        color: var(--muted);
-        display: flex;
-        align-items: center;
-        gap: 0.5rem;
-      }
-
-      /* ── HOW IT WORKS ── */
-      .how-it-works {
-        padding: 4rem 2rem 5rem;
-        border-top: 1px solid var(--border);
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        gap: 2.5rem;
-      }
-
-      .section-label {
-        font-size: 0.82rem;
-        color: var(--muted);
-        letter-spacing: 0.08em;
-        width: 100%;
-        max-width: 860px;
-      }
-
-      .pipeline {
-        background: var(--surface);
-        border: 1px solid var(--border);
-        border-radius: 10px;
-        width: 100%;
-        max-width: 860px;
-        overflow: hidden;
-      }
-
-      .pipeline-body {
-        padding: 1.5rem;
-        font-size: 0.76rem;
-        line-height: 2.1;
-        overflow-x: auto;
-      }
-
-      .pipeline-row {
-        display: grid;
-        grid-template-columns: 1.5rem 18ch 1fr 1fr;
-        gap: 0.5rem 1.5rem;
-        align-items: baseline;
-      }
-
-      .p-step {
-        color: var(--muted);
-      }
-      .p-name {
-        color: var(--text);
-      }
-      .p-algo {
-        color: var(--green);
-      }
-      .p-note {
-        color: var(--muted);
-      }
-
-      .tech-cards {
-        display: grid;
-        grid-template-columns: repeat(3, 1fr);
-        gap: 1rem;
-        width: 100%;
-        max-width: 860px;
-      }
-
-      .tech-card {
-        background: var(--surface);
-        border: 1px solid var(--border);
-        border-radius: 10px;
-        padding: 1.5rem;
-        display: flex;
-        flex-direction: column;
-        gap: 1rem;
-      }
-
-      .tc-title {
-        color: var(--green);
-        font-size: 0.82rem;
-        font-weight: 700;
-        padding-bottom: 0.75rem;
-        border-bottom: 1px solid var(--border);
-      }
-
-      .tc-path {
-        font-size: 0.68rem;
-        color: var(--muted);
-        margin-top: -0.5rem;
-      }
-
-      .tc-body {
+        min-height: 3.25rem;
+        padding: 0.85rem 1.2rem;
+        border: 1px solid var(--ink);
+        font-family: var(--mono);
         font-size: 0.74rem;
-        color: var(--muted);
-        line-height: 2;
+        font-weight: 800;
+        letter-spacing: 0.04em;
+        text-decoration: none;
+        text-transform: uppercase;
+        transition: transform 150ms ease, box-shadow 150ms ease, background 150ms ease;
       }
 
-      .tc-body .hi {
-        color: var(--text);
-      }
-      .tc-body .accent {
-        color: var(--green);
-      }
-
-      .bench {
-        background: var(--surface);
-        border: 1px solid var(--border);
-        border-radius: 10px;
-        width: 100%;
-        max-width: 860px;
-        overflow: hidden;
+      .button-primary {
+        background: var(--ink);
+        color: var(--white);
+        box-shadow: 4px 4px 0 var(--blue);
       }
 
-      .bench-body {
-        padding: 1.5rem;
-        font-size: 0.76rem;
-        line-height: 2;
-        overflow-x: auto;
+      .button-secondary {
+        background: rgba(255, 253, 247, 0.45);
+        box-shadow: 4px 4px 0 var(--ink);
       }
 
-      .bench-head {
-        display: grid;
-        grid-template-columns: 21ch 6ch 12ch 12ch 1fr;
-        gap: 0 1.5rem;
-        color: var(--muted);
-        padding-bottom: 0.5rem;
-        border-bottom: 1px solid var(--border);
-        margin-bottom: 0.5rem;
+      .button:hover,
+      .button:focus-visible {
+        box-shadow: 1px 1px 0 var(--ink);
+        transform: translate(3px, 3px);
       }
 
-      .bench-row {
-        display: grid;
-        grid-template-columns: 21ch 6ch 12ch 12ch 1fr;
-        gap: 0 1.5rem;
-        color: var(--text);
+      .hero-note {
+        margin: 1.15rem 0 0;
+        font-family: var(--mono);
+        color: var(--ink-soft);
+        font-size: 0.68rem;
+        line-height: 1.5;
       }
 
-      .bench-row .win {
-        color: var(--green);
+      .product-scene {
+        position: relative;
+        z-index: 1;
       }
 
-      @media (max-width: 860px) {
-        .tech-cards {
-          grid-template-columns: 1fr;
-        }
-        .pipeline-row {
-          grid-template-columns: 1.5rem 1fr;
-        }
-        .p-algo,
-        .p-note {
-          display: none;
-        }
-        /* bench: show operation + LSM only */
-        .bench-head,
-        .bench-row {
-          grid-template-columns: 1fr 10ch;
-        }
-        .bench-head > *:nth-child(2),
-        .bench-head > *:nth-child(4),
-        .bench-head > *:nth-child(5),
-        .bench-row > *:nth-child(2),
-        .bench-row > *:nth-child(4),
-        .bench-row > *:nth-child(5) {
-          display: none;
-        }
+      .product-scene::before {
+        position: absolute;
+        z-index: -1;
+        width: 12rem;
+        height: 12rem;
+        top: -2.5rem;
+        right: -3.5rem;
+        border: 1px solid var(--ink);
+        border-radius: 50%;
+        content: "";
       }
 
-      /* ── BOTTOM CTA ── */
-      .bottom-cta {
-        padding: 4rem 2rem;
-        border-top: 1px solid var(--border);
+      .console {
+        background: var(--ink);
+        color: #e9eee3;
+        border: 1px solid var(--ink);
+        box-shadow: 12px 12px 0 rgba(90, 98, 242, 0.9);
+      }
+
+      .console-topbar {
         display: flex;
-        flex-direction: column;
         align-items: center;
-        gap: 1.5rem;
-        text-align: center;
+        justify-content: space-between;
+        gap: 1rem;
+        min-height: 3.2rem;
+        padding: 0.85rem 1rem;
+        background: var(--paper-deep);
+        color: var(--ink);
+        border-bottom: 1px solid var(--ink);
+        font-family: var(--mono);
+        font-size: 0.68rem;
+        font-weight: 750;
+        letter-spacing: 0.045em;
+        text-transform: uppercase;
       }
 
-      .bottom-cta h2 {
-        font-size: clamp(1.4rem, 4vw, 2.2rem);
+      .console-controls {
+        display: flex;
+        gap: 0.35rem;
+      }
+
+      .console-controls i {
+        display: block;
+        width: 9px;
+        height: 9px;
+        border: 1px solid var(--ink);
+        border-radius: 50%;
+      }
+
+      .console-controls i:nth-child(1) { background: #ff7163; }
+      .console-controls i:nth-child(2) { background: #f2c94c; }
+      .console-controls i:nth-child(3) { background: var(--acid); }
+
+      .console-body {
+        display: grid;
+        grid-template-columns: 9.5rem minmax(0, 1fr);
+        min-height: 31rem;
+      }
+
+      .state-rail {
+        padding: 1.25rem 1rem;
+        border-right: 1px solid rgba(255, 255, 255, 0.16);
+      }
+
+      .rail-label,
+      .event-label {
+        color: #858c82;
+        font-family: var(--mono);
+        font-size: 0.61rem;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .state-list {
+        display: grid;
+        gap: 1.15rem;
+        margin: 1.1rem 0 0;
+        padding: 0;
+        list-style: none;
+      }
+
+      .state-list li {
+        position: relative;
+        display: grid;
+        grid-template-columns: 1rem 1fr;
+        gap: 0.55rem;
+        align-items: start;
+        color: #747b72;
+        font-family: var(--mono);
+        font-size: 0.63rem;
+        line-height: 1.35;
+        text-transform: uppercase;
+      }
+
+      .state-list li:not(:last-child)::after {
+        position: absolute;
+        top: 0.95rem;
+        bottom: -1rem;
+        left: 0.36rem;
+        width: 1px;
+        background: #424840;
+        content: "";
+      }
+
+      .state-dot {
+        position: relative;
+        z-index: 1;
+        display: block;
+        width: 0.75rem;
+        height: 0.75rem;
+        margin-top: 0.05rem;
+        background: var(--ink);
+        border: 1px solid #697066;
+        border-radius: 50%;
+      }
+
+      .state-list .done {
+        color: #c5cbc0;
+      }
+
+      .state-list .done .state-dot {
+        background: var(--acid);
+        border-color: var(--acid);
+        box-shadow: 0 0 0 3px rgba(183, 243, 91, 0.12);
+      }
+
+      .state-list .active {
+        color: var(--acid);
+      }
+
+      .state-list .active .state-dot {
+        background: var(--acid);
+        border-color: var(--acid);
+        box-shadow: 0 0 0 3px rgba(183, 243, 91, 0.18);
+      }
+
+      .event-pane {
+        min-width: 0;
+        padding: 1.25rem;
+      }
+
+      .task-header {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 1rem;
+        padding-bottom: 1rem;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.14);
+      }
+
+      .task-title {
+        margin: 0.4rem 0 0;
+        font-family: var(--mono);
+        font-size: 0.9rem;
         font-weight: 700;
-        letter-spacing: -0.5px;
+        line-height: 1.5;
       }
 
-      .bottom-cta h2 .green {
-        color: var(--green);
+      .task-id {
+        flex: 0 0 auto;
+        padding: 0.35rem 0.5rem;
+        color: var(--acid);
+        border: 1px solid #4e5947;
+        font-family: var(--mono);
+        font-size: 0.6rem;
       }
 
-      .bottom-cta .sub {
-        font-size: 0.85rem;
-        color: var(--muted);
+      .event-stream {
+        display: grid;
+        gap: 0;
+        margin: 1rem 0 0;
+        padding: 0;
+        list-style: none;
       }
 
-      /* ── FOOTER ── */
-      footer {
-        padding: 1.5rem 2rem;
-        border-top: 1px solid var(--border);
+      .event {
+        display: grid;
+        grid-template-columns: 4.5rem minmax(0, 1fr);
+        gap: 0.8rem;
+        padding: 0.75rem 0;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.09);
+        font-family: var(--mono);
+        font-size: 0.67rem;
+        line-height: 1.55;
+      }
+
+      .event-time {
+        color: #747b72;
+      }
+
+      .event-copy strong {
+        color: var(--white);
+        font-weight: 700;
+      }
+
+      .event-copy span {
+        display: block;
+        color: #9da49a;
+      }
+
+      .approval-card {
+        margin-top: 1rem;
+        padding: 1rem;
+        color: var(--ink);
+        background: var(--acid);
+        border: 1px solid var(--acid);
+        font-family: var(--mono);
+      }
+
+      .approval-head {
         display: flex;
         justify-content: space-between;
-        align-items: center;
+        gap: 0.75rem;
+        font-size: 0.61rem;
+        font-weight: 900;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+
+      .approval-command {
+        margin: 0.8rem 0 0;
+        padding: 0.7rem;
+        background: rgba(17, 19, 17, 0.1);
+        font-size: 0.69rem;
+        overflow-wrap: anywhere;
+      }
+
+      .approval-actions {
+        display: flex;
+        gap: 0.45rem;
+        margin-top: 0.75rem;
+      }
+
+      .approval-actions span {
+        padding: 0.35rem 0.5rem;
+        border: 1px solid var(--ink);
+        font-size: 0.58rem;
+        font-weight: 850;
+        text-transform: uppercase;
+      }
+
+      .approval-actions .allow {
+        color: var(--white);
+        background: var(--ink);
+      }
+
+      .evidence-row {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        border-top: 1px solid rgba(255, 255, 255, 0.16);
+      }
+
+      .evidence-row div {
+        padding: 0.85rem 1rem;
+        border-right: 1px solid rgba(255, 255, 255, 0.16);
+      }
+
+      .evidence-row div:last-child {
+        border-right: 0;
+      }
+
+      .evidence-row strong,
+      .evidence-row span {
+        display: block;
+        font-family: var(--mono);
+      }
+
+      .evidence-row strong {
+        color: var(--acid);
         font-size: 0.72rem;
-        color: var(--muted);
       }
 
-      footer a {
-        color: var(--muted);
-        text-decoration: none;
-      }
-      footer a:hover {
-        color: var(--text);
-      }
-
-      @media (max-width: 640px) {
-        .nav-links {
-          gap: 1rem;
-        }
-        nav a {
-          font-size: 0.72rem;
-        }
-        .how-it-works {
-          padding: 2.5rem 1rem 3rem;
-        }
+      .evidence-row span {
+        margin-top: 0.3rem;
+        color: #878e84;
+        font-size: 0.56rem;
+        letter-spacing: 0.055em;
+        text-transform: uppercase;
       }
 
-      @media (max-width: 480px) {
-        /* hide "how it works" nav link — too long, logo + 3 links fit */
-        .nav-links a[href="#how-it-works"] {
+      .truth-strip {
+        display: grid;
+        grid-template-columns: 1.35fr repeat(4, 1fr);
+        width: min(1440px, 100%);
+        margin: 0 auto;
+        border-top: 1px solid var(--ink);
+        border-bottom: 1px solid var(--ink);
+      }
+
+      .truth-intro,
+      .truth-item {
+        min-height: 7.25rem;
+        padding: 1.15rem clamp(1rem, 2vw, 1.7rem);
+        border-right: 1px solid var(--ink);
+      }
+
+      .truth-item:last-child {
+        border-right: 0;
+      }
+
+      .truth-intro {
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+        background: var(--acid);
+      }
+
+      .truth-intro strong {
+        max-width: 13rem;
+        font-size: 1.05rem;
+        line-height: 1.2;
+      }
+
+      .truth-intro span,
+      .truth-item span {
+        font-family: var(--mono);
+        font-size: 0.58rem;
+        font-weight: 800;
+        letter-spacing: 0.07em;
+        text-transform: uppercase;
+      }
+
+      .truth-item {
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+      }
+
+      .truth-item b {
+        font-size: 0.94rem;
+        line-height: 1.3;
+      }
+
+      .truth-item span {
+        color: var(--ink-soft);
+      }
+
+      .section-shell {
+        width: min(1440px, 100%);
+        margin: 0 auto;
+        padding: clamp(5.5rem, 9vw, 9rem) clamp(1.1rem, 3vw, 3.5rem);
+      }
+
+      .section-kicker {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        margin: 0 0 1.2rem;
+        font-family: var(--mono);
+        font-size: 0.68rem;
+        font-weight: 850;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .section-kicker::before {
+        display: inline-grid;
+        width: 1.45rem;
+        height: 1.45rem;
+        place-items: center;
+        color: var(--acid);
+        background: var(--ink);
+        content: "↳";
+      }
+
+      .section-title {
+        max-width: 940px;
+        margin: 0;
+        font-family: var(--display);
+        font-size: clamp(3.2rem, 6.2vw, 7rem);
+        font-weight: 900;
+        letter-spacing: -0.055em;
+        line-height: 0.9;
+        text-transform: uppercase;
+      }
+
+      .section-intro {
+        max-width: 44rem;
+        margin: 1.4rem 0 0;
+        color: var(--ink-soft);
+        font-size: clamp(1rem, 1.35vw, 1.2rem);
+        line-height: 1.65;
+      }
+
+      .manifesto {
+        color: var(--white);
+        background: var(--ink);
+      }
+
+      .manifesto .section-shell {
+        position: relative;
+        overflow: hidden;
+      }
+
+      .manifesto .section-shell::after {
+        position: absolute;
+        right: -7rem;
+        bottom: -12rem;
+        width: 31rem;
+        height: 31rem;
+        border: 1px solid rgba(183, 243, 91, 0.28);
+        border-radius: 50%;
+        content: "";
+      }
+
+      .manifesto-grid {
+        position: relative;
+        z-index: 1;
+        display: grid;
+        grid-template-columns: minmax(0, 1.15fr) minmax(22rem, 0.85fr);
+        gap: clamp(3rem, 8vw, 9rem);
+        align-items: end;
+      }
+
+      .manifesto .section-kicker {
+        color: #b0b7ad;
+      }
+
+      .manifesto .section-kicker::before {
+        color: var(--ink);
+        background: var(--acid);
+      }
+
+      .manifesto .section-title {
+        max-width: 800px;
+      }
+
+      .manifesto .section-title em {
+        color: var(--acid);
+        font-style: normal;
+      }
+
+      .manifesto-copy {
+        max-width: 32rem;
+        margin: 0;
+        color: #b0b7ad;
+        font-size: clamp(1.05rem, 1.5vw, 1.32rem);
+        line-height: 1.65;
+      }
+
+      .manifesto-copy strong {
+        color: var(--white);
+      }
+
+      .principle-grid {
+        position: relative;
+        z-index: 1;
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        margin-top: clamp(4rem, 8vw, 7rem);
+        border-top: 1px solid rgba(255, 255, 255, 0.22);
+        border-bottom: 1px solid rgba(255, 255, 255, 0.22);
+      }
+
+      .principle {
+        min-height: 16rem;
+        padding: 1.5rem;
+        border-right: 1px solid rgba(255, 255, 255, 0.22);
+      }
+
+      .principle:last-child {
+        border-right: 0;
+      }
+
+      .principle-index {
+        display: block;
+        color: var(--acid);
+        font-family: var(--mono);
+        font-size: 0.67rem;
+        font-weight: 800;
+      }
+
+      .principle h3 {
+        max-width: 15rem;
+        margin: 3.6rem 0 0;
+        font-size: clamp(1.25rem, 2vw, 1.75rem);
+        letter-spacing: -0.025em;
+        line-height: 1.05;
+      }
+
+      .principle p {
+        max-width: 23rem;
+        margin: 0.9rem 0 0;
+        color: #929a90;
+        font-size: 0.88rem;
+        line-height: 1.6;
+      }
+
+      .workflow {
+        border-bottom: 1px solid var(--ink);
+      }
+
+      .workflow-head {
+        display: flex;
+        justify-content: space-between;
+        gap: 3rem;
+        align-items: end;
+      }
+
+      .workflow-head .section-intro {
+        flex: 0 1 35rem;
+        margin-bottom: 0.45rem;
+      }
+
+      .chain {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        margin-top: clamp(3rem, 6vw, 5.5rem);
+        border: 1px solid var(--ink);
+        box-shadow: 9px 9px 0 var(--ink);
+      }
+
+      .chain-step {
+        position: relative;
+        min-height: 23rem;
+        padding: 1.35rem;
+        background: rgba(255, 253, 247, 0.46);
+        border-right: 1px solid var(--ink);
+      }
+
+      .chain-step:last-child {
+        border-right: 0;
+      }
+
+      .chain-step:nth-child(3) {
+        background: var(--acid);
+      }
+
+      .chain-step:not(:last-child)::after {
+        position: absolute;
+        z-index: 2;
+        top: 2.55rem;
+        right: -0.66rem;
+        display: grid;
+        width: 1.25rem;
+        height: 1.25rem;
+        place-items: center;
+        color: var(--white);
+        background: var(--ink);
+        border-radius: 50%;
+        content: "›";
+        font-family: var(--mono);
+        font-size: 0.85rem;
+      }
+
+      .chain-meta {
+        display: flex;
+        justify-content: space-between;
+        gap: 0.75rem;
+        font-family: var(--mono);
+        font-size: 0.58rem;
+        font-weight: 800;
+        letter-spacing: 0.065em;
+        text-transform: uppercase;
+      }
+
+      .chain-meta span:last-child {
+        color: var(--ink-soft);
+      }
+
+      .chain-glyph {
+        display: grid;
+        width: 3.25rem;
+        height: 3.25rem;
+        margin-top: 3.2rem;
+        place-items: center;
+        color: var(--acid);
+        background: var(--ink);
+        font-family: var(--mono);
+        font-size: 1.2rem;
+        font-weight: 900;
+      }
+
+      .chain-step h3 {
+        margin: 1.25rem 0 0;
+        font-size: 1.3rem;
+        letter-spacing: -0.025em;
+      }
+
+      .chain-step p {
+        margin: 0.7rem 0 0;
+        color: var(--ink-soft);
+        font-size: 0.87rem;
+        line-height: 1.58;
+      }
+
+      .chain-output {
+        position: absolute;
+        right: 1.35rem;
+        bottom: 1.35rem;
+        left: 1.35rem;
+        padding-top: 0.8rem;
+        border-top: 1px solid var(--line);
+        font-family: var(--mono);
+        font-size: 0.6rem;
+        font-weight: 800;
+        line-height: 1.45;
+        text-transform: uppercase;
+      }
+
+      .custody-note {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 1.2rem;
+        align-items: center;
+        margin-top: 2.2rem;
+        padding: 1.25rem 1.4rem;
+        color: var(--white);
+        background: var(--blue);
+        border: 1px solid var(--ink);
+      }
+
+      .custody-note strong {
+        font-family: var(--mono);
+        font-size: 0.67rem;
+        letter-spacing: 0.07em;
+        text-transform: uppercase;
+      }
+
+      .custody-note p {
+        margin: 0;
+        font-size: 0.9rem;
+        line-height: 1.55;
+      }
+
+      .architecture {
+        background: var(--paper-deep);
+        border-bottom: 1px solid var(--ink);
+      }
+
+      .architecture-grid {
+        display: grid;
+        grid-template-columns: minmax(21rem, 0.72fr) minmax(0, 1.28fr);
+        gap: clamp(3rem, 7vw, 8rem);
+        align-items: center;
+      }
+
+      .architecture-copy .section-title {
+        font-size: clamp(3.4rem, 5.5vw, 6rem);
+      }
+
+      .architecture-copy blockquote {
+        margin: 2rem 0 0;
+        padding-left: 1.2rem;
+        color: var(--ink-soft);
+        border-left: 4px solid var(--blue);
+        font-size: 1rem;
+        line-height: 1.6;
+      }
+
+      .state-map {
+        background: var(--white);
+        border: 1px solid var(--ink);
+        box-shadow: 10px 10px 0 var(--acid);
+      }
+
+      .state-map-head {
+        display: flex;
+        justify-content: space-between;
+        gap: 1rem;
+        padding: 0.85rem 1rem;
+        border-bottom: 1px solid var(--ink);
+        font-family: var(--mono);
+        font-size: 0.62rem;
+        font-weight: 800;
+        letter-spacing: 0.055em;
+        text-transform: uppercase;
+      }
+
+      .state-map-body {
+        display: grid;
+        grid-template-columns: minmax(9rem, 0.8fr) minmax(0, 1.2fr);
+      }
+
+      .canonical-node {
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+        min-height: 25rem;
+        padding: 1.3rem;
+        color: var(--white);
+        background: var(--ink);
+      }
+
+      .canonical-node small,
+      .canonical-node span {
+        font-family: var(--mono);
+        font-size: 0.59rem;
+        font-weight: 800;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+
+      .canonical-node small {
+        color: var(--acid);
+      }
+
+      .canonical-node strong {
+        max-width: 13rem;
+        font-size: clamp(1.4rem, 2.4vw, 2.1rem);
+        letter-spacing: -0.04em;
+        line-height: 1;
+      }
+
+      .canonical-node span {
+        color: #929a90;
+        line-height: 1.5;
+      }
+
+      .map-branches {
+        display: grid;
+        grid-template-rows: repeat(4, 1fr);
+      }
+
+      .map-node {
+        display: grid;
+        grid-template-columns: 2.5rem minmax(0, 1fr);
+        gap: 0.85rem;
+        align-items: center;
+        padding: 0.8rem 1rem;
+        border-bottom: 1px solid var(--ink);
+      }
+
+      .map-node:last-child {
+        border-bottom: 0;
+      }
+
+      .map-icon {
+        display: grid;
+        width: 2.4rem;
+        height: 2.4rem;
+        place-items: center;
+        color: var(--white);
+        background: var(--blue);
+        font-family: var(--mono);
+        font-size: 0.72rem;
+        font-weight: 900;
+      }
+
+      .map-node:nth-child(3) .map-icon {
+        color: var(--ink);
+        background: var(--acid);
+      }
+
+      .map-node strong,
+      .map-node span {
+        display: block;
+      }
+
+      .map-node strong {
+        font-size: 0.86rem;
+      }
+
+      .map-node span {
+        margin-top: 0.25rem;
+        color: var(--ink-soft);
+        font-family: var(--mono);
+        font-size: 0.57rem;
+        line-height: 1.45;
+        text-transform: uppercase;
+      }
+
+      .status-section {
+        border-bottom: 1px solid var(--ink);
+      }
+
+      .status-head {
+        display: grid;
+        grid-template-columns: minmax(0, 1.1fr) minmax(18rem, 0.9fr);
+        gap: 3rem;
+        align-items: end;
+      }
+
+      .status-legend {
+        justify-self: end;
+        max-width: 30rem;
+        padding: 1rem 1.1rem;
+        border: 1px solid var(--ink);
+        font-family: var(--mono);
+        font-size: 0.62rem;
+        font-weight: 700;
+        line-height: 1.6;
+        text-transform: uppercase;
+      }
+
+      .status-board {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        margin-top: clamp(3rem, 6vw, 5.5rem);
+        border: 1px solid var(--ink);
+      }
+
+      .status-column + .status-column {
+        border-left: 1px solid var(--ink);
+      }
+
+      .status-column-head {
+        display: flex;
+        justify-content: space-between;
+        gap: 1rem;
+        padding: 1rem 1.15rem;
+        color: var(--white);
+        background: var(--ink);
+        border-bottom: 1px solid var(--ink);
+        font-family: var(--mono);
+        font-size: 0.65rem;
+        font-weight: 850;
+        letter-spacing: 0.07em;
+        text-transform: uppercase;
+      }
+
+      .status-column.next .status-column-head {
+        color: var(--ink);
+        background: var(--acid);
+      }
+
+      .status-row {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr);
+        gap: 0.9rem;
+        min-height: 8.1rem;
+        padding: 1.1rem;
+        border-bottom: 1px solid var(--ink);
+      }
+
+      .status-row:last-child {
+        border-bottom: 0;
+      }
+
+      .status-check {
+        display: grid;
+        width: 1.35rem;
+        height: 1.35rem;
+        place-items: center;
+        color: var(--ink);
+        background: var(--acid);
+        border: 1px solid var(--ink);
+        font-family: var(--mono);
+        font-size: 0.67rem;
+        font-weight: 900;
+      }
+
+      .next .status-check {
+        color: var(--white);
+        background: var(--blue);
+      }
+
+      .status-row h3 {
+        margin: 0;
+        font-size: 1rem;
+        letter-spacing: -0.015em;
+      }
+
+      .status-row p {
+        margin: 0.45rem 0 0;
+        color: var(--ink-soft);
+        font-size: 0.82rem;
+        line-height: 1.55;
+      }
+
+      .planes {
+        color: var(--white);
+        background: var(--ink);
+      }
+
+      .planes .section-kicker {
+        color: #9ca39a;
+      }
+
+      .planes .section-kicker::before {
+        color: var(--ink);
+        background: var(--acid);
+      }
+
+      .plane-grid {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        margin-top: clamp(3rem, 6vw, 5rem);
+        border: 1px solid #4c524a;
+      }
+
+      .plane {
+        min-height: 28rem;
+        padding: clamp(1.5rem, 3vw, 2.5rem);
+      }
+
+      .plane + .plane {
+        border-left: 1px solid #4c524a;
+      }
+
+      .plane-primary {
+        color: var(--ink);
+        background: var(--acid);
+      }
+
+      .plane-meta {
+        display: flex;
+        justify-content: space-between;
+        gap: 1rem;
+        font-family: var(--mono);
+        font-size: 0.62rem;
+        font-weight: 850;
+        letter-spacing: 0.07em;
+        text-transform: uppercase;
+      }
+
+      .plane h3 {
+        margin: 3.4rem 0 0;
+        font-family: var(--display);
+        font-size: clamp(2.8rem, 5vw, 5.4rem);
+        font-weight: 900;
+        letter-spacing: -0.05em;
+        line-height: 0.88;
+        text-transform: uppercase;
+      }
+
+      .plane p {
+        max-width: 32rem;
+        margin: 1.35rem 0 0;
+        color: #a9b0a6;
+        font-size: 0.95rem;
+        line-height: 1.62;
+      }
+
+      .plane-primary p {
+        color: var(--ink-soft);
+      }
+
+      .plane-list {
+        display: grid;
+        gap: 0.65rem;
+        margin: 2rem 0 0;
+        padding: 1.2rem 0 0;
+        border-top: 1px solid currentColor;
+        list-style: none;
+      }
+
+      .plane-list li {
+        display: flex;
+        gap: 0.7rem;
+        font-family: var(--mono);
+        font-size: 0.67rem;
+        line-height: 1.45;
+        text-transform: uppercase;
+      }
+
+      .plane-list li::before {
+        content: "→";
+      }
+
+      .security {
+        background: var(--blue);
+        color: var(--white);
+        border-bottom: 1px solid var(--ink);
+      }
+
+      .security-grid {
+        display: grid;
+        grid-template-columns: minmax(15rem, 0.55fr) minmax(0, 1.45fr);
+        gap: clamp(3rem, 8vw, 9rem);
+        align-items: start;
+      }
+
+      .security-stamp {
+        display: grid;
+        aspect-ratio: 1;
+        max-width: 18rem;
+        padding: 1.4rem;
+        place-content: space-between;
+        border: 1px solid var(--white);
+        box-shadow: 8px 8px 0 var(--acid);
+      }
+
+      .security-stamp span,
+      .security-stamp small {
+        font-family: var(--mono);
+        font-size: 0.63rem;
+        font-weight: 850;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .security-stamp strong {
+        font-family: var(--display);
+        font-size: clamp(4rem, 7vw, 7.2rem);
+        letter-spacing: -0.06em;
+        line-height: 0.8;
+      }
+
+      .security-copy h2 {
+        max-width: 900px;
+        margin: 0;
+        font-family: var(--display);
+        font-size: clamp(3.2rem, 6vw, 6.8rem);
+        font-weight: 900;
+        letter-spacing: -0.055em;
+        line-height: 0.9;
+        text-transform: uppercase;
+      }
+
+      .security-copy h2 em {
+        color: var(--acid);
+        font-style: normal;
+      }
+
+      .security-list {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 1px;
+        margin-top: 2.5rem;
+        background: rgba(255, 255, 255, 0.36);
+        border: 1px solid rgba(255, 255, 255, 0.36);
+      }
+
+      .security-item {
+        min-height: 10rem;
+        padding: 1rem;
+        background: var(--blue);
+      }
+
+      .security-item strong {
+        display: block;
+        font-size: 0.92rem;
+      }
+
+      .security-item p {
+        margin: 0.6rem 0 0;
+        color: #d7d9ff;
+        font-size: 0.78rem;
+        line-height: 1.55;
+      }
+
+      .final-cta {
+        position: relative;
+        overflow: hidden;
+      }
+
+      .final-cta::before {
+        position: absolute;
+        top: 0;
+        right: 0;
+        width: 34%;
+        height: 100%;
+        background: var(--acid);
+        border-left: 1px solid var(--ink);
+        content: "";
+      }
+
+      .cta-grid {
+        position: relative;
+        z-index: 1;
+        display: grid;
+        grid-template-columns: minmax(0, 1.2fr) minmax(16rem, 0.8fr);
+        gap: 3rem;
+        align-items: end;
+      }
+
+      .final-cta h2 {
+        max-width: 920px;
+        margin: 0;
+        font-family: var(--display);
+        font-size: clamp(4.2rem, 8.3vw, 9rem);
+        font-weight: 900;
+        letter-spacing: -0.065em;
+        line-height: 0.82;
+        text-transform: uppercase;
+      }
+
+      .cta-actions {
+        justify-self: end;
+        width: min(100%, 24rem);
+        padding: 1.5rem;
+        background: var(--white);
+        border: 1px solid var(--ink);
+        box-shadow: 8px 8px 0 var(--ink);
+      }
+
+      .cta-actions p {
+        margin: 0 0 1.2rem;
+        color: var(--ink-soft);
+        font-size: 0.87rem;
+        line-height: 1.55;
+      }
+
+      .cta-actions .button {
+        width: 100%;
+      }
+
+      .cta-actions .button + .button {
+        margin-top: 0.65rem;
+      }
+
+      .site-footer {
+        display: grid;
+        grid-template-columns: 1fr auto 1fr;
+        align-items: center;
+        width: min(1440px, 100%);
+        min-height: 5rem;
+        margin: 0 auto;
+        padding: 1rem clamp(1.1rem, 3vw, 3.5rem);
+        font-family: var(--mono);
+        font-size: 0.62rem;
+        font-weight: 750;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+      }
+
+      .footer-links {
+        display: flex;
+        gap: 1rem;
+      }
+
+      .footer-links a {
+        text-underline-offset: 3px;
+      }
+
+      .footer-status {
+        justify-self: end;
+        color: var(--ink-soft);
+      }
+
+      @media (max-width: 1080px) {
+        .site-nav {
+          grid-template-columns: 1fr auto;
+        }
+
+        .nav-center {
           display: none;
         }
-        nav {
-          padding: 1rem;
-        }
+
         .hero {
-          padding: 1.25rem 1rem 2rem;
-          gap: 1.5rem;
+          grid-template-columns: 1fr;
+          min-height: auto;
         }
-        h1 {
-          letter-spacing: -0.5px;
+
+        .hero-copy {
+          max-width: 800px;
         }
-        .terminal-body {
-          font-size: 0.74rem;
+
+        .product-scene {
+          max-width: 760px;
         }
-        .stat-value {
-          font-size: 1rem;
+
+        .truth-strip {
+          grid-template-columns: repeat(2, 1fr);
         }
-        footer {
-          flex-direction: column;
-          gap: 0.5rem;
-          text-align: center;
+
+        .truth-intro {
+          grid-column: 1 / -1;
+        }
+
+        .truth-item:nth-child(3) {
+          border-right: 0;
+        }
+
+        .manifesto-grid,
+        .architecture-grid,
+        .security-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .principle-grid,
+        .chain {
+          grid-template-columns: repeat(2, 1fr);
+        }
+
+        .principle:nth-child(2),
+        .chain-step:nth-child(2) {
+          border-right: 0;
+        }
+
+        .principle:nth-child(-n + 2),
+        .chain-step:nth-child(-n + 2) {
+          border-bottom: 1px solid rgba(255, 255, 255, 0.22);
+        }
+
+        .chain-step:nth-child(-n + 2) {
+          border-bottom-color: var(--ink);
+        }
+
+        .chain-step:nth-child(2)::after {
+          display: none;
+        }
+
+        .security-stamp {
+          aspect-ratio: auto;
+          min-height: 12rem;
+        }
+
+        .final-cta::before {
+          width: 28%;
         }
       }
 
-      @media (max-width: 540px) {
-        footer {
-          flex-direction: column;
+      @media (max-width: 680px) {
+        .site-nav {
+          padding-inline: 1rem;
+        }
+
+        .nav-status {
+          display: none;
+        }
+
+        h1 {
+          font-size: clamp(3.65rem, 17vw, 5.7rem);
+        }
+
+        .hero {
+          padding: 4.5rem 1rem 3rem;
+        }
+
+        .console {
+          box-shadow: 7px 7px 0 var(--blue);
+        }
+
+        .console-body {
+          grid-template-columns: 1fr;
+          min-height: 0;
+        }
+
+        .state-rail {
+          border-right: 0;
+          border-bottom: 1px solid rgba(255, 255, 255, 0.16);
+        }
+
+        .state-list {
+          grid-template-columns: repeat(4, 1fr);
           gap: 0.5rem;
-          text-align: center;
+        }
+
+        .state-list li {
+          grid-template-columns: 0.8rem 1fr;
+          gap: 0.35rem;
+          font-size: 0.5rem;
+        }
+
+        .state-list li:not(:last-child)::after {
+          display: none;
+        }
+
+        .event-pane {
+          padding: 1rem;
+        }
+
+        .event {
+          grid-template-columns: 3.8rem minmax(0, 1fr);
+        }
+
+        .evidence-row {
+          grid-template-columns: 1fr;
+        }
+
+        .evidence-row div {
+          border-right: 0;
+          border-bottom: 1px solid rgba(255, 255, 255, 0.14);
+        }
+
+        .evidence-row div:last-child {
+          border-bottom: 0;
+        }
+
+        .truth-strip {
+          grid-template-columns: 1fr;
+        }
+
+        .truth-intro,
+        .truth-item,
+        .truth-item:nth-child(3) {
+          border-right: 0;
+          border-bottom: 1px solid var(--ink);
+        }
+
+        .truth-item:last-child {
+          border-bottom: 0;
+        }
+
+        .section-shell {
+          padding: 5rem 1rem;
+        }
+
+        .manifesto-grid,
+        .workflow-head,
+        .status-head,
+        .cta-grid {
+          display: grid;
+          grid-template-columns: 1fr;
+          gap: 2rem;
+        }
+
+        .principle-grid,
+        .chain,
+        .status-board,
+        .plane-grid,
+        .security-list {
+          grid-template-columns: 1fr;
+        }
+
+        .principle,
+        .principle:nth-child(2),
+        .chain-step,
+        .chain-step:nth-child(2),
+        .status-column + .status-column,
+        .plane + .plane {
+          border-right: 0;
+          border-left: 0;
+          border-bottom: 1px solid currentColor;
+        }
+
+        .principle:last-child,
+        .chain-step:last-child,
+        .plane:last-child {
+          border-bottom: 0;
+        }
+
+        .chain-step:not(:last-child)::after {
+          top: auto;
+          right: 1rem;
+          bottom: -0.66rem;
+          transform: rotate(90deg);
+        }
+
+        .chain-step {
+          min-height: 20rem;
+        }
+
+        .custody-note {
+          grid-template-columns: 1fr;
+        }
+
+        .state-map-body {
+          grid-template-columns: 1fr;
+        }
+
+        .canonical-node {
+          min-height: 15rem;
+        }
+
+        .status-legend {
+          justify-self: start;
+        }
+
+        .status-column + .status-column {
+          border-top: 1px solid var(--ink);
+        }
+
+        .plane {
+          min-height: 24rem;
+        }
+
+        .final-cta::before {
+          top: auto;
+          bottom: 0;
+          width: 100%;
+          height: 37%;
+          border-top: 1px solid var(--ink);
+          border-left: 0;
+        }
+
+        .cta-actions {
+          justify-self: stretch;
+        }
+
+        .site-footer {
+          grid-template-columns: 1fr;
+          gap: 0.8rem;
+          padding-block: 1.5rem;
+        }
+
+        .footer-status {
+          justify-self: start;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        html {
+          scroll-behavior: auto;
+        }
+
+        *,
+        *::before,
+        *::after {
+          scroll-behavior: auto !important;
+          transition-duration: 0.01ms !important;
         }
       }
     </style>
   </head>
   <body>
-    <nav>
-      <div class="logo">index<span>qube</span></div>
-      <div class="nav-links">
-        <a href="#features">features</a>
-        <a href="#how-it-works">how it works</a>
-        <a
-          href="https://github.com/Revanth14/indexqube"
-          target="_blank"
-          rel="noopener"
-          >github</a
-        >
+    <a class="skip-link" href="#main">Skip to content</a>
+    <header class="site-nav">
+      <a class="brand" href="#main" aria-label="IndexQube home">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+        INDEXQUBE
+      </a>
+      <nav class="nav-center" aria-label="Primary navigation">
+        <a href="#system">System</a>
+        <a href="#workflow">Workflow</a>
+        <a href="#status">Status</a>
+        <a href="https://github.com/Revanth14/indexqube#readme">Docs</a>
+      </nav>
+      <div class="nav-end">
+        <span class="nav-status">Development preview</span>
+        <a class="github-link" href="https://github.com/Revanth14/indexqube" target="_blank" rel="noopener noreferrer">GitHub ↗</a>
       </div>
-    </nav>
+    </header>
 
-    <main class="hero">
-      <div class="badge">development preview</div>
+    <main id="main">
+      <section class="hero" aria-labelledby="hero-title">
+        <div class="hero-copy">
+          <p class="eyebrow">Local-first agent control plane</p>
+          <h1 id="hero-title">Agent work should <span class="survive">survive</span> the terminal.</h1>
+          <p class="lede">
+            IndexQube gives coding agents a <strong>durable, permissioned, inspectable</strong>
+            place to work—so a closed terminal, a restarted daemon, or a fresh agent
+            never erases the task.
+          </p>
+          <div class="hero-actions">
+            <a class="button button-primary" href="#system">Explore the control plane ↓</a>
+            <a class="button button-secondary" href="https://github.com/Revanth14/indexqube" target="_blank" rel="noopener noreferrer">View source ↗</a>
+          </div>
+          <p class="hero-note">Open development preview · public packaging is being verified</p>
+        </div>
 
-      <div class="hero-text">
-        <h1>stop hitting limits<br /><span class="green">mid-session</span></h1>
-        <p style="font-size:0.78rem;color:var(--muted);margin-top:-0.25rem;letter-spacing:0.03em;">// touch less grass</p>
-        <p class="sub">
-          IndexQube sits between your terminal and Claude, deduplicating tokens
-          before they're sent — 15–17% fewer tokens, measured on real sessions.
-        </p>
-      </div>
+        <div class="product-scene" aria-label="Illustration of an IndexQube task awaiting a durable command approval">
+          <div class="console">
+            <div class="console-topbar">
+              <span class="console-controls" aria-hidden="true"><i></i><i></i><i></i></span>
+              <span>IndexQube Control / Task</span>
+              <span>Local · :4172</span>
+            </div>
+            <div class="console-body">
+              <aside class="state-rail" aria-label="Task state">
+                <span class="rail-label">Canonical state</span>
+                <ol class="state-list">
+                  <li class="done"><span class="state-dot"></span><span>Created</span></li>
+                  <li class="done"><span class="state-dot"></span><span>Running</span></li>
+                  <li class="active"><span class="state-dot"></span><span>Awaiting approval</span></li>
+                  <li><span class="state-dot"></span><span>Complete</span></li>
+                </ol>
+              </aside>
+              <div class="event-pane">
+                <div class="task-header">
+                  <div>
+                    <span class="event-label">Write task · Codex backend</span>
+                    <p class="task-title">Harden task cancellation and add integration coverage.</p>
+                  </div>
+                  <span class="task-id">IQB_0042</span>
+                </div>
+                <ol class="event-stream" aria-label="Recent task events">
+                  <li class="event">
+                    <span class="event-time">10:42:11</span>
+                    <span class="event-copy"><strong>Workspace acquired</strong><span>OS lock · fencing epoch 08</span></span>
+                  </li>
+                  <li class="event">
+                    <span class="event-time">10:42:18</span>
+                    <span class="event-copy"><strong>3 paths changed</strong><span>Authoritative pre/post Git state captured</span></span>
+                  </li>
+                  <li class="event">
+                    <span class="event-time">10:42:31</span>
+                    <span class="event-copy"><strong>Command boundary reached</strong><span>Decision committed before execution resumes</span></span>
+                  </li>
+                </ol>
+                <div class="approval-card">
+                  <div class="approval-head"><span>Approval required</span><span>APR_019</span></div>
+                  <p class="approval-command">go test ./internal/control/...</p>
+                  <div class="approval-actions" aria-hidden="true">
+                    <span class="allow">Allow once</span>
+                    <span>Deny</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="evidence-row" aria-label="Task evidence summary">
+              <div><strong>08</strong><span>Replayable events</span></div>
+              <div><strong>03</strong><span>Changed paths</span></div>
+              <div><strong>Durable</strong><span>Task + approval state</span></div>
+            </div>
+          </div>
+        </div>
+      </section>
 
-      <!-- live stats -->
-      <div class="live-stats" aria-label="Live gateway stats">
-        <div class="ls-item">
-          <div class="ls-value" id="ls-tokens-processed">—</div>
-          <div class="ls-label">tokens processed</div>
-          <div class="ls-live">live</div>
+      <section class="truth-strip" id="system" aria-label="IndexQube foundations">
+        <div class="truth-intro">
+          <span>What the control plane owns</span>
+          <strong>The task, not just the process.</strong>
         </div>
-        <div class="ls-item">
-          <div class="ls-value" id="ls-tokens-saved">—</div>
-          <div class="ls-label">tokens deduplicated</div>
-          <div class="ls-live">live</div>
-        </div>
-        <div class="ls-item">
-          <div class="ls-value" id="ls-requests">—</div>
-          <div class="ls-label">requests proxied</div>
-          <div class="ls-live">live</div>
-        </div>
-        <div class="ls-item">
-          <div class="ls-value" id="ls-sessions">—</div>
-          <div class="ls-label">sessions optimized</div>
-          <div class="ls-live">live</div>
-        </div>
-      </div>
+        <div class="truth-item"><b>Canonical task state</b><span>SQLite-backed history</span></div>
+        <div class="truth-item"><b>Guarded writes</b><span>Locks + fencing</span></div>
+        <div class="truth-item"><b>Explicit approvals</b><span>Durable decisions</span></div>
+        <div class="truth-item"><b>Restart recovery</b><span>Resume without amnesia</span></div>
+      </section>
 
-      <!-- terminal mockup -->
-      <div class="terminal">
-        <div class="terminal-bar">
-          <div class="dot red"></div>
-          <div class="dot yellow"></div>
-          <div class="dot green"></div>
-          <div class="terminal-title">session log — real 47-request session</div>
+      <section class="manifesto" aria-labelledby="manifesto-title">
+        <div class="section-shell">
+          <div class="manifesto-grid">
+            <div>
+              <p class="section-kicker">The operating idea</p>
+              <h2 class="section-title" id="manifesto-title">
+                The agent is temporary. <em>The task is not.</em>
+              </h2>
+            </div>
+            <p class="manifesto-copy">
+              Native agent sessions are useful continuation shortcuts. They should never be
+              the only place the work exists. <strong>IndexQube keeps its own canonical record</strong>
+              of the task, its turns, workspace state, approvals, and evidence.
+            </p>
+          </div>
+
+          <div class="principle-grid">
+            <article class="principle">
+              <span class="principle-index">01 / Durable by default</span>
+              <h3>Close the terminal. Keep the work.</h3>
+              <p>Tasks, turns, events, backend sessions, and user decisions are persisted locally and can be rediscovered after restart.</p>
+            </article>
+            <article class="principle">
+              <span class="principle-index">02 / Permissioned at boundaries</span>
+              <h3>Writes happen inside a guarded workspace.</h3>
+              <p>Explicit write grants, OS locks, fencing epochs, and durable command or file approvals keep the agent inside a visible contract.</p>
+            </article>
+            <article class="principle">
+              <span class="principle-index">03 / Evidence over assertions</span>
+              <h3>See what happened, not just what the agent said.</h3>
+              <p>IndexQube assembles changed paths, bounded diffs, commands, approvals, cancellations, and the underlying event timeline.</p>
+            </article>
+          </div>
         </div>
-        <div class="terminal-body">
+      </section>
+
+      <section class="workflow" id="workflow" aria-labelledby="workflow-title">
+        <div class="section-shell">
+          <div class="workflow-head">
+            <div>
+              <p class="section-kicker">One durable chain of custody</p>
+              <h2 class="section-title" id="workflow-title">From intent to evidence.</h2>
+            </div>
+            <p class="section-intro">
+              IndexQube owns the lifecycle around the agent process. Each boundary becomes
+              explicit, replayable state instead of terminal scrollback and guesswork.
+            </p>
+          </div>
+
+          <div class="chain" aria-label="IndexQube task lifecycle">
+            <article class="chain-step">
+              <div class="chain-meta"><span>01</span><span>Committed</span></div>
+              <div class="chain-glyph" aria-hidden="true">+</div>
+              <h3>Create the task</h3>
+              <p>The repository-level goal and selected backend enter canonical local task history before execution starts.</p>
+              <div class="chain-output">Output · task ID + first turn</div>
+            </article>
+            <article class="chain-step">
+              <div class="chain-meta"><span>02</span><span>Supervised</span></div>
+              <div class="chain-glyph" aria-hidden="true">▶</div>
+              <h3>Run the agent</h3>
+              <p>IndexQube attaches the native session, streams normalized events, and keeps the workspace lock alive with the child.</p>
+              <div class="chain-output">Output · events + backend session</div>
+            </article>
+            <article class="chain-step">
+              <div class="chain-meta"><span>03</span><span>Durable pause</span></div>
+              <div class="chain-glyph" aria-hidden="true">?</div>
+              <h3>Decide the boundary</h3>
+              <p>A command or file escalation pauses the task. The request and your allow or deny decision are committed before work resumes.</p>
+              <div class="chain-output">Output · approval decision</div>
+            </article>
+            <article class="chain-step">
+              <div class="chain-meta"><span>04</span><span>Reconciled</span></div>
+              <div class="chain-glyph" aria-hidden="true">≠</div>
+              <h3>Assemble evidence</h3>
+              <p>Pre/post Git state is reconciled with agent events. A mismatch is preserved and escalated instead of being quietly ignored.</p>
+              <div class="chain-output">Output · task evidence</div>
+            </article>
+          </div>
+
+          <div class="custody-note">
+            <strong>Design rule</strong>
+            <p>Codex sessions accelerate continuation. IndexQube’s task history remains the source of truth when a session disappears.</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="architecture" aria-labelledby="architecture-title">
+        <div class="section-shell architecture-grid">
+          <div class="architecture-copy">
+            <p class="section-kicker">State over session</p>
+            <h2 class="section-title" id="architecture-title">One task. Four durable views.</h2>
+            <p class="section-intro">
+              The system keeps execution, workspace safety, history, and evidence related
+              without pretending they are the same thing.
+            </p>
+            <blockquote>
+              The filesystem and Git describe what exists. SQLite records what IndexQube
+              observed and decided.
+            </blockquote>
+          </div>
+
+          <div class="state-map" role="img" aria-label="A canonical IndexQube task connected to backend session, workspace state, event log, and assembled evidence">
+            <div class="state-map-head"><span>Task state map</span><span>Local canonical record</span></div>
+            <div class="state-map-body">
+              <div class="canonical-node">
+                <small>Source of truth</small>
+                <strong>IndexQube task</strong>
+                <span>task · turns<br />route attempts<br />lifecycle state</span>
+              </div>
+              <div class="map-branches">
+                <div class="map-node">
+                  <span class="map-icon">A</span>
+                  <div><strong>Backend session</strong><span>Codex App Server · resume optimization</span></div>
+                </div>
+                <div class="map-node">
+                  <span class="map-icon">W</span>
+                  <div><strong>Workspace state</strong><span>Git root · dirty baseline · lock · epoch</span></div>
+                </div>
+                <div class="map-node">
+                  <span class="map-icon">E</span>
+                  <div><strong>Replayable event log</strong><span>State · approval · command · cancellation</span></div>
+                </div>
+                <div class="map-node">
+                  <span class="map-icon">✓</span>
+                  <div><strong>Task evidence</strong><span>Changed files · diffs · decisions · timeline</span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="status-section" id="status" aria-labelledby="status-title">
+        <div class="section-shell">
+          <div class="status-head">
+            <div>
+              <p class="section-kicker">Build in the open</p>
+              <h2 class="section-title" id="status-title">What works now. What comes next.</h2>
+            </div>
+            <div class="status-legend">
+              Development preview. The control-plane foundation is running; public packaging
+              returns after its release path is verified.
+            </div>
+          </div>
+
+          <div class="status-board">
+            <div class="status-column">
+              <div class="status-column-head"><span>Shipped foundation</span><span>Now</span></div>
+              <article class="status-row">
+                <span class="status-check">✓</span>
+                <div><h3>Durable Codex task loop</h3><p>Create, inspect, continue, cancel, close, and reopen tasks through the local control API and CLI.</p></div>
+              </article>
+              <article class="status-row">
+                <span class="status-check">✓</span>
+                <div><h3>Guarded writes and approvals</h3><p>Workspace-write execution, lock and fencing guards, plus durable command and file-change decisions.</p></div>
+              </article>
+              <article class="status-row">
+                <span class="status-check">✓</span>
+                <div><h3>Recovery and task evidence</h3><p>Restart reconciliation, lost-session detection, SSE event replay, changed-file evidence, and mismatch escalation.</p></div>
+              </article>
+            </div>
+            <div class="status-column next">
+              <div class="status-column-head"><span>Next product gates</span><span>Building</span></div>
+              <article class="status-row">
+                <span class="status-check">→</span>
+                <div><h3>Automatic post-task verification</h3><p>Task-scoped build, test, and lint recipes with durable results and clear pass, fail, or attention states.</p></div>
+              </article>
+              <article class="status-row">
+                <span class="status-check">→</span>
+                <div><h3>Claude Code backend and handoff</h3><p>A second orchestrated backend with explicit, deterministic handoff while preserving canonical task history.</p></div>
+              </article>
+              <article class="status-row">
+                <span class="status-check">→</span>
+                <div><h3>A cohesive local interface</h3><p>Task list, active conversation, approvals, evidence, verification, and handoff history in one attachable experience.</p></div>
+              </article>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="planes" aria-labelledby="planes-title">
+        <div class="section-shell">
+          <p class="section-kicker">Two complementary planes</p>
+          <h2 class="section-title" id="planes-title">Orchestration is the product. Optimization is a capability.</h2>
+          <div class="plane-grid">
+            <article class="plane plane-primary">
+              <div class="plane-meta"><span>01 / Control plane</span><span>Primary</span></div>
+              <h3>Own the work.</h3>
+              <p>IndexQube’s product center: durable tasks, supervised agent execution, workspace safety, approvals, recovery, and evidence.</p>
+              <ul class="plane-list">
+                <li>Canonical local task history</li>
+                <li>Codex backend with guarded writes</li>
+                <li>Lifecycle, approvals, recovery, and evidence</li>
+              </ul>
+            </article>
+            <article class="plane">
+              <div class="plane-meta"><span>02 / Data plane</span><span>Available</span></div>
+              <h3>Shape the traffic.</h3>
+              <p>An optional local L7 gateway for advanced workflows: Claude Messages and OpenAI Responses ingress, streaming, caching, telemetry, and context optimization.</p>
+              <ul class="plane-list">
+                <li>Official-client and request-scoped credentials</li>
+                <li>Prompt-cache-aware deduplication</li>
+                <li>Local audit and operational telemetry</li>
+              </ul>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="security" aria-labelledby="security-title">
+        <div class="section-shell security-grid">
+          <div class="security-stamp" aria-hidden="true">
+            <span>Local boundary</span>
+            <strong>IQ</strong>
+            <small>Fail closed · preserve evidence</small>
+          </div>
+          <div class="security-copy">
+            <h2 id="security-title">The safety model is part of the <em>task model.</em></h2>
+            <div class="security-list">
+              <article class="security-item">
+                <strong>Credentials stay in their lane.</strong>
+                <p>IndexQube does not extract subscription tokens or persist provider credentials.</p>
+              </article>
+              <article class="security-item">
+                <strong>The workspace has an identity.</strong>
+                <p>Git-root identity, per-path baselines, inherited locks, and fencing epochs guard writes.</p>
+              </article>
+              <article class="security-item">
+                <strong>Uncertainty becomes visible.</strong>
+                <p>Unsafe cancellation or evidence mismatch moves work to needs-attention instead of claiming success.</p>
+              </article>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="final-cta" aria-labelledby="cta-title">
+        <div class="section-shell cta-grid">
           <div>
-            <span class="line-label line-dim">before</span>
-            <span class="line-before">↑ 72,320 tokens</span>
-            <span class="line-dim">— repeated file reads in history</span>
+            <p class="section-kicker">Development preview</p>
+            <h2 id="cta-title">Follow the control plane becoming a product.</h2>
           </div>
-          <div>
-            <span class="line-label line-dim">after &nbsp;</span>
-            <span class="line-after">↑ 59,848 tokens</span>
-            <span class="line-dim">— duplicates stripped, 18 blocks pruned</span>
-          </div>
-          <div class="savings-row">
-            <div class="stat">
-              <div class="stat-value">17%</div>
-              <div class="stat-label">tokens deduplicated</div>
-            </div>
-            <div class="stat">
-              <div class="stat-value">12,472</div>
-              <div class="stat-label">tokens saved / request</div>
-            </div>
-            <div class="stat">
-              <div class="stat-value">direct</div>
-              <div class="stat-label">to Anthropic API</div>
-            </div>
+          <div class="cta-actions">
+            <p>IndexQube is being built in the open. Explore the source, current CLI, and implementation gates—without an outdated install promise.</p>
+            <a class="button button-primary" href="https://github.com/Revanth14/indexqube" target="_blank" rel="noopener noreferrer">Explore on GitHub ↗</a>
+            <a class="button button-secondary" href="https://github.com/Revanth14/indexqube/blob/main/PLAN.md" target="_blank" rel="noopener noreferrer">Read the product plan ↗</a>
           </div>
         </div>
-      </div>
-
-      <!-- chips -->
-      <div class="features" id="features">
-        <div class="chip">zero-alloc Rabin-Karp chunking</div>
-        <div class="chip">custom LSM storage engine</div>
-        <div class="chip">works with most agentic CLIs</div>
-        <div class="chip">credentials never leave your machine</div>
-      </div>
+      </section>
     </main>
 
-    <section class="how-it-works" id="how-it-works">
-      <div class="section-label">// HOW IT WORKS</div>
-
-      <!-- pipeline -->
-      <div class="pipeline">
-        <div class="terminal-bar">
-          <div class="dot red"></div>
-          <div class="dot yellow"></div>
-          <div class="dot green"></div>
-          <div class="terminal-title">request pipeline — per turn</div>
-        </div>
-        <div class="pipeline-body">
-          <div class="pipeline-row">
-            <span class="p-step">1</span>
-            <span class="p-name">buffer + bound</span>
-            <span class="p-algo">http.MaxBytesReader — 8 MiB cap</span>
-            <span class="p-note">protects against OOM on large prompts</span>
-          </div>
-          <div class="pipeline-row">
-            <span class="p-step">2</span>
-            <span class="p-name">Rabin-Karp chunk</span>
-            <span class="p-algo">64-byte window, ~4 KB chunks</span>
-            <span class="p-note"
-              >content-defined boundaries — same algo as rsync + Git</span
-            >
-          </div>
-          <div class="pipeline-row">
-            <span class="p-step">3</span>
-            <span class="p-name">SHA-256 → LSM lookup</span>
-            <span class="p-algo">Bloom filter gate, skiplist MemTable</span>
-            <span class="p-note"
-              >O(1) negative lookup — avoids disk on cache miss</span
-            >
-          </div>
-          <div class="pipeline-row">
-            <span class="p-step">4</span>
-            <span class="p-name">strip known blocks</span>
-            <span class="p-algo">re-marshal JSON, pointer swap</span>
-            <span class="p-note"
-              >72 K → 59 K tokens typical on warm session</span
-            >
-          </div>
-          <div class="pipeline-row">
-            <span class="p-step">5</span>
-            <span class="p-name">forward upstream</span>
-            <span class="p-algo">TLS 1.3, HTTP/2, keep-alive pool</span>
-            <span class="p-note">your API key, your account — no relay</span>
-          </div>
-          <div class="pipeline-row">
-            <span class="p-step">6</span>
-            <span class="p-name">SSE stream back</span>
-            <span class="p-algo">http.Flusher, sub-ms flush</span>
-            <span class="p-note">zero added latency on streaming tokens</span>
-          </div>
-          <div class="pipeline-row">
-            <span class="p-step">7</span>
-            <span class="p-name">Prometheus record</span>
-            <span class="p-algo">histogram — p50 / p90 / p95 / p99</span>
-            <span class="p-note"
-              >tail latency tracked per session, no sampling loss</span
-            >
-          </div>
-        </div>
+    <footer class="site-footer">
+      <a class="brand" href="#main" aria-label="Back to top">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+        INDEXQUBE
+      </a>
+      <div class="footer-links">
+        <a href="https://github.com/Revanth14/indexqube" target="_blank" rel="noopener noreferrer">GitHub</a>
+        <a href="https://github.com/Revanth14/indexqube#readme" target="_blank" rel="noopener noreferrer">Docs</a>
+        <a href="https://github.com/Revanth14/indexqube/blob/main/PLAN.md" target="_blank" rel="noopener noreferrer">Plan</a>
       </div>
-
-      <!-- tech cards -->
-      <div class="tech-cards">
-        <div class="tech-card">
-          <div>
-            <div class="tc-title">Instant duplicate detection</div>
-            <div class="tc-path">// Rabin-Karp chunking · internal/chunker/</div>
-          </div>
-          <div class="tc-body">
-            <div><span class="hi">window</span> 64 bytes, rolling hash</div>
-            <div>
-              <span class="hi">boundary</span> hash &amp; mask == 0 → split
-            </div>
-            <div>
-              <span class="hi">chunk size</span>
-              <span class="accent">~4 KB</span> target, variable
-            </div>
-            <div><span class="hi">identity</span> SHA-256 content address</div>
-            <div><span class="hi">prior art</span> rsync, Git pack objects</div>
-            <div>
-              <span class="hi">allocs</span>
-              <span class="accent">zero</span> per rolling step
-            </div>
-          </div>
-        </div>
-
-        <div class="tech-card">
-          <div>
-            <div class="tc-title">Near-instant cache lookups</div>
-            <div class="tc-path">// custom LSM engine · internal/store/lsm/</div>
-          </div>
-          <div class="tc-body">
-            <div>
-              <span class="hi">MemTable</span> Go skiplist, flush @ 4 MB
-            </div>
-            <div><span class="hi">SSTable</span> 4 KB page-aligned blocks</div>
-            <div><span class="hi">index</span> binary search on read path</div>
-            <div><span class="hi">filter</span> Bloom — double FNV-1a hash</div>
-            <div>
-              <span class="hi">compaction</span> leveled, background goroutine
-            </div>
-            <div>
-              <span class="hi">writes</span>
-              <span class="accent">16×</span> SQLite B-tree throughput
-            </div>
-          </div>
-        </div>
-
-        <div class="tech-card">
-          <div>
-            <div class="tc-title">Zero-latency streaming</div>
-            <div class="tc-path">// L7 proxy + SSE · internal/proxy/</div>
-          </div>
-          <div class="tc-body">
-            <div>
-              <span class="hi">model</span> net/http goroutine per request
-            </div>
-            <div>
-              <span class="hi">backpressure</span> io.LimitReader at ingress
-            </div>
-            <div>
-              <span class="hi">streaming</span> http.Flusher, no buffering
-            </div>
-            <div>
-              <span class="hi">telemetry</span> Prometheus histogram p50 → p99
-            </div>
-            <div>
-              <span class="hi">overhead</span>
-              <span class="accent">&lt; 15 ms</span> typical proxy tax
-            </div>
-            <div>
-              <span class="hi">concurrency</span> RWMutex concurrent reads
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- benchmark -->
-      <div class="section-label">
-        // BENCHMARK — LSM vs SQLite (go test -bench, 100K ops each)
-      </div>
-      <div class="bench">
-        <div class="bench-body">
-          <div class="bench-head">
-            <span>operation</span>
-            <span>n</span>
-            <span>LSM</span>
-            <span>SQLite</span>
-            <span>delta</span>
-          </div>
-          <div class="bench-row">
-            <span>sequential write</span>
-            <span>100 K</span>
-            <span class="win">2,557 ns/op</span>
-            <span>42,498 ns/op</span>
-            <span class="win">16× faster</span>
-          </div>
-          <div class="bench-row">
-            <span>write amplification</span>
-            <span>—</span>
-            <span class="win">0.277×</span>
-            <span>6.92×</span>
-            <span class="win">25× lower</span>
-          </div>
-          <div class="bench-row">
-            <span>Bloom lookup</span>
-            <span>—</span>
-            <span class="win">32 ns/op</span>
-            <span>n/a</span>
-            <span>0 B/op, 0 allocs</span>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <section class="bottom-cta">
-      <h2>Alpha packaging is <span class="green">in progress.</span></h2>
-      <p class="sub">Public installation instructions will return after the release flow is verified.</p>
-    </section>
-
-    <footer>
-      <span>© 2026 indexqube</span>
-      <span>
-        <a href="https://github.com/Revanth14/indexqube" target="_blank" rel="noopener">github</a>
-        &nbsp;·&nbsp;
-        <a href="https://github.com/Revanth14/indexqube#readme" target="_blank" rel="noopener">docs</a>
-      </span>
+      <span class="footer-status">© 2026 · Local-first · Open source</span>
     </footer>
-
-    <script>
-      // ── Live stats polling ──
-      const STATS_URL = "https://dev-api.indexqube.com/stats";
-      const POLL_INTERVAL = 5000;
-
-      function fmtNum(n) {
-        if (n >= 1_000_000) return (n / 1_000_000).toFixed(1).replace(/\.0$/, "") + "M";
-        if (n >= 1_000) return (n / 1_000).toFixed(1).replace(/\.0$/, "") + "K";
-        return String(n);
-      }
-
-      const animState = {};
-
-      function animateTo(el, target) {
-        const key = el.id;
-        if (animState[key]) cancelAnimationFrame(animState[key]);
-        const start = parseFloat(el.dataset.raw) || 0;
-        if (start === target) return;
-        const duration = 600;
-        const began = performance.now();
-        function step(now) {
-          const t = Math.min((now - began) / duration, 1);
-          const ease = t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
-          const cur = Math.round(start + (target - start) * ease);
-          el.textContent = fmtNum(cur);
-          if (t < 1) animState[key] = requestAnimationFrame(step);
-          else { el.dataset.raw = target; el.textContent = fmtNum(target); }
-        }
-        animState[key] = requestAnimationFrame(step);
-      }
-
-      async function fetchStats() {
-        try {
-          const res = await fetch(STATS_URL);
-          if (!res.ok) return;
-          const d = await res.json();
-          animateTo(document.getElementById("ls-tokens-processed"), d.tokens_attempted || 0);
-          animateTo(document.getElementById("ls-tokens-saved"), d.tokens_deduplicated || 0);
-          animateTo(document.getElementById("ls-requests"), d.requests_total || 0);
-          animateTo(document.getElementById("ls-sessions"), d.sessions_total || 0);
-        } catch (_) {}
-      }
-
-      fetchStats();
-      setInterval(fetchStats, POLL_INTERVAL);
-    </script>
   </body>
 </html>
