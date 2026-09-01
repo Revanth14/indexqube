@@ -34,3 +34,27 @@ func TestRunTaskShowRendersAuthoritativeMismatch(t *testing.T) {
 		}
 	}
 }
+
+func TestTaskShowRendersDurableVerification(t *testing.T) {
+	exit := 1
+	evidence := taskstore.TaskEvidence{
+		Task: taskstore.Task{ID: "task_verify", Status: taskstore.TaskNeedsAttention},
+		VerificationRuns: []taskstore.VerificationRun{{
+			ID: "verify_1", Status: taskstore.VerificationFailed, Summary: "1 of 1 verification check(s) failed",
+			Checks: []taskstore.VerificationCheck{{
+				Name: "Go tests", Command: "go test -mod=readonly ./...", CWD: "gateway",
+				Status: taskstore.VerificationCheckFailed, ExitCode: &exit, Output: "FAIL example.com/package",
+			}},
+		}},
+	}
+	var out bytes.Buffer
+	renderTaskEvidence(&out, evidence)
+	for _, want := range []string{
+		"Verification:", "verification_failed", "[failed exit=1] go test -mod=readonly ./... (cwd gateway)",
+		"FAIL example.com/package",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("output missing %q:\n%s", want, out.String())
+		}
+	}
+}

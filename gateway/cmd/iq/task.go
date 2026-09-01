@@ -236,6 +236,30 @@ func renderTaskEvidence(out io.Writer, evidence taskstore.TaskEvidence) {
 			fmt.Fprintf(out, "  %s — turn %s: %s\n", cancellation.ID, cancellation.TurnID, cancellation.Status)
 		}
 	}
+	if len(evidence.VerificationRuns) > 0 {
+		fmt.Fprintln(out, "\nVerification:")
+		for _, run := range evidence.VerificationRuns {
+			fmt.Fprintf(out, "  %s — %s\n", run.Status, oneLine(run.Summary, 180))
+			for _, check := range run.Checks {
+				exit := ""
+				if check.ExitCode != nil {
+					exit = fmt.Sprintf(" exit=%d", *check.ExitCode)
+				}
+				location := ""
+				if check.CWD != "" {
+					location = " (cwd " + check.CWD + ")"
+				}
+				command := check.Command
+				if command == "" {
+					command = check.Name
+				}
+				fmt.Fprintf(out, "    [%s%s] %s%s\n", check.Status, exit, oneLine(command, 200), location)
+				if check.Output != "" {
+					fmt.Fprintf(out, "      %s\n", oneLine(check.Output, 180))
+				}
+			}
+		}
+	}
 	if len(evidence.Routes) > 0 {
 		fmt.Fprintln(out, "\nRoute attempts:")
 		for _, route := range evidence.Routes {
@@ -476,6 +500,13 @@ func streamTaskEvents(ctx context.Context, controlURL, taskID string, after int6
 			if event.Approval != nil {
 				fmt.Fprintf(stderr, "  [iq] approval %s: %s\n", event.Approval.ApprovalID, event.Approval.Status)
 			}
+		case agent.EventVerificationCompleted:
+			status := event.Metadata["verification_status"]
+			summary := ""
+			if event.Message != nil {
+				summary = oneLine(event.Message.Text, 180)
+			}
+			fmt.Fprintf(stderr, "  [iq] verification %s: %s\n", status, summary)
 		case agent.EventCompleted:
 			return nil
 		case agent.EventCancelled:

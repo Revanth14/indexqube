@@ -26,20 +26,21 @@ const (
 type EventType string
 
 const (
-	EventRouteSelected     EventType = "route_selected"
-	EventSessionStarted    EventType = "session_started"
-	EventAssistantDelta    EventType = "assistant_delta"
-	EventAssistantMessage  EventType = "assistant_message"
-	EventToolStarted       EventType = "tool_started"
-	EventToolFinished      EventType = "tool_finished"
-	EventFileChanged       EventType = "file_changed"
-	EventCommandFinished   EventType = "command_finished"
-	EventApprovalRequested EventType = "approval_requested"
-	EventApprovalResolved  EventType = "approval_resolved"
-	EventWarning           EventType = "warning"
-	EventError             EventType = "error"
-	EventCompleted         EventType = "completed"
-	EventCancelled         EventType = "cancelled"
+	EventRouteSelected         EventType = "route_selected"
+	EventSessionStarted        EventType = "session_started"
+	EventAssistantDelta        EventType = "assistant_delta"
+	EventAssistantMessage      EventType = "assistant_message"
+	EventToolStarted           EventType = "tool_started"
+	EventToolFinished          EventType = "tool_finished"
+	EventFileChanged           EventType = "file_changed"
+	EventCommandFinished       EventType = "command_finished"
+	EventApprovalRequested     EventType = "approval_requested"
+	EventApprovalResolved      EventType = "approval_resolved"
+	EventVerificationCompleted EventType = "verification_completed"
+	EventWarning               EventType = "warning"
+	EventError                 EventType = "error"
+	EventCompleted             EventType = "completed"
+	EventCancelled             EventType = "cancelled"
 )
 
 type MessageEvent struct {

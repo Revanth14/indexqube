@@ -150,6 +150,21 @@ func TestTaskEvidenceSurvivesStoreReopen(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	verificationCompleted := now.Add(4 * time.Second)
+	verificationExit := 0
+	if err := store.RecordVerificationRun(ctx, VerificationRun{
+		ID: "verify_1", TaskID: task.ID, TurnID: turn.ID, Status: VerificationPassed,
+		Trigger: "automatic_post_turn", Summary: "1 verification check(s) passed",
+		StartedAt: now.Add(3500 * time.Millisecond), CompletedAt: &verificationCompleted,
+		Checks: []VerificationCheck{{
+			ID: "verify_check_1", Ordinal: 1, Name: "Go tests", Kind: "test",
+			Command: "go test -mod=readonly ./...", CWD: ".", Status: VerificationCheckPassed,
+			ExitCode: &verificationExit, Output: "ok", StartedAt: now.Add(3500 * time.Millisecond),
+			CompletedAt: &verificationCompleted,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if err := store.CompleteTurn(ctx, task.ID, turn.ID, attempt.ID, "done", "post", true, false, now.Add(4*time.Second)); err != nil {
 		t.Fatal(err)
 	}
@@ -184,6 +199,11 @@ func TestTaskEvidenceSurvivesStoreReopen(t *testing.T) {
 	}
 	if len(evidence.Snapshots) != 1 || len(evidence.Snapshots[0].Files) != 1 || evidence.Snapshots[0].Files[0].Fingerprint != "after" {
 		t.Fatalf("snapshots=%+v", evidence.Snapshots)
+	}
+	if len(evidence.VerificationRuns) != 1 || evidence.VerificationRuns[0].Status != VerificationPassed ||
+		len(evidence.VerificationRuns[0].Checks) != 1 || evidence.VerificationRuns[0].Checks[0].ExitCode == nil ||
+		*evidence.VerificationRuns[0].Checks[0].ExitCode != 0 {
+		t.Fatalf("verification=%+v", evidence.VerificationRuns)
 	}
 }
 

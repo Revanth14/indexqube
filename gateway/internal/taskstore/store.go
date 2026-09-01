@@ -171,6 +171,36 @@ CREATE TABLE IF NOT EXISTS task_cancellations (
 
 CREATE INDEX IF NOT EXISTS task_cancellations_task_idx ON task_cancellations(task_id, requested_at);
 
+CREATE TABLE IF NOT EXISTS verification_runs (
+    verification_run_id TEXT PRIMARY KEY,
+    task_id              TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
+    turn_id              TEXT NOT NULL REFERENCES turns(turn_id) ON DELETE CASCADE,
+    status               TEXT NOT NULL,
+    trigger_kind         TEXT NOT NULL,
+    summary              TEXT NOT NULL DEFAULT '',
+    started_at           INTEGER NOT NULL,
+    completed_at         INTEGER,
+    UNIQUE(turn_id)
+);
+
+CREATE TABLE IF NOT EXISTS verification_checks (
+    verification_check_id TEXT PRIMARY KEY,
+    verification_run_id   TEXT NOT NULL REFERENCES verification_runs(verification_run_id) ON DELETE CASCADE,
+    ordinal               INTEGER NOT NULL,
+    name                  TEXT NOT NULL,
+    kind                  TEXT NOT NULL,
+    command_text          TEXT NOT NULL,
+    cwd                   TEXT NOT NULL DEFAULT '',
+    status                TEXT NOT NULL,
+    exit_code             INTEGER,
+    output_text           TEXT NOT NULL DEFAULT '',
+    started_at            INTEGER NOT NULL,
+    completed_at          INTEGER,
+    UNIQUE(verification_run_id, ordinal)
+);
+
+CREATE INDEX IF NOT EXISTS verification_runs_task_idx ON verification_runs(task_id, started_at);
+
 CREATE TABLE IF NOT EXISTS events (
     event_id            TEXT PRIMARY KEY,
     task_id             TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
@@ -496,6 +526,59 @@ func (s *Store) AddWorkspaceFileDeltas(ctx context.Context, deltas []WorkspaceFi
 			(delta_id,task_id,turn_id,path,previous_path,operation,before_fingerprint,after_fingerprint,recorded_at)
 			VALUES(?,?,?,?,?,?,?,?,?)`, delta.ID, delta.TaskID, delta.TurnID, delta.Path, delta.PreviousPath,
 			delta.Operation, delta.BeforeFingerprint, delta.AfterFingerprint, delta.RecordedAt.UnixMilli()); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// RecordVerificationRun atomically persists a completed verification run and
+// its ordered checks. A turn has at most one automatic post-agent run.
+func (s *Store) RecordVerificationRun(ctx context.Context, run VerificationRun) error {
+	if run.ID == "" || run.TaskID == "" || run.TurnID == "" {
+		return fmt.Errorf("taskstore: verification run ID, task ID, and turn ID are required")
+	}
+	if run.StartedAt.IsZero() {
+		run.StartedAt = time.Now().UTC()
+	}
+	var completedAt any
+	if run.CompletedAt != nil {
+		completedAt = run.CompletedAt.UnixMilli()
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `INSERT INTO verification_runs
+		(verification_run_id,task_id,turn_id,status,trigger_kind,summary,started_at,completed_at)
+		VALUES(?,?,?,?,?,?,?,?)`, run.ID, run.TaskID, run.TurnID, run.Status, run.Trigger,
+		run.Summary, run.StartedAt.UnixMilli(), completedAt); err != nil {
+		return err
+	}
+	for index, check := range run.Checks {
+		if check.ID == "" {
+			check.ID = NewID("verify_check")
+		}
+		if check.Ordinal <= 0 {
+			check.Ordinal = index + 1
+		}
+		if check.StartedAt.IsZero() {
+			check.StartedAt = run.StartedAt
+		}
+		var checkCompleted any
+		if check.CompletedAt != nil {
+			checkCompleted = check.CompletedAt.UnixMilli()
+		}
+		var exitCode any
+		if check.ExitCode != nil {
+			exitCode = *check.ExitCode
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO verification_checks
+			(verification_check_id,verification_run_id,ordinal,name,kind,command_text,cwd,status,exit_code,output_text,started_at,completed_at)
+			VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, check.ID, run.ID, check.Ordinal, check.Name, check.Kind,
+			check.Command, check.CWD, check.Status, exitCode, check.Output, check.StartedAt.UnixMilli(),
+			checkCompleted); err != nil {
 			return err
 		}
 	}
@@ -1097,9 +1180,83 @@ func (s *Store) TaskEvidence(ctx context.Context, taskID string) (TaskEvidence, 
 	if evidence.Cancellations, err = s.ListCancellations(ctx, taskID); err != nil {
 		return TaskEvidence{}, false, err
 	}
+	if evidence.VerificationRuns, err = s.verificationRuns(ctx, taskID); err != nil {
+		return TaskEvidence{}, false, err
+	}
 	evidence.Commands, evidence.ReportedFiles = projectEvidence(evidence.Events)
 	evidence.EvidenceMismatch = fileEvidenceMismatch(evidence.Files, evidence.ReportedFiles)
 	return evidence, true, nil
+}
+
+func (s *Store) verificationRuns(ctx context.Context, taskID string) ([]VerificationRun, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT verification_run_id,task_id,turn_id,status,trigger_kind,summary,started_at,completed_at
+		FROM verification_runs WHERE task_id=? ORDER BY started_at,rowid`, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	runs := make([]VerificationRun, 0)
+	for rows.Next() {
+		var run VerificationRun
+		var started int64
+		var completed sql.NullInt64
+		if err := rows.Scan(&run.ID, &run.TaskID, &run.TurnID, &run.Status, &run.Trigger,
+			&run.Summary, &started, &completed); err != nil {
+			return nil, err
+		}
+		run.StartedAt = time.UnixMilli(started).UTC()
+		if completed.Valid {
+			value := time.UnixMilli(completed.Int64).UTC()
+			run.CompletedAt = &value
+		}
+		runs = append(runs, run)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	for index := range runs {
+		runs[index].Checks, err = s.verificationChecks(ctx, runs[index].ID)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return runs, nil
+}
+
+func (s *Store) verificationChecks(ctx context.Context, runID string) ([]VerificationCheck, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT verification_check_id,verification_run_id,ordinal,name,kind,
+		command_text,cwd,status,exit_code,output_text,started_at,completed_at
+		FROM verification_checks WHERE verification_run_id=? ORDER BY ordinal`, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	checks := make([]VerificationCheck, 0)
+	for rows.Next() {
+		var check VerificationCheck
+		var exitCode sql.NullInt64
+		var started int64
+		var completed sql.NullInt64
+		if err := rows.Scan(&check.ID, &check.VerificationRunID, &check.Ordinal, &check.Name, &check.Kind,
+			&check.Command, &check.CWD, &check.Status, &exitCode, &check.Output, &started, &completed); err != nil {
+			return nil, err
+		}
+		if exitCode.Valid {
+			value := int(exitCode.Int64)
+			check.ExitCode = &value
+		}
+		check.StartedAt = time.UnixMilli(started).UTC()
+		if completed.Valid {
+			value := time.UnixMilli(completed.Int64).UTC()
+			check.CompletedAt = &value
+		}
+		checks = append(checks, check)
+	}
+	return checks, rows.Err()
 }
 
 func (s *Store) turns(ctx context.Context, taskID string) ([]Turn, error) {

@@ -47,7 +47,7 @@ The original plan described a greenfield project. That is no longer accurate. Th
 | Codex task backend | Shipped foundation | Read-only execution plus guarded App Server workspace-write execution, durable command/file approvals, event parsing, evidence, native-session resume, and lost-session detection work. |
 | Claude task backend | Missing | Claude traffic can use the proxy, but Claude Code is not yet an orchestrated task backend. |
 | Routing and handoff | Partial | Backend selection is explicit and a lost session can recover within one backend; there is no policy router or cross-backend handoff. |
-| Verification | Missing | Auditing exists, but task-scoped build/test/lint verification and durable verification results do not. |
+| Verification | Partial foundation | Successful write turns persist verification runs/checks; changed Go modules run offline, read-only `go test` checks with bounded output and timeouts. Configured recipes, other ecosystems, and audit integration remain. |
 | User experience | Partial | Durable task listing, evidence inspection, and approval commands work; there is no TUI or active dashboard, and bare `iq` still opens the legacy Claude wrapper. |
 | Data plane | Advanced | Claude Messages and OpenAI Responses ingress, provider adapters, streaming, optimization, prompt-cache preservation, LSM/SQLite caches, telemetry, setup, audit, and benchmarking exist. |
 | Distributed coordination | Deferred | Redis is absent and is not required for the local product. Kubernetes assets apply to the gateway, not the canonical local task engine. |
@@ -184,13 +184,14 @@ Exit criteria:
 
 Goal: IndexQube reports evidence, not merely an agent's claim of completion.
 
-- Add durable `verification_runs` and `verification_checks` rather than storing verification only as generic events.
-- Detect project checks conservatively from repository files; never invent a destructive or networked command.
-- Start with explicit or configured commands, then add safe detection for Go, Node, Python, Rust, and common monorepos.
-- Run checks after successful mutation-capable turns, with timeouts and captured exit status.
-- Distinguish `agent_succeeded`, `verified`, `verification_failed`, and `verification_skipped`.
+- [x] Add durable `verification_runs` and `verification_checks` rather than storing verification only as generic events.
+- [x] Detect Go checks conservatively from changed paths and the nearest module; never invent a destructive or networked command.
+- [ ] Add explicit/configured recipes, then safe detection for Node, Python, Rust, and broader monorepos.
+- [x] Run checks after successful mutation-capable turns, with inherited lock lifetime, timeouts, bounded output, and captured exit status.
+- [x] Distinguish `agent_succeeded`, `verified`, `verification_failed`, and `verification_skipped`.
 - Integrate the existing audit engine as a separate security check with severity and evidence.
-- Include verification output in handoff packets and task summaries.
+- [x] Include verification output in `TaskEvidence`, task events, and CLI task summaries.
+- [ ] Include verification output in future handoff packets.
 
 Exit criteria:
 
@@ -251,7 +252,7 @@ Work in this order:
 4. **Done:** durable App Server approval request/response state and CLI commands.
 5. **Done:** mutation reconciliation based on per-path pre/post snapshots, independent of adapter events.
 6. **Done:** durable idempotent cancellation plus explicit close/reopen task semantics.
-7. Verification schema, configured checks, and post-turn verifier for the demo gate.
+7. **In progress:** durable verification schema, offline Go checks, and post-turn evidence are done; configured and additional ecosystem checks remain.
 8. Control API authentication before any browser surface is enabled.
 9. Claude Code backend and protocol fixtures.
 10. Explicit handoff, task pinning, and conservative failure classification.

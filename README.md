@@ -82,6 +82,16 @@ agent-reported events. A mismatch is persisted and moves the task to
 Codex sessions are continuation optimizations rather than the task's source of
 truth.
 
+Successful write turns now also produce a durable post-turn verification run.
+For changed Go files or module metadata, IndexQube finds the nearest `go.mod`
+and runs `go test -mod=readonly ./...` with dependency downloads disabled, a
+bounded output capture, and a two-minute timeout. Unsupported changes are
+recorded as `verification_skipped` rather than causing an invented command.
+A failed check preserves the agent's successful turn but moves the task to
+`needs_attention`; `iq task show` displays each check, exit status, working
+directory, and bounded output. Verification commands remain under the inherited
+workspace lock, and any workspace mutation caused by a check fails the run.
+
 The optional real-agent smoke lanes exercise both the authenticated App Server
 write path and a real durable approval round trip:
 

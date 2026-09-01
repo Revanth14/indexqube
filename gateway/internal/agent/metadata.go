@@ -7,12 +7,14 @@ const maxMetadataKeyBytes = 64
 const maxMetadataValueBytes = 256
 
 var allowedMetadata = map[string]bool{
-	"native_session_id": true,
-	"native_event_id":   true,
-	"backend_version":   true,
-	"model":             true,
-	"write_epoch":       true,
-	"error_code":        true,
+	"native_session_id":   true,
+	"native_event_id":     true,
+	"backend_version":     true,
+	"model":               true,
+	"write_epoch":         true,
+	"error_code":          true,
+	"verification_run_id": true,
+	"verification_status": true,
 }
 
 func NormalizeMetadata(input map[string]string) map[string]string {

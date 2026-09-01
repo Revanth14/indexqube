@@ -271,6 +271,52 @@ type Cancellation struct {
 	CompletedAt *time.Time         `json:"completed_at,omitempty"`
 }
 
+type VerificationStatus string
+
+const (
+	VerificationRunning VerificationStatus = "running"
+	VerificationPassed  VerificationStatus = "verified"
+	VerificationFailed  VerificationStatus = "verification_failed"
+	VerificationSkipped VerificationStatus = "verification_skipped"
+)
+
+type VerificationCheckStatus string
+
+const (
+	VerificationCheckPassed VerificationCheckStatus = "passed"
+	VerificationCheckFailed VerificationCheckStatus = "failed"
+)
+
+// VerificationRun is the durable outcome of IndexQube's own post-agent check
+// phase. It stays distinct from agent-reported command events so clients can
+// tell an agent assertion from independently observed verification.
+type VerificationRun struct {
+	ID          string              `json:"verification_run_id"`
+	TaskID      string              `json:"task_id"`
+	TurnID      string              `json:"turn_id"`
+	Status      VerificationStatus  `json:"status"`
+	Trigger     string              `json:"trigger"`
+	Summary     string              `json:"summary,omitempty"`
+	StartedAt   time.Time           `json:"started_at"`
+	CompletedAt *time.Time          `json:"completed_at,omitempty"`
+	Checks      []VerificationCheck `json:"checks"`
+}
+
+type VerificationCheck struct {
+	ID                string                  `json:"verification_check_id"`
+	VerificationRunID string                  `json:"verification_run_id"`
+	Ordinal           int                     `json:"ordinal"`
+	Name              string                  `json:"name"`
+	Kind              string                  `json:"kind"`
+	Command           string                  `json:"command"`
+	CWD               string                  `json:"cwd"`
+	Status            VerificationCheckStatus `json:"status"`
+	ExitCode          *int                    `json:"exit_code,omitempty"`
+	Output            string                  `json:"output,omitempty"`
+	StartedAt         time.Time               `json:"started_at"`
+	CompletedAt       *time.Time              `json:"completed_at,omitempty"`
+}
+
 // TaskEvidence is the canonical read model consumed by CLI, TUI, and dashboard
 // clients. It is assembled from normalized durable records rather than stored
 // as another source of truth.
@@ -285,6 +331,7 @@ type TaskEvidence struct {
 	ReportedFiles    []FileEvidence      `json:"agent_reported_files"`
 	Approvals        []Approval          `json:"approvals"`
 	Cancellations    []Cancellation      `json:"cancellations"`
+	VerificationRuns []VerificationRun   `json:"verification_runs"`
 	EvidenceMismatch bool                `json:"evidence_mismatch"`
 	Events           []agent.Event       `json:"events"`
 }

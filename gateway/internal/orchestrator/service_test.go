@@ -17,6 +17,7 @@ import (
 	codexbackend "github.com/Revanth14/indexqube/gateway/internal/agent/codex"
 	"github.com/Revanth14/indexqube/gateway/internal/agent/fake"
 	"github.com/Revanth14/indexqube/gateway/internal/taskstore"
+	"github.com/Revanth14/indexqube/gateway/internal/verification"
 	"github.com/Revanth14/indexqube/gateway/internal/workspace"
 )
 
@@ -38,13 +39,19 @@ func TestOrchestratorCodexProcess(t *testing.T) {
 		os.Exit(3)
 	}
 	prompt, _ := io.ReadAll(os.Stdin)
-	writeChange := (mode == "write" || mode == "unreported-write" || mode == "failed-write") &&
+	writeChange := (mode == "write" || mode == "write-go" || mode == "unreported-write" || mode == "failed-write") &&
 		!strings.Contains(string(prompt), "inspect the durable change")
+	changePath := "codex-orchestrated-write.txt"
+	changeContent := "durable write evidence\n"
+	if mode == "write-go" {
+		changePath = "verified_change.go"
+		changeContent = "package fixture\n\nconst VerifiedChange = true\n"
+	}
 	if writeChange {
 		if os.Getenv("INDEXQUBE_WORKSPACE_LOCK_FD") == "" {
 			os.Exit(8)
 		}
-		if err := os.WriteFile("codex-orchestrated-write.txt", []byte("durable write evidence\n"), 0o600); err != nil {
+		if err := os.WriteFile(changePath, []byte(changeContent), 0o600); err != nil {
 			os.Exit(9)
 		}
 	}
@@ -57,9 +64,9 @@ func TestOrchestratorCodexProcess(t *testing.T) {
 		"id": "command-1", "type": "command_execution", "command": "go test ./...", "status": "completed",
 		"exit_code": 0, "aggregated_output": "ok",
 	}})
-	if writeChange && mode == "write" {
+	if writeChange && (mode == "write" || mode == "write-go") {
 		_ = enc.Encode(map[string]any{"type": "item.completed", "item": map[string]any{
-			"id": "file-1", "type": "file_change", "changes": []map[string]any{{"path": "codex-orchestrated-write.txt", "kind": "add"}},
+			"id": "file-1", "type": "file_change", "changes": []map[string]any{{"path": changePath, "kind": "add"}},
 		}})
 	}
 	if mode == "failed-write" {
@@ -196,6 +203,125 @@ func TestCodexWriteTaskPersistsEvidenceAndContinues(t *testing.T) {
 	evidence, ok, err = store.TaskEvidence(context.Background(), task.ID)
 	if err != nil || !ok || len(evidence.Turns) != 2 || len(evidence.Routes) != 2 || evidence.Task.Status != taskstore.TaskOpen {
 		t.Fatalf("continued evidence=%+v ok=%v err=%v", evidence, ok, err)
+	}
+}
+
+func TestFailedPostTurnVerificationNeedsAttentionAndPersistsEvidence(t *testing.T) {
+	service, store, root := newTestService(t)
+	binary, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.registry = NewRegistry(codexbackend.NewCommand(agent.NewRunner(), binary,
+		[]string{"-test.run=TestOrchestratorCodexProcess", "--"},
+		[]string{"INDEXQUBE_ORCHESTRATOR_CODEX_HELPER=write"}, "codex-cli test"))
+	exit := 1
+	now := time.Now().UTC()
+	service.verifier = fixedVerifier{result: verification.Result{
+		Status: verification.StatusFailed, Summary: "1 of 1 verification check(s) failed",
+		StartedAt: now, CompletedAt: now.Add(time.Second),
+		Checks: []verification.CheckResult{{
+			Name: "Go tests", Kind: "test", Command: "go test -mod=readonly ./...", CWD: ".",
+			Status: verification.CheckFailed, ExitCode: &exit, Output: "FAIL", StartedAt: now,
+			CompletedAt: now.Add(time.Second),
+		}},
+	}}
+	task, err := service.StartTask(context.Background(), StartTaskInput{
+		Workspace: root, Prompt: "make a verified change", Backend: agent.BackendCodex, Permission: agent.PermissionWrite,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := waitForTerminal(t, service, task.ID)
+	if events[len(events)-1].Type != agent.EventCompleted {
+		t.Fatalf("terminal=%+v", events[len(events)-1])
+	}
+	foundVerificationEvent := false
+	for _, event := range events {
+		if event.Type == agent.EventVerificationCompleted &&
+			event.Metadata["verification_status"] == string(taskstore.VerificationFailed) {
+			foundVerificationEvent = true
+		}
+	}
+	if !foundVerificationEvent {
+		t.Fatalf("events=%+v", events)
+	}
+	evidence, ok, err := store.TaskEvidence(context.Background(), task.ID)
+	if err != nil || !ok {
+		t.Fatalf("evidence ok=%v err=%v", ok, err)
+	}
+	if evidence.Task.Status != taskstore.TaskNeedsAttention || len(evidence.VerificationRuns) != 1 ||
+		evidence.VerificationRuns[0].Status != taskstore.VerificationFailed ||
+		len(evidence.VerificationRuns[0].Checks) != 1 {
+		t.Fatalf("evidence=%+v", evidence)
+	}
+}
+
+func TestSuccessfulGoChangeRunsAutomaticPostTurnVerification(t *testing.T) {
+	service, store, root := newTestService(t)
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/indexqube-fixture\n\ngo 1.22\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "fixture.go"), []byte("package fixture\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, root, "add", "go.mod", "fixture.go")
+	runGit(t, root, "commit", "-q", "-m", "add go fixture")
+	binary, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.registry = NewRegistry(codexbackend.NewCommand(agent.NewRunner(), binary,
+		[]string{"-test.run=TestOrchestratorCodexProcess", "--"},
+		[]string{"INDEXQUBE_ORCHESTRATOR_CODEX_HELPER=write-go"}, "codex-cli test"))
+	task, err := service.StartTask(context.Background(), StartTaskInput{
+		Workspace: root, Prompt: "make a verified Go change", Backend: agent.BackendCodex, Permission: agent.PermissionWrite,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := waitForTerminal(t, service, task.ID)
+	if events[len(events)-1].Type != agent.EventCompleted {
+		t.Fatalf("terminal=%+v", events[len(events)-1])
+	}
+	evidence, ok, err := store.TaskEvidence(context.Background(), task.ID)
+	if err != nil || !ok {
+		t.Fatalf("evidence ok=%v err=%v", ok, err)
+	}
+	if evidence.Task.Status != taskstore.TaskOpen || len(evidence.VerificationRuns) != 1 ||
+		evidence.VerificationRuns[0].Status != taskstore.VerificationPassed ||
+		len(evidence.VerificationRuns[0].Checks) != 1 ||
+		evidence.VerificationRuns[0].Checks[0].Command != "go test -mod=readonly ./..." {
+		t.Fatalf("evidence=%+v", evidence)
+	}
+}
+
+func TestVerificationWorkspaceMutationFailsClosed(t *testing.T) {
+	service, store, root := newTestService(t)
+	binary, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.registry = NewRegistry(codexbackend.NewCommand(agent.NewRunner(), binary,
+		[]string{"-test.run=TestOrchestratorCodexProcess", "--"},
+		[]string{"INDEXQUBE_ORCHESTRATOR_CODEX_HELPER=write"}, "codex-cli test"))
+	service.verifier = mutatingVerifier{}
+	task, err := service.StartTask(context.Background(), StartTaskInput{
+		Workspace: root, Prompt: "make a change then verify", Backend: agent.BackendCodex, Permission: agent.PermissionWrite,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = waitForTerminal(t, service, task.ID)
+	evidence, ok, err := store.TaskEvidence(context.Background(), task.ID)
+	if err != nil || !ok {
+		t.Fatalf("evidence ok=%v err=%v", ok, err)
+	}
+	if evidence.Task.Status != taskstore.TaskNeedsAttention || !evidence.EvidenceMismatch ||
+		len(evidence.VerificationRuns) != 1 || evidence.VerificationRuns[0].Status != taskstore.VerificationFailed ||
+		len(evidence.VerificationRuns[0].Checks) != 2 || len(evidence.Files) != 2 ||
+		len(evidence.Snapshots) != 3 {
+		t.Fatalf("evidence=%+v", evidence)
 	}
 }
 
@@ -674,6 +800,30 @@ func TestReconcileCompletesDurableCancellation(t *testing.T) {
 				t.Fatalf("events=%+v err=%v", events, err)
 			}
 		})
+	}
+}
+
+type fixedVerifier struct {
+	result verification.Result
+}
+
+func (v fixedVerifier) Verify(context.Context, verification.Request) verification.Result {
+	return v.result
+}
+
+type mutatingVerifier struct{}
+
+func (mutatingVerifier) Verify(_ context.Context, request verification.Request) verification.Result {
+	now := time.Now().UTC()
+	_ = os.WriteFile(filepath.Join(request.Workspace, "verification-side-effect.txt"), []byte("unexpected\n"), 0o600)
+	exit := 0
+	return verification.Result{
+		Status: verification.StatusVerified, Summary: "1 verification check(s) passed",
+		StartedAt: now, CompletedAt: now,
+		Checks: []verification.CheckResult{{
+			Name: "fixture check", Kind: "test", Command: "fixture", CWD: ".",
+			Status: verification.CheckPassed, ExitCode: &exit, StartedAt: now, CompletedAt: now,
+		}},
 	}
 }
 

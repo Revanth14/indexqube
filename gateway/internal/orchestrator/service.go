@@ -15,6 +15,7 @@ import (
 
 	"github.com/Revanth14/indexqube/gateway/internal/agent"
 	"github.com/Revanth14/indexqube/gateway/internal/taskstore"
+	"github.com/Revanth14/indexqube/gateway/internal/verification"
 	"github.com/Revanth14/indexqube/gateway/internal/workspace"
 )
 
@@ -66,6 +67,7 @@ type Service struct {
 	locks    *workspace.LockManager
 	registry *Registry
 	bus      *eventBus
+	verifier verification.Verifier
 
 	mu              sync.Mutex
 	cancels         map[string]activeTurn
@@ -80,7 +82,8 @@ func NewService(ctx context.Context, store *taskstore.Store, locks *workspace.Lo
 	}
 	return &Service{
 		ctx: ctx, store: store, locks: locks, registry: registry, bus: newEventBus(),
-		cancels: make(map[string]activeTurn), approvalWaiters: make(map[string]chan agent.ApprovalDecision),
+		verifier: verification.NewLocalVerifier(),
+		cancels:  make(map[string]activeTurn), approvalWaiters: make(map[string]chan agent.ApprovalDecision),
 		approvalTimeout: defaultApprovalTimeout,
 	}, nil
 }
@@ -312,9 +315,6 @@ func (s *Service) execute(ctx context.Context, task taskstore.Task, turn tasksto
 			snapshotErr = err
 		} else {
 			fileDeltas = workspace.DiffFileStates(pre, post)
-			if err := s.store.AddWorkspaceFileDeltas(context.Background(), fileDeltas); err != nil {
-				snapshotErr = err
-			}
 		}
 	}
 	postFingerprint := ""
@@ -324,12 +324,71 @@ func (s *Service) execute(ctx context.Context, task taskstore.Task, turn tasksto
 		workspaceChanged = pre.Fingerprint != post.Fingerprint
 	}
 	mutation := len(fileDeltas) > 0 || workspaceChanged || mutationBeforeRecovery || tracker.mutationSeen || result.MutationSeen
+	verificationFailed := false
+	var verificationRun *taskstore.VerificationRun
+	stateErrorCode := "snapshot_failed"
+	if runErr == nil && snapshotErr == nil && task.Permission == agent.PermissionWrite && s.verifier != nil {
+		changedPaths := make([]string, 0, len(fileDeltas))
+		for _, delta := range fileDeltas {
+			changedPaths = append(changedPaths, delta.Path)
+		}
+		verificationResult := s.verifier.Verify(ctx, verification.Request{
+			Workspace: identity.Root, ChangedPaths: changedPaths, Guard: processGuard,
+		})
+		if len(verificationResult.Checks) > 0 {
+			verificationPost, captureErr := workspace.Capture(context.Background(), identity, task.ID, turn.ID, "verification_post")
+			if captureErr != nil {
+				snapshotErr = captureErr
+				stateErrorCode = "verification_snapshot_failed"
+			} else if err := s.store.AddSnapshot(context.Background(), verificationPost); err != nil {
+				snapshotErr = err
+				stateErrorCode = "verification_snapshot_failed"
+			} else if verificationPost.Fingerprint != post.Fingerprint {
+				now := time.Now().UTC()
+				verificationResult.Status = verification.StatusFailed
+				verificationResult.Summary = "verification command modified the guarded workspace"
+				verificationResult.Checks = append(verificationResult.Checks, verification.CheckResult{
+					Name: "Workspace stability", Kind: "workspace_safety", CWD: ".",
+					Status: verification.CheckFailed, Output: "workspace state changed while verification was running",
+					StartedAt: now, CompletedAt: now,
+				})
+				post = verificationPost
+				postFingerprint = post.Fingerprint
+				workspaceChanged = pre.Fingerprint != post.Fingerprint
+				fileDeltas = workspace.DiffFileStates(pre, post)
+				mutation = len(fileDeltas) > 0 || workspaceChanged || mutationBeforeRecovery || tracker.mutationSeen || result.MutationSeen
+			}
+		}
+		if snapshotErr == nil {
+			run := persistedVerification(task.ID, turn.ID, verificationResult)
+			if err := s.store.RecordVerificationRun(context.Background(), run); err != nil {
+				snapshotErr = err
+				stateErrorCode = "verification_state_failed"
+			} else {
+				verificationFailed = run.Status == taskstore.VerificationFailed
+				verificationRun = &run
+			}
+		}
+	}
+	if snapshotErr == nil {
+		if err := s.store.AddWorkspaceFileDeltas(context.Background(), fileDeltas); err != nil {
+			snapshotErr = err
+			stateErrorCode = "snapshot_failed"
+		}
+	}
 	evidenceMismatch, evidenceMessage := compareMutationEvidence(fileDeltas, tracker.reportedFiles)
 	if evidenceMismatch {
 		_ = s.emit(context.Background(), agent.Event{
 			Type: agent.EventWarning, TaskID: task.ID, TurnID: turn.ID, Backend: backend.ID(),
 			Message:  &agent.MessageEvent{Text: evidenceMessage},
 			Metadata: map[string]string{"error_code": "workspace_evidence_mismatch"},
+		})
+	}
+	if verificationRun != nil && snapshotErr == nil {
+		_ = s.emit(context.Background(), agent.Event{
+			Type: agent.EventVerificationCompleted, TaskID: task.ID, TurnID: turn.ID, Backend: backend.ID(),
+			Message:  &agent.MessageEvent{Text: verificationRun.Summary},
+			Metadata: map[string]string{"verification_run_id": verificationRun.ID, "verification_status": string(verificationRun.Status)},
 		})
 	}
 
@@ -358,7 +417,7 @@ func (s *Service) execute(ctx context.Context, task taskstore.Task, turn tasksto
 		code := "backend_failed"
 		if snapshotErr != nil {
 			failure = snapshotErr
-			code = "snapshot_failed"
+			code = stateErrorCode
 		}
 		if errors.Is(runErr, context.Canceled) {
 			code = "cancelled"
@@ -390,7 +449,7 @@ func (s *Service) execute(ctx context.Context, task taskstore.Task, turn tasksto
 		})
 		return
 	}
-	if err := s.store.CompleteTurn(context.Background(), task.ID, turn.ID, currentAttempt.ID, result.FinalMessage, postFingerprint, mutation, evidenceMismatch, time.Now().UTC()); errors.Is(err, taskstore.ErrCancellationRequested) {
+	if err := s.store.CompleteTurn(context.Background(), task.ID, turn.ID, currentAttempt.ID, result.FinalMessage, postFingerprint, mutation, evidenceMismatch || verificationFailed, time.Now().UTC()); errors.Is(err, taskstore.ErrCancellationRequested) {
 		if cancelErr := s.store.CancelTurn(context.Background(), task.ID, turn.ID, currentAttempt.ID, "cancellation requested", postFingerprint, mutation || evidenceMismatch, time.Now().UTC()); cancelErr != nil {
 			return
 		}
@@ -410,6 +469,50 @@ func (s *Service) execute(ctx context.Context, task taskstore.Task, turn tasksto
 		Type: agent.EventCompleted, TaskID: task.ID, TurnID: turn.ID, Backend: backend.ID(),
 		Result: &agent.ResultEvent{ExitCode: 0, Status: string(taskstore.TurnSucceeded)},
 	})
+}
+
+func persistedVerification(taskID, turnID string, result verification.Result) taskstore.VerificationRun {
+	status := taskstore.VerificationSkipped
+	switch result.Status {
+	case verification.StatusVerified:
+		status = taskstore.VerificationPassed
+	case verification.StatusFailed:
+		status = taskstore.VerificationFailed
+	}
+	started := result.StartedAt
+	if started.IsZero() {
+		started = time.Now().UTC()
+	}
+	completed := result.CompletedAt
+	if completed.IsZero() {
+		completed = time.Now().UTC()
+	}
+	run := taskstore.VerificationRun{
+		ID: taskstore.NewID("verify"), TaskID: taskID, TurnID: turnID, Status: status,
+		Trigger: "automatic_post_turn", Summary: result.Summary, StartedAt: started, CompletedAt: &completed,
+		Checks: make([]taskstore.VerificationCheck, 0, len(result.Checks)),
+	}
+	for index, check := range result.Checks {
+		checkStatus := taskstore.VerificationCheckPassed
+		if check.Status == verification.CheckFailed {
+			checkStatus = taskstore.VerificationCheckFailed
+		}
+		checkStarted := check.StartedAt
+		if checkStarted.IsZero() {
+			checkStarted = started
+		}
+		checkCompleted := check.CompletedAt
+		if checkCompleted.IsZero() {
+			checkCompleted = completed
+		}
+		run.Checks = append(run.Checks, taskstore.VerificationCheck{
+			ID: taskstore.NewID("verify_check"), VerificationRunID: run.ID, Ordinal: index + 1,
+			Name: check.Name, Kind: check.Kind, Command: check.Command, CWD: check.CWD,
+			Status: checkStatus, ExitCode: check.ExitCode, Output: check.Output,
+			StartedAt: checkStarted, CompletedAt: &checkCompleted,
+		})
+	}
+	return run
 }
 
 func (s *Service) failBeforeRun(ctx context.Context, task taskstore.Task, turn taskstore.Turn, attempt taskstore.RouteAttempt, code string, err error) {
