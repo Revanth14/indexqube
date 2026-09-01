@@ -5,6 +5,7 @@ package control
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -33,6 +34,8 @@ func NewHandler(service *orchestrator.Service) *Handler {
 	h.mux.HandleFunc("GET /control/v1/tasks/{taskID}/evidence", h.getTaskEvidence)
 	h.mux.HandleFunc("POST /control/v1/tasks/{taskID}/turns", h.continueTask)
 	h.mux.HandleFunc("POST /control/v1/tasks/{taskID}/cancel", h.cancelTask)
+	h.mux.HandleFunc("POST /control/v1/tasks/{taskID}/close", h.closeTask)
+	h.mux.HandleFunc("POST /control/v1/tasks/{taskID}/reopen", h.reopenTask)
 	h.mux.HandleFunc("GET /control/v1/tasks/{taskID}/events", h.taskEvents)
 	return h
 }
@@ -194,11 +197,55 @@ func (h *Handler) getTaskEvidence(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) cancelTask(w http.ResponseWriter, r *http.Request) {
-	if !h.service.Cancel(r.PathValue("taskID")) {
-		writeError(w, http.StatusConflict, "task_not_running", fmt.Errorf("task is not running"))
+	result, err := h.service.Cancel(r.Context(), r.PathValue("taskID"))
+	if errors.Is(err, taskstore.ErrTaskNotFound) {
+		writeError(w, http.StatusNotFound, "task_not_found", err)
 		return
 	}
-	writeJSON(w, http.StatusAccepted, map[string]string{"status": "cancelling"})
+	if errors.Is(err, taskstore.ErrTaskNotActive) {
+		writeError(w, http.StatusConflict, "task_not_running", err)
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "state_error", err)
+		return
+	}
+	status := http.StatusAccepted
+	if result.Cancellation.Status == taskstore.CancellationCompleted {
+		status = http.StatusOK
+	}
+	writeJSON(w, status, result)
+}
+
+func (h *Handler) closeTask(w http.ResponseWriter, r *http.Request) {
+	h.transitionTask(w, r, true)
+}
+
+func (h *Handler) reopenTask(w http.ResponseWriter, r *http.Request) {
+	h.transitionTask(w, r, false)
+}
+
+func (h *Handler) transitionTask(w http.ResponseWriter, r *http.Request, closeTask bool) {
+	var result orchestrator.TaskTransitionResult
+	var err error
+	if closeTask {
+		result, err = h.service.CloseTask(r.Context(), r.PathValue("taskID"))
+	} else {
+		result, err = h.service.ReopenTask(r.Context(), r.PathValue("taskID"))
+	}
+	if errors.Is(err, taskstore.ErrTaskNotFound) {
+		writeError(w, http.StatusNotFound, "task_not_found", err)
+		return
+	}
+	if errors.Is(err, taskstore.ErrTaskActive) {
+		writeError(w, http.StatusConflict, "task_active", err)
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusConflict, "transition_rejected", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (h *Handler) taskEvents(w http.ResponseWriter, r *http.Request) {

@@ -160,6 +160,17 @@ CREATE TABLE IF NOT EXISTS approvals (
 CREATE INDEX IF NOT EXISTS approvals_task_idx ON approvals(task_id, requested_at);
 CREATE INDEX IF NOT EXISTS approvals_status_idx ON approvals(status, requested_at);
 
+CREATE TABLE IF NOT EXISTS task_cancellations (
+    cancellation_id     TEXT PRIMARY KEY,
+    task_id             TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
+    turn_id             TEXT NOT NULL UNIQUE REFERENCES turns(turn_id) ON DELETE CASCADE,
+    status              TEXT NOT NULL,
+    requested_at        INTEGER NOT NULL,
+    completed_at        INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS task_cancellations_task_idx ON task_cancellations(task_id, requested_at);
+
 CREATE TABLE IF NOT EXISTS events (
     event_id            TEXT PRIMARY KEY,
     task_id             TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
@@ -231,6 +242,13 @@ func Open(path string) (*Store, error) {
 }
 
 func (s *Store) Close() error { return s.db.Close() }
+
+var (
+	ErrTaskNotFound          = errors.New("taskstore: task not found")
+	ErrTaskNotActive         = errors.New("taskstore: task has no active turn")
+	ErrTaskActive            = errors.New("taskstore: task has an active turn")
+	ErrCancellationRequested = errors.New("taskstore: cancellation requested")
+)
 
 func NewID(prefix string) string {
 	buf := make([]byte, 12)
@@ -484,6 +502,181 @@ func (s *Store) AddWorkspaceFileDeltas(ctx context.Context, deltas []WorkspaceFi
 	return tx.Commit()
 }
 
+// RequestCancellation atomically records the intent to stop the latest active
+// turn. Repeating the request returns the same canonical record, including
+// after the turn has reached cancelled.
+func (s *Store) RequestCancellation(ctx context.Context, taskID string, now time.Time) (Task, Cancellation, error) {
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Task{}, Cancellation{}, err
+	}
+	defer tx.Rollback()
+	task, err := scanTask(tx.QueryRowContext(ctx, `SELECT task_id,workspace_id,workspace_path,original_goal,
+		permission_mode,preferred_backend,status,revision,created_at,updated_at FROM tasks WHERE task_id=?`, taskID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Task{}, Cancellation{}, ErrTaskNotFound
+	}
+	if err != nil {
+		return Task{}, Cancellation{}, err
+	}
+	var turnID string
+	var turnStatus TurnStatus
+	if err := tx.QueryRowContext(ctx, `SELECT turn_id,status FROM turns WHERE task_id=? ORDER BY sequence DESC LIMIT 1`,
+		taskID).Scan(&turnID, &turnStatus); errors.Is(err, sql.ErrNoRows) {
+		return Task{}, Cancellation{}, ErrTaskNotActive
+	} else if err != nil {
+		return Task{}, Cancellation{}, err
+	}
+	if cancellation, err := scanCancellation(tx.QueryRowContext(ctx, `SELECT cancellation_id,task_id,turn_id,status,
+		requested_at,completed_at FROM task_cancellations WHERE turn_id=?`, turnID)); err == nil {
+		return task, cancellation, nil
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return Task{}, Cancellation{}, err
+	}
+
+	cancellation := Cancellation{
+		ID: NewID("cancel"), TaskID: task.ID, TurnID: turnID,
+		Status: CancellationRequested, RequestedAt: now,
+	}
+	if turnStatus == TurnCancelled {
+		cancellation.Status = CancellationCompleted
+		completed := now
+		cancellation.CompletedAt = &completed
+	} else if (task.Status != TaskRunning && task.Status != TaskAwaitingApproval) ||
+		(turnStatus != TurnQueued && turnStatus != TurnRunning && turnStatus != TurnAwaitingApproval) {
+		return Task{}, Cancellation{}, ErrTaskNotActive
+	}
+	var completedAt any
+	if cancellation.CompletedAt != nil {
+		completedAt = cancellation.CompletedAt.UnixMilli()
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO task_cancellations
+		(cancellation_id,task_id,turn_id,status,requested_at,completed_at) VALUES(?,?,?,?,?,?)`,
+		cancellation.ID, cancellation.TaskID, cancellation.TurnID, cancellation.Status,
+		cancellation.RequestedAt.UnixMilli(), completedAt); err != nil {
+		return Task{}, Cancellation{}, err
+	}
+	if cancellation.Status == CancellationRequested {
+		if _, err = tx.ExecContext(ctx, `UPDATE tasks SET revision=revision+1,updated_at=? WHERE task_id=?`,
+			now.UnixMilli(), task.ID); err != nil {
+			return Task{}, Cancellation{}, err
+		}
+		task.Revision++
+		task.UpdatedAt = now
+	}
+	if err = tx.Commit(); err != nil {
+		return Task{}, Cancellation{}, err
+	}
+	return task, cancellation, nil
+}
+
+func (s *Store) CancellationForTurn(ctx context.Context, turnID string) (Cancellation, bool, error) {
+	cancellation, err := scanCancellation(s.db.QueryRowContext(ctx, `SELECT cancellation_id,task_id,turn_id,status,
+		requested_at,completed_at FROM task_cancellations WHERE turn_id=?`, turnID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Cancellation{}, false, nil
+	}
+	if err != nil {
+		return Cancellation{}, false, err
+	}
+	return cancellation, true, nil
+}
+
+func (s *Store) ListCancellations(ctx context.Context, taskID string) ([]Cancellation, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT cancellation_id,task_id,turn_id,status,requested_at,completed_at
+		FROM task_cancellations WHERE task_id=? ORDER BY requested_at, cancellation_id`, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	cancellations := make([]Cancellation, 0)
+	for rows.Next() {
+		cancellation, err := scanCancellation(rows)
+		if err != nil {
+			return nil, err
+		}
+		cancellations = append(cancellations, cancellation)
+	}
+	return cancellations, rows.Err()
+}
+
+func scanCancellation(row rowScanner) (Cancellation, error) {
+	var cancellation Cancellation
+	var requested int64
+	var completed sql.NullInt64
+	if err := row.Scan(&cancellation.ID, &cancellation.TaskID, &cancellation.TurnID, &cancellation.Status,
+		&requested, &completed); err != nil {
+		return Cancellation{}, err
+	}
+	cancellation.RequestedAt = time.UnixMilli(requested).UTC()
+	if completed.Valid {
+		value := time.UnixMilli(completed.Int64).UTC()
+		cancellation.CompletedAt = &value
+	}
+	return cancellation, nil
+}
+
+func (s *Store) CloseTask(ctx context.Context, taskID string, now time.Time) (Task, bool, error) {
+	return s.transitionTask(ctx, taskID, TaskClosed, now)
+}
+
+func (s *Store) ReopenTask(ctx context.Context, taskID string, now time.Time) (Task, bool, error) {
+	return s.transitionTask(ctx, taskID, TaskOpen, now)
+}
+
+// transitionTask gives the four user-visible task states precise lifecycle
+// semantics. Closing archives idle/attention-needed work. Reopening restores a
+// closed task or explicitly acknowledges needs_attention. Active work must be
+// cancelled before either transition.
+func (s *Store) transitionTask(ctx context.Context, taskID string, target TaskStatus, now time.Time) (Task, bool, error) {
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Task{}, false, err
+	}
+	defer tx.Rollback()
+	task, err := scanTask(tx.QueryRowContext(ctx, `SELECT task_id,workspace_id,workspace_path,original_goal,
+		permission_mode,preferred_backend,status,revision,created_at,updated_at FROM tasks WHERE task_id=?`, taskID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Task{}, false, ErrTaskNotFound
+	}
+	if err != nil {
+		return Task{}, false, err
+	}
+	if task.Status == TaskRunning || task.Status == TaskAwaitingApproval {
+		return Task{}, false, ErrTaskActive
+	}
+	if task.Status == target || (target == TaskOpen && task.Status == TaskOpen) {
+		return task, false, nil
+	}
+	allowed := false
+	switch target {
+	case TaskClosed:
+		allowed = task.Status == TaskOpen || task.Status == TaskNeedsAttention
+	case TaskOpen:
+		allowed = task.Status == TaskClosed || task.Status == TaskNeedsAttention
+	}
+	if !allowed {
+		return Task{}, false, fmt.Errorf("taskstore: cannot transition task %s from %s to %s", task.ID, task.Status, target)
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE tasks SET status=?,revision=revision+1,updated_at=?,retention_deadline=? WHERE task_id=?`,
+		target, now.UnixMilli(), now.Add(30*24*time.Hour).UnixMilli(), task.ID); err != nil {
+		return Task{}, false, err
+	}
+	task.Status = target
+	task.Revision++
+	task.UpdatedAt = now
+	if err = tx.Commit(); err != nil {
+		return Task{}, false, err
+	}
+	return task, true, nil
+}
+
 // CreateApproval durably records the backend request and moves the task and
 // turn into awaiting_approval in the same transaction. A client can therefore
 // never observe a pause without the request needed to resolve it.
@@ -541,6 +734,14 @@ func (s *Store) ResolveApproval(ctx context.Context, approvalID string, decision
 		return Approval{}, err
 	}
 	defer tx.Rollback()
+	var cancellationPending int
+	if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM task_cancellations c JOIN approvals a ON a.turn_id=c.turn_id
+		WHERE a.approval_id=? AND c.status=?`, approvalID, CancellationRequested).Scan(&cancellationPending); err != nil {
+		return Approval{}, err
+	}
+	if cancellationPending != 0 {
+		return Approval{}, ErrCancellationRequested
+	}
 	result, err := tx.ExecContext(ctx, `UPDATE approvals SET status=?,decision=?,decided_at=? WHERE approval_id=? AND status=?`,
 		status, decision, now.UnixMilli(), approvalID, ApprovalPending)
 	if err != nil {
@@ -741,6 +942,33 @@ func (s *Store) finishTurn(ctx context.Context, taskID, turnID, attemptID string
 		return err
 	}
 	defer tx.Rollback()
+	if turnStatus != TurnCancelled {
+		var pending int
+		if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM task_cancellations WHERE turn_id=? AND status=?`,
+			turnID, CancellationRequested).Scan(&pending); err != nil {
+			return err
+		}
+		if pending != 0 {
+			return ErrCancellationRequested
+		}
+	} else {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO task_cancellations
+			(cancellation_id,task_id,turn_id,status,requested_at,completed_at) VALUES(?,?,?,?,?,?)
+			ON CONFLICT(turn_id) DO UPDATE SET status=excluded.status,completed_at=excluded.completed_at`,
+			NewID("cancel"), taskID, turnID, CancellationCompleted, now.UnixMilli(), now.UnixMilli()); err != nil {
+			return err
+		}
+	}
+	var currentStatus TurnStatus
+	if err = tx.QueryRowContext(ctx, `SELECT status FROM turns WHERE turn_id=? AND task_id=?`, turnID, taskID).Scan(&currentStatus); err != nil {
+		return err
+	}
+	if currentStatus == TurnSucceeded || currentStatus == TurnFailed || currentStatus == TurnCancelled {
+		if currentStatus == turnStatus {
+			return tx.Commit()
+		}
+		return fmt.Errorf("taskstore: turn %s is already %s", turnID, currentStatus)
+	}
 	if _, err = tx.ExecContext(ctx, `UPDATE approvals SET status=?,decision=?,decided_at=? WHERE turn_id=? AND status=?`,
 		ApprovalCancelled, agent.ApprovalCancel, now.UnixMilli(), turnID, ApprovalPending); err != nil {
 		return err
@@ -789,21 +1017,26 @@ func (s *Store) FailRouteAttempt(ctx context.Context, attemptID, code, postFinge
 }
 
 func (s *Store) TaskByID(ctx context.Context, taskID string) (Task, bool, error) {
-	var task Task
-	var created, updated int64
-	err := s.db.QueryRowContext(ctx, `SELECT task_id,workspace_id,workspace_path,original_goal,permission_mode,preferred_backend,status,revision,created_at,updated_at FROM tasks WHERE task_id=?`, taskID).Scan(
-		&task.ID, &task.WorkspaceID, &task.WorkspacePath, &task.OriginalGoal, &task.Permission,
-		&task.PreferredBackend, &task.Status, &task.Revision, &created, &updated,
-	)
+	task, err := scanTask(s.db.QueryRowContext(ctx, `SELECT task_id,workspace_id,workspace_path,original_goal,permission_mode,preferred_backend,status,revision,created_at,updated_at FROM tasks WHERE task_id=?`, taskID))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Task{}, false, nil
 	}
 	if err != nil {
 		return Task{}, false, err
 	}
+	return task, true, nil
+}
+
+func scanTask(row rowScanner) (Task, error) {
+	var task Task
+	var created, updated int64
+	if err := row.Scan(&task.ID, &task.WorkspaceID, &task.WorkspacePath, &task.OriginalGoal, &task.Permission,
+		&task.PreferredBackend, &task.Status, &task.Revision, &created, &updated); err != nil {
+		return Task{}, err
+	}
 	task.CreatedAt = time.UnixMilli(created).UTC()
 	task.UpdatedAt = time.UnixMilli(updated).UTC()
-	return task, true, nil
+	return task, nil
 }
 
 func (s *Store) ListTasks(ctx context.Context, limit int) ([]Task, error) {
@@ -859,6 +1092,9 @@ func (s *Store) TaskEvidence(ctx context.Context, taskID string) (TaskEvidence, 
 		return TaskEvidence{}, false, err
 	}
 	if evidence.Approvals, err = s.ListApprovals(ctx, taskID, "", 200); err != nil {
+		return TaskEvidence{}, false, err
+	}
+	if evidence.Cancellations, err = s.ListCancellations(ctx, taskID); err != nil {
 		return TaskEvidence{}, false, err
 	}
 	evidence.Commands, evidence.ReportedFiles = projectEvidence(evidence.Events)
@@ -1092,6 +1328,13 @@ func (s *Store) TaskState(ctx context.Context, taskID string) (TaskState, bool, 
 	}
 	if found {
 		state.LatestTurn = &turn
+		cancellation, cancelled, cancelErr := s.CancellationForTurn(ctx, turn.ID)
+		if cancelErr != nil {
+			return TaskState{}, false, cancelErr
+		}
+		if cancelled {
+			state.Cancellation = &cancellation
+		}
 	}
 	session, found, err := s.LatestBackendSession(ctx, taskID, task.PreferredBackend)
 	if err != nil {
@@ -1171,10 +1414,11 @@ func (s *Store) InterruptedRuns(ctx context.Context) ([]InterruptedRun, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT t.task_id,tr.turn_id,
 		COALESCE((SELECT ra.route_attempt_id FROM route_attempts ra WHERE ra.turn_id=tr.turn_id ORDER BY ra.ordinal DESC LIMIT 1),''),
 		t.workspace_id,t.workspace_path,t.permission_mode,tr.status,
-		COALESCE((SELECT ra.pre_fingerprint FROM route_attempts ra WHERE ra.turn_id=tr.turn_id ORDER BY ra.ordinal DESC LIMIT 1),'')
+		COALESCE((SELECT ra.pre_fingerprint FROM route_attempts ra WHERE ra.turn_id=tr.turn_id ORDER BY ra.ordinal DESC LIMIT 1),''),
+		EXISTS(SELECT 1 FROM task_cancellations c WHERE c.turn_id=tr.turn_id AND c.status=?)
 		FROM tasks t JOIN turns tr ON tr.task_id=t.task_id
 		WHERE t.status IN (?,?) AND tr.status IN (?,?,?) ORDER BY t.created_at,tr.sequence`,
-		TaskRunning, TaskAwaitingApproval, TurnQueued, TurnRunning, TurnAwaitingApproval)
+		CancellationRequested, TaskRunning, TaskAwaitingApproval, TurnQueued, TurnRunning, TurnAwaitingApproval)
 	if err != nil {
 		return nil, err
 	}
@@ -1183,7 +1427,7 @@ func (s *Store) InterruptedRuns(ctx context.Context) ([]InterruptedRun, error) {
 	for rows.Next() {
 		var run InterruptedRun
 		if err := rows.Scan(&run.TaskID, &run.TurnID, &run.AttemptID, &run.WorkspaceID, &run.WorkspacePath,
-			&run.Permission, &run.TurnStatus, &run.PreFingerprint); err != nil {
+			&run.Permission, &run.TurnStatus, &run.PreFingerprint, &run.CancellationRequested); err != nil {
 			return nil, err
 		}
 		runs = append(runs, run)
@@ -1235,7 +1479,7 @@ func (s *Store) CountRows(ctx context.Context, table string) (int, error) {
 	allowed := map[string]bool{
 		"tasks": true, "turns": true, "backend_sessions": true, "route_attempts": true,
 		"workspace_snapshots": true, "workspace_file_states": true, "workspace_file_deltas": true,
-		"approvals": true, "events": true, "outbox": true, "workspace_write_epochs": true,
+		"approvals": true, "task_cancellations": true, "events": true, "outbox": true, "workspace_write_epochs": true,
 	}
 	if !allowed[table] {
 		return 0, fmt.Errorf("taskstore: unsupported table %q", table)

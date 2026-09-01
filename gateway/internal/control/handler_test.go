@@ -168,6 +168,94 @@ func TestApprovalListAndDecisionAPI(t *testing.T) {
 	t.Fatal("timed out waiting for approved task completion")
 }
 
+func TestCancellationAndLifecycleAPIIsIdempotent(t *testing.T) {
+	handler, root := newControlTestHandler(t)
+	body, _ := json.Marshal(createTaskRequest{
+		Workspace: root, Prompt: "[fake:sleep]", Backend: agent.BackendFake, Permission: agent.PermissionReadOnly,
+	})
+	create := httptest.NewRequest(http.MethodPost, "/control/v1/tasks", bytes.NewReader(body))
+	created := httptest.NewRecorder()
+	handler.ServeHTTP(created, create)
+	if created.Code != http.StatusAccepted {
+		t.Fatalf("create status=%d body=%s", created.Code, created.Body.String())
+	}
+	var task taskstore.Task
+	if err := json.Unmarshal(created.Body.Bytes(), &task); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	requestCancel := func() (int, orchestrator.CancelTaskResult) {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPost, "/control/v1/tasks/"+task.ID+"/cancel", nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		var result orchestrator.CancelTaskResult
+		if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+			t.Fatalf("decode cancellation status=%d body=%s: %v", rec.Code, rec.Body.String(), err)
+		}
+		return rec.Code, result
+	}
+	firstStatus, first := requestCancel()
+	if firstStatus != http.StatusAccepted || first.Cancellation.Status != taskstore.CancellationRequested {
+		t.Fatalf("first status=%d result=%+v", firstStatus, first)
+	}
+	secondStatus, second := requestCancel()
+	if secondStatus != http.StatusAccepted && secondStatus != http.StatusOK {
+		t.Fatalf("second status=%d result=%+v", secondStatus, second)
+	}
+	if second.Cancellation.ID != first.Cancellation.ID {
+		t.Fatalf("cancellations differ: first=%+v second=%+v", first, second)
+	}
+
+	for time.Now().Before(deadline) {
+		stateReq := httptest.NewRequest(http.MethodGet, "/control/v1/tasks/"+task.ID+"/state", nil)
+		stateRec := httptest.NewRecorder()
+		handler.ServeHTTP(stateRec, stateReq)
+		var state taskstore.TaskState
+		if stateRec.Code == http.StatusOK && json.Unmarshal(stateRec.Body.Bytes(), &state) == nil &&
+			state.LatestTurn != nil && state.LatestTurn.Status == taskstore.TurnCancelled {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	finalStatus, final := requestCancel()
+	if finalStatus != http.StatusOK || final.Cancellation.ID != first.Cancellation.ID || final.Cancellation.Status != taskstore.CancellationCompleted {
+		t.Fatalf("final status=%d result=%+v", finalStatus, final)
+	}
+
+	transition := func(action string) (int, orchestrator.TaskTransitionResult) {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPost, "/control/v1/tasks/"+task.ID+"/"+action, nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		var result orchestrator.TaskTransitionResult
+		if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+			t.Fatalf("decode %s status=%d body=%s: %v", action, rec.Code, rec.Body.String(), err)
+		}
+		return rec.Code, result
+	}
+	if status, result := transition("close"); status != http.StatusOK || !result.Changed || result.Task.Status != taskstore.TaskClosed {
+		t.Fatalf("close status=%d result=%+v", status, result)
+	}
+	if status, result := transition("close"); status != http.StatusOK || result.Changed || result.Task.Status != taskstore.TaskClosed {
+		t.Fatalf("second close status=%d result=%+v", status, result)
+	}
+	continueBody, _ := json.Marshal(continueTaskRequest{Prompt: "should fail"})
+	continueReq := httptest.NewRequest(http.MethodPost, "/control/v1/tasks/"+task.ID+"/turns", bytes.NewReader(continueBody))
+	continueRec := httptest.NewRecorder()
+	handler.ServeHTTP(continueRec, continueReq)
+	if continueRec.Code != http.StatusConflict {
+		t.Fatalf("continue closed status=%d body=%s", continueRec.Code, continueRec.Body.String())
+	}
+	if status, result := transition("reopen"); status != http.StatusOK || !result.Changed || result.Task.Status != taskstore.TaskOpen {
+		t.Fatalf("reopen status=%d result=%+v", status, result)
+	}
+	if status, result := transition("reopen"); status != http.StatusOK || result.Changed || result.Task.Status != taskstore.TaskOpen {
+		t.Fatalf("second reopen status=%d result=%+v", status, result)
+	}
+}
+
 func newControlTestHandler(t *testing.T) (*Handler, string) {
 	t.Helper()
 	root := t.TempDir()

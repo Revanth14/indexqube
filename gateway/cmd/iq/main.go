@@ -59,6 +59,8 @@ func main() {
 		runApprove(os.Args[2:], "approve")
 	case "deny":
 		runApprove(os.Args[2:], "deny")
+	case "cancel":
+		runCancel(os.Args[2:])
 	case "continue":
 		runContinue(os.Args[2:])
 	case "claude":
@@ -561,6 +563,9 @@ func printHelp() {
     iq approvals          List pending durable approval requests
     iq approve APPROVAL   Approve one waiting backend action
     iq deny APPROVAL      Deny one waiting backend action
+    iq cancel TASK         Durably request cancellation; safe to retry
+    iq task close TASK     Close an idle task
+    iq task reopen TASK    Reopen a closed task or acknowledge needs_attention
     iq continue TASK TEXT Continue a task; recover if its native session is lost
     iq claude            Start Claude Code via IndexQube
     iq claude --dev      Start Claude Code, dev mode (relaxed guards)

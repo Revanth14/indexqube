@@ -44,6 +44,22 @@ type ReconciliationReport struct {
 	NeedsAttention int
 }
 
+type CancelTaskResult struct {
+	Task         taskstore.Task         `json:"task"`
+	Cancellation taskstore.Cancellation `json:"cancellation"`
+	Signalled    bool                   `json:"signalled"`
+}
+
+type TaskTransitionResult struct {
+	Task    taskstore.Task `json:"task"`
+	Changed bool           `json:"changed"`
+}
+
+type activeTurn struct {
+	turnID string
+	cancel context.CancelFunc
+}
+
 type Service struct {
 	ctx      context.Context
 	store    *taskstore.Store
@@ -52,7 +68,7 @@ type Service struct {
 	bus      *eventBus
 
 	mu              sync.Mutex
-	cancels         map[string]context.CancelFunc
+	cancels         map[string]activeTurn
 	approvalWaiters map[string]chan agent.ApprovalDecision
 	approvalTimeout time.Duration
 	wg              sync.WaitGroup
@@ -64,7 +80,7 @@ func NewService(ctx context.Context, store *taskstore.Store, locks *workspace.Lo
 	}
 	return &Service{
 		ctx: ctx, store: store, locks: locks, registry: registry, bus: newEventBus(),
-		cancels: make(map[string]context.CancelFunc), approvalWaiters: make(map[string]chan agent.ApprovalDecision),
+		cancels: make(map[string]activeTurn), approvalWaiters: make(map[string]chan agent.ApprovalDecision),
 		approvalTimeout: defaultApprovalTimeout,
 	}, nil
 }
@@ -114,7 +130,7 @@ func (s *Service) StartTask(ctx context.Context, input StartTaskInput) (taskstor
 	}
 	turnCtx, cancel := context.WithCancel(s.ctx)
 	s.mu.Lock()
-	s.cancels[task.ID] = cancel
+	s.cancels[task.ID] = activeTurn{turnID: turn.ID, cancel: cancel}
 	s.mu.Unlock()
 	s.wg.Add(1)
 	go func() {
@@ -173,7 +189,7 @@ func (s *Service) ContinueTask(ctx context.Context, input ContinueTaskInput) (ta
 	}
 	turnCtx, cancel := context.WithCancel(s.ctx)
 	s.mu.Lock()
-	s.cancels[task.ID] = cancel
+	s.cancels[task.ID] = activeTurn{turnID: turn.ID, cancel: cancel}
 	s.mu.Unlock()
 	task.Status = taskstore.TaskRunning
 	task.Revision++
@@ -189,7 +205,9 @@ func (s *Service) ContinueTask(ctx context.Context, input ContinueTaskInput) (ta
 func (s *Service) execute(ctx context.Context, task taskstore.Task, turn taskstore.Turn, attempt taskstore.RouteAttempt, backend agent.Backend, identity workspace.Identity, priorSession *taskstore.BackendSession) {
 	defer func() {
 		s.mu.Lock()
-		delete(s.cancels, task.ID)
+		if active, ok := s.cancels[task.ID]; ok && active.turnID == turn.ID {
+			delete(s.cancels, task.ID)
+		}
 		s.mu.Unlock()
 	}()
 
@@ -345,14 +363,24 @@ func (s *Service) execute(ctx context.Context, task taskstore.Task, turn tasksto
 		if errors.Is(runErr, context.Canceled) {
 			code = "cancelled"
 		}
-		if code == "cancelled" {
-			_ = s.store.CancelTurn(context.Background(), task.ID, turn.ID, currentAttempt.ID, safeError(failure), postFingerprint, mutation || evidenceMismatch, time.Now().UTC())
+		cancelled := code == "cancelled"
+		var finishErr error
+		if cancelled {
+			finishErr = s.store.CancelTurn(context.Background(), task.ID, turn.ID, currentAttempt.ID, safeError(failure), postFingerprint, mutation || evidenceMismatch, time.Now().UTC())
 		} else {
-			_ = s.store.FailTurn(context.Background(), task.ID, turn.ID, currentAttempt.ID, code, safeError(failure), postFingerprint, mutation || evidenceMismatch, time.Now().UTC())
+			finishErr = s.store.FailTurn(context.Background(), task.ID, turn.ID, currentAttempt.ID, code, safeError(failure), postFingerprint, mutation || evidenceMismatch, time.Now().UTC())
+		}
+		if errors.Is(finishErr, taskstore.ErrCancellationRequested) {
+			cancelled = true
+			failure = context.Canceled
+			finishErr = s.store.CancelTurn(context.Background(), task.ID, turn.ID, currentAttempt.ID, "cancellation requested", postFingerprint, mutation || evidenceMismatch, time.Now().UTC())
+		}
+		if finishErr != nil {
+			return
 		}
 		typ := agent.EventError
 		resultStatus := taskstore.TurnFailed
-		if code == "cancelled" {
+		if cancelled {
 			typ = agent.EventCancelled
 			resultStatus = taskstore.TurnCancelled
 		}
@@ -362,7 +390,22 @@ func (s *Service) execute(ctx context.Context, task taskstore.Task, turn tasksto
 		})
 		return
 	}
-	_ = s.store.CompleteTurn(context.Background(), task.ID, turn.ID, currentAttempt.ID, result.FinalMessage, postFingerprint, mutation, evidenceMismatch, time.Now().UTC())
+	if err := s.store.CompleteTurn(context.Background(), task.ID, turn.ID, currentAttempt.ID, result.FinalMessage, postFingerprint, mutation, evidenceMismatch, time.Now().UTC()); errors.Is(err, taskstore.ErrCancellationRequested) {
+		if cancelErr := s.store.CancelTurn(context.Background(), task.ID, turn.ID, currentAttempt.ID, "cancellation requested", postFingerprint, mutation || evidenceMismatch, time.Now().UTC()); cancelErr != nil {
+			return
+		}
+		_ = s.emit(context.Background(), agent.Event{
+			Type: agent.EventCancelled, TaskID: task.ID, TurnID: turn.ID, Backend: backend.ID(),
+			Result: &agent.ResultEvent{Status: string(taskstore.TurnCancelled), Error: "cancellation requested"},
+		})
+		return
+	} else if err != nil {
+		if failErr := s.store.FailTurn(context.Background(), task.ID, turn.ID, currentAttempt.ID, "state_failed", safeError(err), postFingerprint, mutation || evidenceMismatch, time.Now().UTC()); failErr == nil {
+			_ = s.emit(context.Background(), agent.Event{Type: agent.EventError, TaskID: task.ID, TurnID: turn.ID, Backend: backend.ID(),
+				Result: &agent.ResultEvent{Status: string(taskstore.TurnFailed), Error: safeError(err)}})
+		}
+		return
+	}
 	_ = s.emit(context.Background(), agent.Event{
 		Type: agent.EventCompleted, TaskID: task.ID, TurnID: turn.ID, Backend: backend.ID(),
 		Result: &agent.ResultEvent{ExitCode: 0, Status: string(taskstore.TurnSucceeded)},
@@ -370,7 +413,20 @@ func (s *Service) execute(ctx context.Context, task taskstore.Task, turn tasksto
 }
 
 func (s *Service) failBeforeRun(ctx context.Context, task taskstore.Task, turn taskstore.Turn, attempt taskstore.RouteAttempt, code string, err error) {
-	_ = s.store.FailTurn(context.Background(), task.ID, turn.ID, attempt.ID, code, safeError(err), "", false, time.Now().UTC())
+	finishErr := s.store.FailTurn(context.Background(), task.ID, turn.ID, attempt.ID, code, safeError(err), "", false, time.Now().UTC())
+	if errors.Is(finishErr, taskstore.ErrCancellationRequested) {
+		if cancelErr := s.store.CancelTurn(context.Background(), task.ID, turn.ID, attempt.ID, "cancellation requested", "", false, time.Now().UTC()); cancelErr != nil {
+			return
+		}
+		_ = s.emit(context.Background(), agent.Event{
+			Type: agent.EventCancelled, TaskID: task.ID, TurnID: turn.ID, Backend: attempt.Backend,
+			Result: &agent.ResultEvent{Status: string(taskstore.TurnCancelled), Error: "cancellation requested"},
+		})
+		return
+	}
+	if finishErr != nil {
+		return
+	}
 	_ = s.emit(context.Background(), agent.Event{
 		Type: agent.EventError, TaskID: task.ID, TurnID: turn.ID, Backend: attempt.Backend,
 		Result: &agent.ResultEvent{Status: string(taskstore.TurnFailed), Error: safeError(err)},
@@ -557,6 +613,12 @@ func (s *Service) ReconcileInterrupted(ctx context.Context) (ReconciliationRepor
 				mutationRisk = true
 			}
 		}
+		if run.CancellationRequested {
+			code = "cancelled"
+			message = "durable cancellation completed during daemon recovery"
+			mutationRisk = run.Permission == agent.PermissionWrite &&
+				(run.TurnStatus == taskstore.TurnRunning || run.TurnStatus == taskstore.TurnAwaitingApproval)
+		}
 
 		postFingerprint := ""
 		if identity, resolveErr := workspace.Resolve(ctx, run.WorkspacePath); resolveErr == nil && identity.ID == run.WorkspaceID {
@@ -566,7 +628,11 @@ func (s *Service) ReconcileInterrupted(ctx context.Context) (ReconciliationRepor
 				}
 			}
 		}
-		if err := s.store.RecoverInterrupted(ctx, run, code, message, postFingerprint, mutationRisk, time.Now().UTC()); err != nil {
+		if run.CancellationRequested {
+			if err := s.store.CancelTurn(ctx, run.TaskID, run.TurnID, run.AttemptID, message, postFingerprint, mutationRisk, time.Now().UTC()); err != nil {
+				return report, err
+			}
+		} else if err := s.store.RecoverInterrupted(ctx, run, code, message, postFingerprint, mutationRisk, time.Now().UTC()); err != nil {
 			return report, err
 		}
 		if mutationRisk {
@@ -574,9 +640,15 @@ func (s *Service) ReconcileInterrupted(ctx context.Context) (ReconciliationRepor
 		} else {
 			report.Recovered++
 		}
+		eventType := agent.EventError
+		turnStatus := taskstore.TurnFailed
+		if run.CancellationRequested {
+			eventType = agent.EventCancelled
+			turnStatus = taskstore.TurnCancelled
+		}
 		if err := s.emit(ctx, agent.Event{
-			Type: agent.EventError, TaskID: run.TaskID, TurnID: run.TurnID,
-			Result:   &agent.ResultEvent{Status: string(taskstore.TurnFailed), Error: message},
+			Type: eventType, TaskID: run.TaskID, TurnID: run.TurnID,
+			Result:   &agent.ResultEvent{Status: string(turnStatus), Error: message},
 			Metadata: map[string]string{"error_code": code},
 		}); err != nil {
 			return report, err
@@ -601,14 +673,29 @@ func (s *Service) Backends(ctx context.Context) []agent.BackendHealth {
 	return s.registry.Health(ctx)
 }
 
-func (s *Service) Cancel(taskID string) bool {
-	s.mu.Lock()
-	cancel, ok := s.cancels[taskID]
-	s.mu.Unlock()
-	if ok {
-		cancel()
+func (s *Service) Cancel(ctx context.Context, taskID string) (CancelTaskResult, error) {
+	task, cancellation, err := s.store.RequestCancellation(ctx, taskID, time.Now().UTC())
+	if err != nil {
+		return CancelTaskResult{}, err
 	}
-	return ok
+	s.mu.Lock()
+	active, ok := s.cancels[taskID]
+	s.mu.Unlock()
+	signalled := ok && cancellation.Status == taskstore.CancellationRequested
+	if signalled {
+		active.cancel()
+	}
+	return CancelTaskResult{Task: task, Cancellation: cancellation, Signalled: signalled}, nil
+}
+
+func (s *Service) CloseTask(ctx context.Context, taskID string) (TaskTransitionResult, error) {
+	task, changed, err := s.store.CloseTask(ctx, taskID, time.Now().UTC())
+	return TaskTransitionResult{Task: task, Changed: changed}, err
+}
+
+func (s *Service) ReopenTask(ctx context.Context, taskID string) (TaskTransitionResult, error) {
+	task, changed, err := s.store.ReopenTask(ctx, taskID, time.Now().UTC())
+	return TaskTransitionResult{Task: task, Changed: changed}, err
 }
 
 // Wait blocks until every supervised backend process has stopped and its

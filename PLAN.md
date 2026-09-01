@@ -42,8 +42,8 @@ The original plan described a greenfield project. That is no longer accurate. Th
 | Fake backend | Shipped foundation | Deterministic success, failure, mutation, stale epoch, sleep/cancel, and lost-session scenarios are testable. |
 | Workspace safety | Shipped foundation | Git-root identity, per-path dirty-baseline state, authoritative turn deltas, bounded diffs, OS write locks, inherited lock lifetime, fencing checks, and agent-evidence mismatch detection exist. |
 | Recovery | Shipped foundation | Interrupted daemon work is reconciled; lost native sessions can be replaced from canonical history when safe. |
-| Control API | Shipped foundation | Create, list, inspect, continue, cancel, backend health, assembled task evidence, and replayable/live SSE task events exist. |
-| Task CLI | Shipped foundation | `iq task`, `iq tasks`, `iq task status`, `iq task show`, and `iq continue` use the control API and stream normalized events. |
+| Control API | Shipped foundation | Create, list, inspect, continue, durable cancel, close/reopen, backend health, assembled task evidence, and replayable/live SSE task events exist. |
+| Task CLI | Shipped foundation | Task creation/listing/evidence/continuation plus retry-safe `iq cancel` and explicit task close/reopen use the control API. |
 | Codex task backend | Shipped foundation | Read-only execution plus guarded App Server workspace-write execution, durable command/file approvals, event parsing, evidence, native-session resume, and lost-session detection work. |
 | Claude task backend | Missing | Claude traffic can use the proxy, but Claude Code is not yet an orchestrated task backend. |
 | Routing and handoff | Partial | Backend selection is explicit and a lost session can recover within one backend; there is no policy router or cross-backend handoff. |
@@ -146,8 +146,8 @@ Goal: one real agent can safely finish useful read and write tasks under IndexQu
   - cancellation, timeout, and restart never silently approve a pending action.
 - [x] Persist bounded command evidence and every changed path reported by normalized Codex events.
 - [x] Compare per-path pre/post state even when the adapter does not report a file event; persist the authoritative delta and move mismatches to `needs_attention`.
-- Make cancellation idempotent and expose a clear final task state.
-- Add close/reopen semantics so `open`, `running`, `needs_attention`, and `closed` have user-visible meanings.
+- [x] Make cancellation durable and idempotent, including daemon-restart completion and a clear cancelled turn state.
+- [x] Add close/reopen semantics so `open`, `running`, `needs_attention`, and `closed` have user-visible meanings.
 - Test dirty baseline preservation, concurrent writer rejection, child-process crash, daemon crash, stale events, and mutation followed by failure.
 
 Exit criteria:
@@ -250,7 +250,7 @@ Work in this order:
 3. **Done:** Codex workspace-write execution with locked child lifetime and integration coverage.
 4. **Done:** durable App Server approval request/response state and CLI commands.
 5. **Done:** mutation reconciliation based on per-path pre/post snapshots, independent of adapter events.
-6. Idempotent cancellation plus explicit close/reopen task semantics.
+6. **Done:** durable idempotent cancellation plus explicit close/reopen task semantics.
 7. Verification schema, configured checks, and post-turn verifier for the demo gate.
 8. Control API authentication before any browser surface is enabled.
 9. Claude Code backend and protocol fixtures.

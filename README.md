@@ -46,6 +46,9 @@ iq tasks
 iq task show TASK_ID
 iq approvals                  # pending approval requests
 iq approve APPROVAL_ID        # or: iq deny APPROVAL_ID
+iq cancel TASK_ID             # durable and safe to retry
+iq task close TASK_ID         # close idle or needs-attention work
+iq task reopen TASK_ID        # reopen or acknowledge needs_attention
 iq continue TASK_ID "check the edge cases"
 ```
 
@@ -58,14 +61,24 @@ prints the exact `iq approve` / `iq deny` command. IndexQube commits the decisio
 before the backend resumes. Pending requests are cancelled on daemon recovery
 and are never silently approved after a restart.
 
+Cancellation is also durable: IndexQube commits the request before signalling
+the supervised backend. Repeating `iq cancel` returns the same request, and a
+daemon restart completes an outstanding request as a cancelled turn. A
+cancelled read-only turn returns its task to `open`; a write turn whose state
+cannot be proven safe becomes `needs_attention`. `iq task close` archives idle
+or attention-needed work, while `iq task reopen` restores a closed task or
+explicitly acknowledges `needs_attention`. Active tasks must be cancelled
+before they can be closed or reopened.
+
 `iq task show` reads an assembled `TaskEvidence` view from SQLite: canonical
 turns, native-session lineage, route attempts, workspace snapshots, normalized
-commands, changed files, and the underlying event timeline. Changed-file
-evidence is derived from per-path pre/post Git state, including edits inside an
-already-dirty baseline, and compared with agent-reported events. A mismatch is
-persisted and moves the task to `needs_attention`. Evidence remains available
-after the daemon restarts; native Codex sessions are continuation optimizations
-rather than the task's source of truth.
+commands, changed files, approvals, cancellations, and the underlying event
+timeline. Changed-file evidence is derived from per-path pre/post Git state,
+including edits inside an already-dirty baseline, and compared with
+agent-reported events. A mismatch is persisted and moves the task to
+`needs_attention`. Evidence remains available after the daemon restarts; native
+Codex sessions are continuation optimizations rather than the task's source of
+truth.
 
 The optional real-agent smoke lanes exercise both the authenticated App Server
 write path and a real durable approval round trip:

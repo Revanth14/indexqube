@@ -8,8 +8,13 @@ workspace="$smoke_root/workspace"
 state_dir="$smoke_root/state"
 daemon_pid=""
 approval_task_pid=""
+cancel_task_pid=""
 
 cleanup() {
+	if [[ -n "$cancel_task_pid" ]] && kill -0 "$cancel_task_pid" 2>/dev/null; then
+		kill -TERM "$cancel_task_pid" 2>/dev/null || true
+		wait "$cancel_task_pid" 2>/dev/null || true
+	fi
 	if [[ -n "$approval_task_pid" ]] && kill -0 "$approval_task_pid" 2>/dev/null; then
 		kill -TERM "$approval_task_pid" 2>/dev/null || true
 		wait "$approval_task_pid" 2>/dev/null || true
@@ -99,6 +104,49 @@ INDEXQUBE_HOME="$state_dir" INDEXQUBE_CONTROL_URL="$control_url" \
   "$iq_bin" task show "$task_id" | grep -q 'Evidence:'
 INDEXQUBE_HOME="$state_dir" INDEXQUBE_CONTROL_URL="$control_url" \
   "$iq_bin" continue "$task_id" 'confirm the task survived restart' >/dev/null
+
+INDEXQUBE_HOME="$state_dir" INDEXQUBE_CONTROL_URL="$control_url" \
+  "$iq_bin" task close "$task_id" | grep -q 'closed'
+INDEXQUBE_HOME="$state_dir" INDEXQUBE_CONTROL_URL="$control_url" \
+  "$iq_bin" task close "$task_id" | grep -q 'unchanged'
+if INDEXQUBE_HOME="$state_dir" INDEXQUBE_CONTROL_URL="$control_url" \
+  "$iq_bin" continue "$task_id" 'closed tasks reject continuation' >/dev/null 2>&1; then
+  printf 'closed task unexpectedly accepted a continuation\n' >&2
+  exit 1
+fi
+INDEXQUBE_HOME="$state_dir" INDEXQUBE_CONTROL_URL="$control_url" \
+  "$iq_bin" task reopen "$task_id" | grep -q 'open'
+INDEXQUBE_HOME="$state_dir" INDEXQUBE_CONTROL_URL="$control_url" \
+  "$iq_bin" task reopen "$task_id" | grep -q 'unchanged'
+
+cancel_log="$smoke_root/cancel-task.log"
+INDEXQUBE_HOME="$state_dir" INDEXQUBE_CONTROL_URL="$control_url" \
+  "$iq_bin" task --backend fake --workspace "$workspace" \
+  '[fake:sleep] wait for durable cancellation' >"$cancel_log" 2>&1 &
+cancel_task_pid=$!
+cancel_task_id=""
+for _ in {1..100}; do
+  cancel_task_id="$(sed -n 's/.*\[iq\] task \([^ ]*\) via.*/\1/p' "$cancel_log" | head -n 1)"
+  if [[ -n "$cancel_task_id" ]]; then
+    break
+  fi
+  sleep 0.05
+done
+if [[ -z "$cancel_task_id" ]]; then
+  printf 'failed to read cancellation task id\n' >&2
+  sed -n '1,200p' "$cancel_log" >&2
+  exit 1
+fi
+INDEXQUBE_HOME="$state_dir" INDEXQUBE_CONTROL_URL="$control_url" \
+  "$iq_bin" cancel "$cancel_task_id" | grep -q 'requested'
+wait "$cancel_task_pid" 2>/dev/null || true
+cancel_task_pid=""
+INDEXQUBE_HOME="$state_dir" INDEXQUBE_CONTROL_URL="$control_url" \
+  "$iq_bin" cancel "$cancel_task_id" | grep -q 'completed'
+cancel_show="$(INDEXQUBE_HOME="$state_dir" INDEXQUBE_CONTROL_URL="$control_url" \
+  "$iq_bin" task show "$cancel_task_id")"
+grep -q 'Cancellations:' <<<"$cancel_show"
+grep -q 'cancelled' <<<"$cancel_show"
 
 if [[ "${IQ_SMOKE_REAL_CODEX:-0}" == "1" ]]; then
   real_log="$smoke_root/real-codex.log"
