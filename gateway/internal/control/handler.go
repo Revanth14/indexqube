@@ -23,9 +23,11 @@ func NewHandler(service *orchestrator.Service) *Handler {
 	h := &Handler{service: service, mux: http.NewServeMux()}
 	h.mux.HandleFunc("GET /control/healthz", h.health)
 	h.mux.HandleFunc("GET /control/v1/backends", h.backends)
+	h.mux.HandleFunc("GET /control/v1/tasks", h.listTasks)
 	h.mux.HandleFunc("POST /control/v1/tasks", h.createTask)
 	h.mux.HandleFunc("GET /control/v1/tasks/{taskID}", h.getTask)
 	h.mux.HandleFunc("GET /control/v1/tasks/{taskID}/state", h.getTaskState)
+	h.mux.HandleFunc("GET /control/v1/tasks/{taskID}/evidence", h.getTaskEvidence)
 	h.mux.HandleFunc("POST /control/v1/tasks/{taskID}/turns", h.continueTask)
 	h.mux.HandleFunc("POST /control/v1/tasks/{taskID}/cancel", h.cancelTask)
 	h.mux.HandleFunc("GET /control/v1/tasks/{taskID}/events", h.taskEvents)
@@ -76,7 +78,8 @@ func (h *Handler) backends(w http.ResponseWriter, r *http.Request) {
 type createTaskRequest struct {
 	Workspace      string               `json:"workspace"`
 	Prompt         string               `json:"prompt"`
-	Provider       agent.BackendID      `json:"provider"`
+	Backend        agent.BackendID      `json:"backend"`
+	Provider       agent.BackendID      `json:"provider,omitempty"`
 	Permission     agent.PermissionMode `json:"permission"`
 	IdempotencyKey string               `json:"idempotency_key,omitempty"`
 }
@@ -90,8 +93,12 @@ func (h *Handler) createTask(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", err)
 		return
 	}
+	if body.Backend != "" && body.Provider != "" && body.Backend != body.Provider {
+		writeError(w, http.StatusBadRequest, "invalid_request", fmt.Errorf("backend and deprecated provider alias disagree"))
+		return
+	}
 	task, err := h.service.StartTask(r.Context(), orchestrator.StartTaskInput{
-		Workspace: body.Workspace, Prompt: body.Prompt, Provider: body.Provider,
+		Workspace: body.Workspace, Prompt: body.Prompt, Backend: body.Backend, Provider: body.Provider,
 		Permission: body.Permission, IdempotencyKey: body.IdempotencyKey,
 	})
 	if err != nil {
@@ -100,6 +107,16 @@ func (h *Handler) createTask(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Location", "/control/v1/tasks/"+task.ID)
 	writeJSON(w, http.StatusAccepted, task)
+}
+
+func (h *Handler) listTasks(w http.ResponseWriter, r *http.Request) {
+	limit, _ := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("limit")))
+	tasks, err := h.service.Tasks(r.Context(), limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "state_error", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"tasks": tasks})
 }
 
 func (h *Handler) getTask(w http.ResponseWriter, r *http.Request) {
@@ -126,6 +143,19 @@ func (h *Handler) getTaskState(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, state)
+}
+
+func (h *Handler) getTaskEvidence(w http.ResponseWriter, r *http.Request) {
+	evidence, ok, err := h.service.TaskEvidence(r.Context(), r.PathValue("taskID"))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "state_error", err)
+		return
+	}
+	if !ok {
+		writeError(w, http.StatusNotFound, "task_not_found", fmt.Errorf("task not found"))
+		return
+	}
+	writeJSON(w, http.StatusOK, evidence)
 }
 
 func (h *Handler) cancelTask(w http.ResponseWriter, r *http.Request) {

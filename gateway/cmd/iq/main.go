@@ -51,6 +51,8 @@ func main() {
 		os.Exit(fake.RunHelper(os.Stdin, os.Stdout, os.Stderr))
 	case "task":
 		runTask(os.Args[2:])
+	case "tasks":
+		runTasks(os.Args[2:])
 	case "continue":
 		runContinue(os.Args[2:])
 	case "claude":
@@ -546,8 +548,10 @@ func printHelp() {
 
   USAGE
     iq                   Start Claude Code (default)
-    iq task [flags] TEXT Create a durable agent task (providers: fake, codex read-only)
+    iq task [flags] TEXT Create a durable agent task (--backend fake|codex, --write)
+    iq tasks             List durable tasks
     iq task status TASK  Inspect canonical task and latest-turn state
+    iq task show TASK    Show durable turns, commands, files, routes, and snapshots
     iq continue TASK TEXT Continue a task; recover if its native session is lost
     iq claude            Start Claude Code via IndexQube
     iq claude --dev      Start Claude Code, dev mode (relaxed guards)

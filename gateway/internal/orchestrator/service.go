@@ -6,6 +6,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,9 +21,12 @@ import (
 var ErrStaleWriteEpoch = errors.New("orchestrator: event belongs to a stale write epoch")
 
 type StartTaskInput struct {
-	Workspace      string               `json:"workspace"`
-	Prompt         string               `json:"prompt"`
-	Provider       agent.BackendID      `json:"provider"`
+	Workspace string          `json:"workspace"`
+	Prompt    string          `json:"prompt"`
+	Backend   agent.BackendID `json:"backend"`
+	// Provider is a compatibility alias for early control-plane clients. New
+	// clients should use Backend; provider names belong to the model data plane.
+	Provider       agent.BackendID      `json:"provider,omitempty"`
 	Permission     agent.PermissionMode `json:"permission"`
 	IdempotencyKey string               `json:"idempotency_key,omitempty"`
 }
@@ -57,8 +62,12 @@ func NewService(ctx context.Context, store *taskstore.Store, locks *workspace.Lo
 }
 
 func (s *Service) StartTask(ctx context.Context, input StartTaskInput) (taskstore.Task, error) {
-	if input.Provider == "" {
-		input.Provider = agent.BackendFake
+	backendID := input.Backend
+	if backendID == "" {
+		backendID = input.Provider
+	}
+	if backendID == "" {
+		backendID = agent.BackendFake
 	}
 	if input.Permission == "" {
 		input.Permission = agent.PermissionReadOnly
@@ -69,7 +78,7 @@ func (s *Service) StartTask(ctx context.Context, input StartTaskInput) (taskstor
 	if input.Prompt == "" {
 		return taskstore.Task{}, fmt.Errorf("orchestrator: empty prompt")
 	}
-	backend, err := s.registry.Get(input.Provider)
+	backend, err := s.registry.Get(backendID)
 	if err != nil {
 		return taskstore.Task{}, err
 	}
@@ -80,7 +89,7 @@ func (s *Service) StartTask(ctx context.Context, input StartTaskInput) (taskstor
 	}
 	health := backend.Probe(ctx)
 	if health.Status != agent.HealthAvailable {
-		return taskstore.Task{}, fmt.Errorf("orchestrator: backend %q unavailable: %s", input.Provider, health.Reason)
+		return taskstore.Task{}, fmt.Errorf("orchestrator: backend %q unavailable: %s", backendID, health.Reason)
 	}
 	identity, err := workspace.Resolve(ctx, input.Workspace)
 	if err != nil {
@@ -90,7 +99,7 @@ func (s *Service) StartTask(ctx context.Context, input StartTaskInput) (taskstor
 	task, turn, attempt, err := s.store.CreateTask(ctx, taskstore.CreateTaskInput{
 		TaskID: taskstore.NewID("task"), TurnID: taskstore.NewID("turn"), RouteAttemptID: taskstore.NewID("route"),
 		WorkspaceID: identity.ID, WorkspacePath: identity.Root, Goal: input.Prompt, Permission: input.Permission,
-		PreferredBackend: input.Provider, IdempotencyKey: input.IdempotencyKey, Now: now,
+		PreferredBackend: backendID, IdempotencyKey: input.IdempotencyKey, Now: now,
 	})
 	if err != nil {
 		return taskstore.Task{}, err
@@ -269,8 +278,16 @@ func (s *Service) execute(ctx context.Context, task taskstore.Task, turn tasksto
 	}
 
 	post, snapshotErr := workspace.Capture(context.Background(), identity, task.ID, turn.ID, "post")
+	var fileDeltas []taskstore.WorkspaceFileDelta
 	if snapshotErr == nil {
-		_ = s.store.AddSnapshot(context.Background(), post)
+		if err := s.store.AddSnapshot(context.Background(), post); err != nil {
+			snapshotErr = err
+		} else {
+			fileDeltas = workspace.DiffFileStates(pre, post)
+			if err := s.store.AddWorkspaceFileDeltas(context.Background(), fileDeltas); err != nil {
+				snapshotErr = err
+			}
+		}
 	}
 	postFingerprint := ""
 	workspaceChanged := false
@@ -278,7 +295,15 @@ func (s *Service) execute(ctx context.Context, task taskstore.Task, turn tasksto
 		postFingerprint = post.Fingerprint
 		workspaceChanged = pre.Fingerprint != post.Fingerprint
 	}
-	mutation := workspaceChanged || mutationBeforeRecovery || tracker.mutationSeen || result.MutationSeen
+	mutation := len(fileDeltas) > 0 || workspaceChanged || mutationBeforeRecovery || tracker.mutationSeen || result.MutationSeen
+	evidenceMismatch, evidenceMessage := compareMutationEvidence(fileDeltas, tracker.reportedFiles)
+	if evidenceMismatch {
+		_ = s.emit(context.Background(), agent.Event{
+			Type: agent.EventWarning, TaskID: task.ID, TurnID: turn.ID, Backend: backend.ID(),
+			Message:  &agent.MessageEvent{Text: evidenceMessage},
+			Metadata: map[string]string{"error_code": "workspace_evidence_mismatch"},
+		})
+	}
 
 	if result.NativeSessionID != "" {
 		if priorSession == nil || result.NativeSessionID != priorSession.NativeSessionID {
@@ -311,9 +336,9 @@ func (s *Service) execute(ctx context.Context, task taskstore.Task, turn tasksto
 			code = "cancelled"
 		}
 		if code == "cancelled" {
-			_ = s.store.CancelTurn(context.Background(), task.ID, turn.ID, currentAttempt.ID, safeError(failure), postFingerprint, mutation, time.Now().UTC())
+			_ = s.store.CancelTurn(context.Background(), task.ID, turn.ID, currentAttempt.ID, safeError(failure), postFingerprint, mutation || evidenceMismatch, time.Now().UTC())
 		} else {
-			_ = s.store.FailTurn(context.Background(), task.ID, turn.ID, currentAttempt.ID, code, safeError(failure), postFingerprint, mutation, time.Now().UTC())
+			_ = s.store.FailTurn(context.Background(), task.ID, turn.ID, currentAttempt.ID, code, safeError(failure), postFingerprint, mutation || evidenceMismatch, time.Now().UTC())
 		}
 		typ := agent.EventError
 		resultStatus := taskstore.TurnFailed
@@ -327,7 +352,7 @@ func (s *Service) execute(ctx context.Context, task taskstore.Task, turn tasksto
 		})
 		return
 	}
-	_ = s.store.CompleteTurn(context.Background(), task.ID, turn.ID, currentAttempt.ID, result.FinalMessage, postFingerprint, mutation, time.Now().UTC())
+	_ = s.store.CompleteTurn(context.Background(), task.ID, turn.ID, currentAttempt.ID, result.FinalMessage, postFingerprint, mutation, evidenceMismatch, time.Now().UTC())
 	_ = s.emit(context.Background(), agent.Event{
 		Type: agent.EventCompleted, TaskID: task.ID, TurnID: turn.ID, Backend: backend.ID(),
 		Result: &agent.ResultEvent{ExitCode: 0, Status: string(taskstore.TurnSucceeded)},
@@ -358,6 +383,14 @@ func (s *Service) Task(ctx context.Context, taskID string) (taskstore.Task, bool
 
 func (s *Service) TaskState(ctx context.Context, taskID string) (taskstore.TaskState, bool, error) {
 	return s.store.TaskState(ctx, taskID)
+}
+
+func (s *Service) Tasks(ctx context.Context, limit int) ([]taskstore.Task, error) {
+	return s.store.ListTasks(ctx, limit)
+}
+
+func (s *Service) TaskEvidence(ctx context.Context, taskID string) (taskstore.TaskEvidence, bool, error) {
+	return s.store.TaskEvidence(ctx, taskID)
 }
 
 // ReconcileInterrupted converts stale queued/running turns into durable failed
@@ -481,6 +514,7 @@ type turnEventSink struct {
 	writeEpoch      uint64
 	mutationCapable bool
 	mutationSeen    bool
+	reportedFiles   map[string]struct{}
 }
 
 func (s *turnEventSink) Publish(ctx context.Context, event agent.Event) error {
@@ -496,12 +530,74 @@ func (s *turnEventSink) Publish(ctx context.Context, event agent.Event) error {
 	if event.Type == agent.EventFileChanged || (s.mutationCapable && (event.Type == agent.EventToolStarted || event.Type == agent.EventCommandFinished)) {
 		s.mutationSeen = true
 	}
+	if event.Type == agent.EventFileChanged && event.File != nil {
+		if s.reportedFiles == nil {
+			s.reportedFiles = make(map[string]struct{})
+		}
+		changes := event.File.Changes
+		if len(changes) == 0 && event.File.Path != "" {
+			changes = []agent.FileChange{{Path: event.File.Path}}
+		}
+		for _, change := range changes {
+			if path := normalizeEvidencePath(change.Path); path != "" {
+				s.reportedFiles[path] = struct{}{}
+			}
+		}
+	}
 	// Terminal events are emitted only after the canonical turn state has been
 	// committed, so subscribers never observe completion ahead of SQLite.
 	if event.Type == agent.EventCompleted || event.Type == agent.EventError || event.Type == agent.EventCancelled {
 		return nil
 	}
 	return s.service.emit(ctx, event)
+}
+
+func compareMutationEvidence(deltas []taskstore.WorkspaceFileDelta, reported map[string]struct{}) (bool, string) {
+	required := make(map[string]struct{}, len(deltas))
+	allowed := make(map[string]struct{}, len(deltas)*2)
+	for _, delta := range deltas {
+		path := normalizeEvidencePath(delta.Path)
+		if path != "" {
+			required[path] = struct{}{}
+			allowed[path] = struct{}{}
+		}
+		if previous := normalizeEvidencePath(delta.PreviousPath); previous != "" {
+			allowed[previous] = struct{}{}
+		}
+	}
+	missing := make([]string, 0)
+	extra := make([]string, 0)
+	for path := range required {
+		if _, ok := reported[path]; !ok {
+			missing = append(missing, path)
+		}
+	}
+	for path := range reported {
+		if _, ok := allowed[path]; !ok {
+			extra = append(extra, path)
+		}
+	}
+	if len(missing) == 0 && len(extra) == 0 {
+		return false, ""
+	}
+	sort.Strings(missing)
+	sort.Strings(extra)
+	parts := []string{"agent file events did not match the authoritative workspace delta; manual inspection is required"}
+	if len(missing) > 0 {
+		parts = append(parts, "unreported: "+strings.Join(missing, ", "))
+	}
+	if len(extra) > 0 {
+		parts = append(parts, "not present in final delta: "+strings.Join(extra, ", "))
+	}
+	return true, strings.Join(parts, "; ")
+}
+
+func normalizeEvidencePath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	return filepath.ToSlash(filepath.Clean(path))
 }
 
 func safeError(err error) string {

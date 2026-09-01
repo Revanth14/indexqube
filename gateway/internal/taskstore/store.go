@@ -106,6 +106,34 @@ CREATE TABLE IF NOT EXISTS workspace_snapshots (
     UNIQUE(turn_id, phase)
 );
 
+CREATE TABLE IF NOT EXISTS workspace_file_states (
+    snapshot_id         TEXT NOT NULL REFERENCES workspace_snapshots(snapshot_id) ON DELETE CASCADE,
+    task_id             TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
+    turn_id             TEXT NOT NULL REFERENCES turns(turn_id) ON DELETE CASCADE,
+    path                TEXT NOT NULL,
+    original_path       TEXT NOT NULL DEFAULT '',
+    index_status        TEXT NOT NULL DEFAULT '',
+    worktree_status     TEXT NOT NULL DEFAULT '',
+    fingerprint         TEXT NOT NULL,
+    PRIMARY KEY(snapshot_id, path)
+);
+
+CREATE TABLE IF NOT EXISTS workspace_file_deltas (
+    delta_id            TEXT PRIMARY KEY,
+    task_id             TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
+    turn_id             TEXT NOT NULL REFERENCES turns(turn_id) ON DELETE CASCADE,
+    path                TEXT NOT NULL,
+    previous_path       TEXT NOT NULL DEFAULT '',
+    operation           TEXT NOT NULL,
+    before_fingerprint  TEXT NOT NULL DEFAULT '',
+    after_fingerprint   TEXT NOT NULL DEFAULT '',
+    recorded_at         INTEGER NOT NULL,
+    UNIQUE(turn_id, path, previous_path)
+);
+
+CREATE INDEX IF NOT EXISTS workspace_file_states_turn_idx ON workspace_file_states(turn_id, snapshot_id);
+CREATE INDEX IF NOT EXISTS workspace_file_deltas_task_idx ON workspace_file_deltas(task_id, recorded_at);
+
 CREATE TABLE IF NOT EXISTS events (
     event_id            TEXT PRIMARY KEY,
     task_id             TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
@@ -381,12 +409,53 @@ func (s *Store) AttachBackendSession(ctx context.Context, turnID, attemptID, ses
 }
 
 func (s *Store) AddSnapshot(ctx context.Context, snap WorkspaceSnapshot) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO workspace_snapshots
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `INSERT INTO workspace_snapshots
 		(snapshot_id,task_id,turn_id,phase,workspace_id,head_commit,branch_name,staged_hash,unstaged_hash,untracked_hash,fingerprint,status_summary,bounded_diff,captured_at)
 		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, snap.ID, snap.TaskID, snap.TurnID, snap.Phase, snap.WorkspaceID,
 		snap.HeadCommit, snap.Branch, snap.StagedHash, snap.UnstagedHash, snap.UntrackedHash, snap.Fingerprint,
-		snap.StatusSummary, snap.BoundedDiff, snap.CapturedAt.UnixMilli())
-	return err
+		snap.StatusSummary, snap.BoundedDiff, snap.CapturedAt.UnixMilli()); err != nil {
+		return err
+	}
+	for _, file := range snap.Files {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO workspace_file_states
+			(snapshot_id,task_id,turn_id,path,original_path,index_status,worktree_status,fingerprint)
+			VALUES(?,?,?,?,?,?,?,?)`, snap.ID, snap.TaskID, snap.TurnID, file.Path, file.OriginalPath,
+			file.IndexStatus, file.WorktreeStatus, file.Fingerprint); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (s *Store) AddWorkspaceFileDeltas(ctx context.Context, deltas []WorkspaceFileDelta) error {
+	if len(deltas) == 0 {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, delta := range deltas {
+		if delta.ID == "" {
+			delta.ID = NewID("delta")
+		}
+		if delta.RecordedAt.IsZero() {
+			delta.RecordedAt = time.Now().UTC()
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO workspace_file_deltas
+			(delta_id,task_id,turn_id,path,previous_path,operation,before_fingerprint,after_fingerprint,recorded_at)
+			VALUES(?,?,?,?,?,?,?,?,?)`, delta.ID, delta.TaskID, delta.TurnID, delta.Path, delta.PreviousPath,
+			delta.Operation, delta.BeforeFingerprint, delta.AfterFingerprint, delta.RecordedAt.UnixMilli()); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *Store) AppendEvent(ctx context.Context, event agent.Event) (agent.Event, error) {
@@ -459,8 +528,12 @@ func (s *Store) LatestEventSequence(ctx context.Context, taskID string) (int64, 
 	return sequence, err
 }
 
-func (s *Store) CompleteTurn(ctx context.Context, taskID, turnID, attemptID, message, postFingerprint string, mutation bool, now time.Time) error {
-	return s.finishTurn(ctx, taskID, turnID, attemptID, TurnSucceeded, TaskOpen, message, "", "", postFingerprint, mutation, now)
+func (s *Store) CompleteTurn(ctx context.Context, taskID, turnID, attemptID, message, postFingerprint string, mutation, needsAttention bool, now time.Time) error {
+	taskStatus := TaskOpen
+	if needsAttention {
+		taskStatus = TaskNeedsAttention
+	}
+	return s.finishTurn(ctx, taskID, turnID, attemptID, TurnSucceeded, taskStatus, message, "", "", postFingerprint, mutation, now)
 }
 
 func (s *Store) FailTurn(ctx context.Context, taskID, turnID, attemptID, code, message, postFingerprint string, mutation bool, now time.Time) error {
@@ -549,6 +622,277 @@ func (s *Store) TaskByID(ctx context.Context, taskID string) (Task, bool, error)
 	return task, true, nil
 }
 
+func (s *Store) ListTasks(ctx context.Context, limit int) ([]Task, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT task_id,workspace_id,workspace_path,original_goal,permission_mode,
+		preferred_backend,status,revision,created_at,updated_at FROM tasks ORDER BY updated_at DESC,task_id DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	tasks := make([]Task, 0)
+	for rows.Next() {
+		var task Task
+		var created, updated int64
+		if err := rows.Scan(&task.ID, &task.WorkspaceID, &task.WorkspacePath, &task.OriginalGoal, &task.Permission,
+			&task.PreferredBackend, &task.Status, &task.Revision, &created, &updated); err != nil {
+			return nil, err
+		}
+		task.CreatedAt = time.UnixMilli(created).UTC()
+		task.UpdatedAt = time.UnixMilli(updated).UTC()
+		tasks = append(tasks, task)
+	}
+	return tasks, rows.Err()
+}
+
+func (s *Store) TaskEvidence(ctx context.Context, taskID string) (TaskEvidence, bool, error) {
+	task, ok, err := s.TaskByID(ctx, taskID)
+	if err != nil || !ok {
+		return TaskEvidence{}, ok, err
+	}
+	evidence := TaskEvidence{Task: task}
+	if evidence.Turns, err = s.turns(ctx, taskID); err != nil {
+		return TaskEvidence{}, false, err
+	}
+	if evidence.Sessions, err = s.backendSessions(ctx, taskID); err != nil {
+		return TaskEvidence{}, false, err
+	}
+	if evidence.Routes, err = s.routeAttempts(ctx, taskID); err != nil {
+		return TaskEvidence{}, false, err
+	}
+	if evidence.Snapshots, err = s.workspaceSnapshots(ctx, taskID); err != nil {
+		return TaskEvidence{}, false, err
+	}
+	if evidence.Events, err = s.EventsAfter(ctx, taskID, 0); err != nil {
+		return TaskEvidence{}, false, err
+	}
+	if evidence.Files, err = s.workspaceFileEvidence(ctx, taskID); err != nil {
+		return TaskEvidence{}, false, err
+	}
+	evidence.Commands, evidence.ReportedFiles = projectEvidence(evidence.Events)
+	evidence.EvidenceMismatch = fileEvidenceMismatch(evidence.Files, evidence.ReportedFiles)
+	return evidence, true, nil
+}
+
+func (s *Store) turns(ctx context.Context, taskID string) ([]Turn, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT turn_id,task_id,sequence,idempotency_key,user_message,assistant_message,
+		backend_session_id,permission_mode,status,write_epoch,error_code,error_message,created_at,started_at,completed_at
+		FROM turns WHERE task_id=? ORDER BY sequence`, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	turns := make([]Turn, 0)
+	for rows.Next() {
+		turn, err := scanTurn(rows)
+		if err != nil {
+			return nil, err
+		}
+		turns = append(turns, turn)
+	}
+	return turns, rows.Err()
+}
+
+func (s *Store) backendSessions(ctx context.Context, taskID string) ([]BackendSession, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT backend_session_id,task_id,backend,native_session_id,predecessor_id,
+		creation_reason,status,provider_metadata,created_at,last_used_at,terminated_at
+		FROM backend_sessions WHERE task_id=? ORDER BY created_at,rowid`, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	sessions := make([]BackendSession, 0)
+	for rows.Next() {
+		var session BackendSession
+		var predecessor sql.NullString
+		var terminated sql.NullInt64
+		var created, lastUsed int64
+		if err := rows.Scan(&session.ID, &session.TaskID, &session.Backend, &session.NativeSessionID, &predecessor,
+			&session.CreationReason, &session.Status, &session.ProviderMetadata, &created, &lastUsed, &terminated); err != nil {
+			return nil, err
+		}
+		session.PredecessorID = predecessor.String
+		session.CreatedAt = time.UnixMilli(created).UTC()
+		session.LastUsedAt = time.UnixMilli(lastUsed).UTC()
+		if terminated.Valid {
+			value := time.UnixMilli(terminated.Int64).UTC()
+			session.TerminatedAt = &value
+		}
+		sessions = append(sessions, session)
+	}
+	return sessions, rows.Err()
+}
+
+func (s *Store) routeAttempts(ctx context.Context, taskID string) ([]RouteAttempt, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT ra.route_attempt_id,ra.turn_id,ra.ordinal,ra.backend,ra.backend_session_id,
+		ra.decision_reason,ra.status,ra.failure_class,ra.mutation_observed,ra.pre_fingerprint,ra.post_fingerprint,
+		ra.started_at,ra.completed_at FROM route_attempts ra JOIN turns tr ON tr.turn_id=ra.turn_id
+		WHERE tr.task_id=? ORDER BY tr.sequence,ra.ordinal`, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	routes := make([]RouteAttempt, 0)
+	for rows.Next() {
+		var route RouteAttempt
+		var backendSession sql.NullString
+		var mutation int
+		var started int64
+		var completed sql.NullInt64
+		if err := rows.Scan(&route.ID, &route.TurnID, &route.Ordinal, &route.Backend, &backendSession,
+			&route.DecisionReason, &route.Status, &route.FailureClass, &mutation, &route.PreFingerprint,
+			&route.PostFingerprint, &started, &completed); err != nil {
+			return nil, err
+		}
+		route.BackendSessionID = backendSession.String
+		route.MutationObserved = mutation != 0
+		route.StartedAt = time.UnixMilli(started).UTC()
+		if completed.Valid {
+			value := time.UnixMilli(completed.Int64).UTC()
+			route.CompletedAt = &value
+		}
+		routes = append(routes, route)
+	}
+	return routes, rows.Err()
+}
+
+func (s *Store) workspaceSnapshots(ctx context.Context, taskID string) ([]WorkspaceSnapshot, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT snapshot_id,task_id,turn_id,phase,workspace_id,head_commit,branch_name,
+		staged_hash,unstaged_hash,untracked_hash,fingerprint,status_summary,bounded_diff,captured_at
+		FROM workspace_snapshots WHERE task_id=? ORDER BY captured_at,rowid`, taskID)
+	if err != nil {
+		return nil, err
+	}
+	snapshots := make([]WorkspaceSnapshot, 0)
+	for rows.Next() {
+		var snapshot WorkspaceSnapshot
+		var captured int64
+		if err := rows.Scan(&snapshot.ID, &snapshot.TaskID, &snapshot.TurnID, &snapshot.Phase, &snapshot.WorkspaceID,
+			&snapshot.HeadCommit, &snapshot.Branch, &snapshot.StagedHash, &snapshot.UnstagedHash, &snapshot.UntrackedHash,
+			&snapshot.Fingerprint, &snapshot.StatusSummary, &snapshot.BoundedDiff, &captured); err != nil {
+			return nil, err
+		}
+		snapshot.CapturedAt = time.UnixMilli(captured).UTC()
+		snapshots = append(snapshots, snapshot)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	for index := range snapshots {
+		files, err := s.workspaceFileStates(ctx, snapshots[index].ID)
+		if err != nil {
+			return nil, err
+		}
+		snapshots[index].Files = files
+	}
+	return snapshots, nil
+}
+
+func (s *Store) workspaceFileStates(ctx context.Context, snapshotID string) ([]WorkspaceFileState, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT snapshot_id,task_id,turn_id,path,original_path,index_status,worktree_status,fingerprint
+		FROM workspace_file_states WHERE snapshot_id=? ORDER BY path`, snapshotID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	states := make([]WorkspaceFileState, 0)
+	for rows.Next() {
+		var state WorkspaceFileState
+		if err := rows.Scan(&state.SnapshotID, &state.TaskID, &state.TurnID, &state.Path, &state.OriginalPath,
+			&state.IndexStatus, &state.WorktreeStatus, &state.Fingerprint); err != nil {
+			return nil, err
+		}
+		states = append(states, state)
+	}
+	return states, rows.Err()
+}
+
+func (s *Store) workspaceFileEvidence(ctx context.Context, taskID string) ([]FileEvidence, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT delta_id,turn_id,path,previous_path,operation,recorded_at
+		FROM workspace_file_deltas WHERE task_id=? ORDER BY recorded_at,path`, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	files := make([]FileEvidence, 0)
+	for rows.Next() {
+		var file FileEvidence
+		var recorded int64
+		if err := rows.Scan(&file.EventID, &file.TurnID, &file.Path, &file.PreviousPath, &file.Operation, &recorded); err != nil {
+			return nil, err
+		}
+		file.Source = "workspace"
+		file.ObservedAt = time.UnixMilli(recorded).UTC()
+		files = append(files, file)
+	}
+	return files, rows.Err()
+}
+
+func projectEvidence(events []agent.Event) ([]CommandEvidence, []FileEvidence) {
+	commands := make([]CommandEvidence, 0)
+	files := make([]FileEvidence, 0)
+	for _, event := range events {
+		if event.Type == agent.EventCommandFinished && event.Command != nil {
+			commands = append(commands, CommandEvidence{
+				EventID: event.ID, TurnID: event.TurnID, Backend: event.Backend, Command: event.Command.Command,
+				Status: event.Command.Status, ExitCode: event.Command.ExitCode,
+				AggregatedOutput: event.Command.AggregatedOutput, ObservedAt: event.Timestamp,
+			})
+		}
+		if event.Type != agent.EventFileChanged || event.File == nil {
+			continue
+		}
+		changes := event.File.Changes
+		if len(changes) == 0 && event.File.Path != "" {
+			changes = []agent.FileChange{{Path: event.File.Path, Operation: event.File.Operation}}
+		}
+		for _, change := range changes {
+			files = append(files, FileEvidence{
+				EventID: event.ID, TurnID: event.TurnID, Backend: event.Backend, Path: change.Path,
+				Operation: change.Operation, Source: "agent", ObservedAt: event.Timestamp,
+			})
+		}
+	}
+	return commands, files
+}
+
+func fileEvidenceMismatch(authoritative, reported []FileEvidence) bool {
+	required := make(map[string]struct{}, len(authoritative))
+	allowed := make(map[string]struct{}, len(authoritative)*2)
+	reports := make(map[string]struct{}, len(reported))
+	for _, file := range authoritative {
+		path := file.TurnID + "\x00" + filepath.ToSlash(filepath.Clean(file.Path))
+		required[path] = struct{}{}
+		allowed[path] = struct{}{}
+		if file.PreviousPath != "" {
+			allowed[file.TurnID+"\x00"+filepath.ToSlash(filepath.Clean(file.PreviousPath))] = struct{}{}
+		}
+	}
+	for _, file := range reported {
+		reports[file.TurnID+"\x00"+filepath.ToSlash(filepath.Clean(file.Path))] = struct{}{}
+	}
+	for path := range required {
+		if _, ok := reports[path]; !ok {
+			return true
+		}
+	}
+	for path := range reports {
+		if _, ok := allowed[path]; !ok {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Store) TaskState(ctx context.Context, taskID string) (TaskState, bool, error) {
 	task, ok, err := s.TaskByID(ctx, taskID)
 	if err != nil || !ok {
@@ -572,23 +916,19 @@ func (s *Store) TaskState(ctx context.Context, taskID string) (TaskState, bool, 
 	return state, true, nil
 }
 
-func (s *Store) latestTurn(ctx context.Context, taskID string) (Turn, bool, error) {
+type rowScanner interface {
+	Scan(...any) error
+}
+
+func scanTurn(row rowScanner) (Turn, error) {
 	var turn Turn
 	var idempotency, assistant, backendSession, errorCode, errorMessage sql.NullString
 	var created int64
 	var started, completed sql.NullInt64
-	err := s.db.QueryRowContext(ctx, `SELECT turn_id,task_id,sequence,idempotency_key,user_message,assistant_message,
-		backend_session_id,permission_mode,status,write_epoch,error_code,error_message,created_at,started_at,completed_at
-		FROM turns WHERE task_id=? ORDER BY sequence DESC LIMIT 1`, taskID).Scan(
-		&turn.ID, &turn.TaskID, &turn.Sequence, &idempotency, &turn.UserMessage, &assistant,
+	if err := row.Scan(&turn.ID, &turn.TaskID, &turn.Sequence, &idempotency, &turn.UserMessage, &assistant,
 		&backendSession, &turn.Permission, &turn.Status, &turn.WriteEpoch, &errorCode, &errorMessage,
-		&created, &started, &completed,
-	)
-	if errors.Is(err, sql.ErrNoRows) {
-		return Turn{}, false, nil
-	}
-	if err != nil {
-		return Turn{}, false, err
+		&created, &started, &completed); err != nil {
+		return Turn{}, err
 	}
 	turn.IdempotencyKey = idempotency.String
 	turn.AssistantMessage = assistant.String
@@ -604,6 +944,20 @@ func (s *Store) latestTurn(ctx context.Context, taskID string) (Turn, bool, erro
 		value := time.UnixMilli(completed.Int64).UTC()
 		turn.CompletedAt = &value
 	}
+	return turn, nil
+}
+
+func (s *Store) latestTurn(ctx context.Context, taskID string) (Turn, bool, error) {
+	row := s.db.QueryRowContext(ctx, `SELECT turn_id,task_id,sequence,idempotency_key,user_message,assistant_message,
+		backend_session_id,permission_mode,status,write_epoch,error_code,error_message,created_at,started_at,completed_at
+		FROM turns WHERE task_id=? ORDER BY sequence DESC LIMIT 1`, taskID)
+	turn, err := scanTurn(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Turn{}, false, nil
+	}
+	if err != nil {
+		return Turn{}, false, err
+	}
 	return turn, true, nil
 }
 
@@ -617,28 +971,9 @@ func (s *Store) TurnsBefore(ctx context.Context, taskID string, sequence int64) 
 	defer rows.Close()
 	var turns []Turn
 	for rows.Next() {
-		var turn Turn
-		var idempotency, assistant, backendSession, errorCode, errorMessage sql.NullString
-		var created int64
-		var started, completed sql.NullInt64
-		if err := rows.Scan(&turn.ID, &turn.TaskID, &turn.Sequence, &idempotency, &turn.UserMessage, &assistant,
-			&backendSession, &turn.Permission, &turn.Status, &turn.WriteEpoch, &errorCode, &errorMessage,
-			&created, &started, &completed); err != nil {
+		turn, err := scanTurn(rows)
+		if err != nil {
 			return nil, err
-		}
-		turn.IdempotencyKey = idempotency.String
-		turn.AssistantMessage = assistant.String
-		turn.BackendSessionID = backendSession.String
-		turn.ErrorCode = errorCode.String
-		turn.ErrorMessage = errorMessage.String
-		turn.CreatedAt = time.UnixMilli(created).UTC()
-		if started.Valid {
-			value := time.UnixMilli(started.Int64).UTC()
-			turn.StartedAt = &value
-		}
-		if completed.Valid {
-			value := time.UnixMilli(completed.Int64).UTC()
-			turn.CompletedAt = &value
 		}
 		turns = append(turns, turn)
 	}
@@ -709,7 +1044,11 @@ func (s *Store) ReleaseWriteEpoch(ctx context.Context, workspaceID string, epoch
 }
 
 func (s *Store) CountRows(ctx context.Context, table string) (int, error) {
-	allowed := map[string]bool{"tasks": true, "turns": true, "backend_sessions": true, "route_attempts": true, "workspace_snapshots": true, "events": true, "outbox": true, "workspace_write_epochs": true}
+	allowed := map[string]bool{
+		"tasks": true, "turns": true, "backend_sessions": true, "route_attempts": true,
+		"workspace_snapshots": true, "workspace_file_states": true, "workspace_file_deltas": true,
+		"events": true, "outbox": true, "workspace_write_epochs": true,
+	}
 	if !allowed[table] {
 		return 0, fmt.Errorf("taskstore: unsupported table %q", table)
 	}

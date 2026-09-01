@@ -60,6 +60,23 @@ func TestCreateTaskAndReplaySSE(t *testing.T) {
 			if dataLines < 3 {
 				t.Fatalf("SSE data lines=%d body=%s", dataLines, stream.Body.String())
 			}
+			list := httptest.NewRequest(http.MethodGet, "/control/v1/tasks?limit=10", nil)
+			listed := httptest.NewRecorder()
+			handler.ServeHTTP(listed, list)
+			if listed.Code != http.StatusOK || !strings.Contains(listed.Body.String(), task.ID) {
+				t.Fatalf("list status=%d body=%s", listed.Code, listed.Body.String())
+			}
+			evidenceReq := httptest.NewRequest(http.MethodGet, "/control/v1/tasks/"+task.ID+"/evidence", nil)
+			evidenceReq.SetPathValue("taskID", task.ID)
+			evidenceRec := httptest.NewRecorder()
+			handler.ServeHTTP(evidenceRec, evidenceReq)
+			if evidenceRec.Code != http.StatusOK {
+				t.Fatalf("evidence status=%d body=%s", evidenceRec.Code, evidenceRec.Body.String())
+			}
+			var evidence taskstore.TaskEvidence
+			if err := json.Unmarshal(evidenceRec.Body.Bytes(), &evidence); err != nil || len(evidence.Turns) != 1 || len(evidence.Snapshots) != 2 {
+				t.Fatalf("evidence=%+v err=%v", evidence, err)
+			}
 			return
 		}
 		time.Sleep(20 * time.Millisecond)

@@ -55,6 +55,7 @@ func Resolve(ctx context.Context, path string) (Identity, error) {
 }
 
 func Capture(ctx context.Context, identity Identity, taskID, turnID, phase string) (taskstore.WorkspaceSnapshot, error) {
+	snapshotID := taskstore.NewID("snap")
 	head := optionalGitOutput(ctx, identity.Root, "rev-parse", "HEAD")
 	branch := optionalGitOutput(ctx, identity.Root, "symbolic-ref", "--short", "HEAD")
 	if branch == "" {
@@ -76,6 +77,14 @@ func Capture(ctx context.Context, identity Identity, taskID, turnID, phase strin
 	if err != nil {
 		return taskstore.WorkspaceSnapshot{}, fmt.Errorf("workspace: status: %w", err)
 	}
+	statusZ, err := gitOutput(ctx, identity.Root, "status", "--porcelain=v1", "-z", "--untracked-files=all")
+	if err != nil {
+		return taskstore.WorkspaceSnapshot{}, fmt.Errorf("workspace: file states: %w", err)
+	}
+	files, err := captureFileStates(ctx, identity.Root, snapshotID, taskID, turnID, statusZ)
+	if err != nil {
+		return taskstore.WorkspaceSnapshot{}, err
+	}
 
 	stagedHash := hashBytes(staged)
 	unstagedHash := hashBytes(unstaged)
@@ -85,7 +94,7 @@ func Capture(ctx context.Context, identity Identity, taskID, turnID, phase strin
 	diff = append(diff, unstaged...)
 
 	return taskstore.WorkspaceSnapshot{
-		ID:            taskstore.NewID("snap"),
+		ID:            snapshotID,
 		TaskID:        taskID,
 		TurnID:        turnID,
 		Phase:         phase,
@@ -99,7 +108,218 @@ func Capture(ctx context.Context, identity Identity, taskID, turnID, phase strin
 		StatusSummary: boundedString(status, maxStatusSummary),
 		BoundedDiff:   boundedString(diff, maxStoredDiff),
 		CapturedAt:    time.Now().UTC(),
+		Files:         files,
 	}, nil
+}
+
+func captureFileStates(ctx context.Context, root, snapshotID, taskID, turnID string, raw []byte) ([]taskstore.WorkspaceFileState, error) {
+	indexByPath, err := indexEntries(ctx, root)
+	if err != nil {
+		return nil, err
+	}
+	states := make([]taskstore.WorkspaceFileState, 0)
+	for len(raw) > 0 {
+		end := bytes.IndexByte(raw, 0)
+		if end < 0 {
+			return nil, fmt.Errorf("workspace: malformed porcelain status")
+		}
+		entry := raw[:end]
+		raw = raw[end+1:]
+		if len(entry) < 4 || entry[2] != ' ' {
+			return nil, fmt.Errorf("workspace: malformed porcelain entry")
+		}
+		indexStatus := statusCode(entry[0])
+		worktreeStatus := statusCode(entry[1])
+		path := string(entry[3:])
+		originalPath := ""
+		if entry[0] == 'R' || entry[0] == 'C' || entry[1] == 'R' || entry[1] == 'C' {
+			originalEnd := bytes.IndexByte(raw, 0)
+			if originalEnd < 0 {
+				return nil, fmt.Errorf("workspace: malformed rename entry")
+			}
+			originalPath = string(raw[:originalEnd])
+			raw = raw[originalEnd+1:]
+		}
+		path = filepath.ToSlash(filepath.Clean(path))
+		if _, err := safeWorkspacePath(root, path); err != nil {
+			return nil, err
+		}
+		if originalPath != "" {
+			originalPath = filepath.ToSlash(filepath.Clean(originalPath))
+			if _, err := safeWorkspacePath(root, originalPath); err != nil {
+				return nil, err
+			}
+		}
+		indexEntry := indexByPath[path]
+		worktreeFingerprint, err := worktreePathFingerprint(root, path)
+		if err != nil {
+			return nil, err
+		}
+		states = append(states, taskstore.WorkspaceFileState{
+			SnapshotID: snapshotID, TaskID: taskID, TurnID: turnID, Path: path, OriginalPath: originalPath,
+			IndexStatus: indexStatus, WorktreeStatus: worktreeStatus,
+			Fingerprint: hashStrings(path, originalPath, indexStatus, worktreeStatus, indexEntry, worktreeFingerprint),
+		})
+	}
+	sort.Slice(states, func(i, j int) bool { return states[i].Path < states[j].Path })
+	return states, nil
+}
+
+func indexEntries(ctx context.Context, root string) (map[string]string, error) {
+	raw, err := gitOutput(ctx, root, "ls-files", "--stage", "-z")
+	if err != nil {
+		return nil, fmt.Errorf("workspace: index entries: %w", err)
+	}
+	entries := make(map[string]string)
+	for len(raw) > 0 {
+		end := bytes.IndexByte(raw, 0)
+		if end < 0 {
+			return nil, fmt.Errorf("workspace: malformed index entry")
+		}
+		entry := raw[:end]
+		raw = raw[end+1:]
+		tab := bytes.IndexByte(entry, '\t')
+		if tab < 0 {
+			continue
+		}
+		path := filepath.ToSlash(filepath.Clean(string(entry[tab+1:])))
+		entries[path] = string(entry[:tab])
+	}
+	return entries, nil
+}
+
+func statusCode(value byte) string {
+	if value == ' ' {
+		return ""
+	}
+	return string(value)
+}
+
+func worktreePathFingerprint(root, rel string) (string, error) {
+	path, err := safeWorkspacePath(root, rel)
+	if err != nil {
+		return "", err
+	}
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return "missing", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("workspace: stat %q: %w", rel, err)
+	}
+	switch {
+	case info.Mode()&os.ModeSymlink != 0:
+		target, err := os.Readlink(path)
+		if err != nil {
+			return "", err
+		}
+		return hashStrings("symlink", target), nil
+	case info.Mode().IsRegular():
+		digest, err := hashFile(path)
+		if err != nil {
+			return "", err
+		}
+		return hashStrings(info.Mode().String(), digest), nil
+	default:
+		return hashStrings(info.Mode().String(), fmt.Sprint(info.Size())), nil
+	}
+}
+
+// DiffFileStates derives the authoritative net Git-visible mutation for one
+// turn. It detects changes relative to a dirty baseline by comparing per-path
+// fingerprints, not merely porcelain status letters.
+func DiffFileStates(before, after taskstore.WorkspaceSnapshot) []taskstore.WorkspaceFileDelta {
+	beforeByPath := make(map[string]taskstore.WorkspaceFileState, len(before.Files))
+	afterByPath := make(map[string]taskstore.WorkspaceFileState, len(after.Files))
+	for _, state := range before.Files {
+		beforeByPath[state.Path] = state
+	}
+	for _, state := range after.Files {
+		afterByPath[state.Path] = state
+	}
+	sourceBeforeByPath := make(map[string]taskstore.WorkspaceFileState)
+	consumedBeforePaths := make(map[string]struct{})
+	for _, state := range after.Files {
+		if state.OriginalPath == "" {
+			continue
+		}
+		if source, ok := beforeByPath[state.OriginalPath]; ok {
+			sourceBeforeByPath[state.Path] = source
+			if strings.Contains(state.IndexStatus+state.WorktreeStatus, "R") {
+				consumedBeforePaths[state.OriginalPath] = struct{}{}
+			}
+		}
+	}
+	paths := make(map[string]struct{}, len(beforeByPath)+len(afterByPath))
+	for path := range beforeByPath {
+		paths[path] = struct{}{}
+	}
+	for path := range afterByPath {
+		paths[path] = struct{}{}
+	}
+	deltas := make([]taskstore.WorkspaceFileDelta, 0)
+	for path := range paths {
+		beforeState, hadBefore := beforeByPath[path]
+		afterState, hasAfter := afterByPath[path]
+		if !hasAfter {
+			if _, consumed := consumedBeforePaths[path]; consumed {
+				continue
+			}
+		}
+		if !hadBefore {
+			if source, ok := sourceBeforeByPath[path]; ok {
+				beforeState = source
+				hadBefore = true
+			}
+		}
+		if hadBefore && hasAfter && beforeState.Fingerprint == afterState.Fingerprint {
+			continue
+		}
+		beforeFingerprint := ""
+		if hadBefore {
+			beforeFingerprint = beforeState.Fingerprint
+		}
+		afterFingerprint := ""
+		previousPath := ""
+		if hasAfter {
+			afterFingerprint = afterState.Fingerprint
+			previousPath = afterState.OriginalPath
+		}
+		deltas = append(deltas, taskstore.WorkspaceFileDelta{
+			ID: taskstore.NewID("delta"), TaskID: after.TaskID, TurnID: after.TurnID, Path: path,
+			PreviousPath: previousPath, Operation: fileDeltaOperation(beforeState, hadBefore, afterState, hasAfter),
+			BeforeFingerprint: beforeFingerprint, AfterFingerprint: afterFingerprint, RecordedAt: time.Now().UTC(),
+		})
+	}
+	sort.Slice(deltas, func(i, j int) bool {
+		if deltas[i].Path == deltas[j].Path {
+			return deltas[i].PreviousPath < deltas[j].PreviousPath
+		}
+		return deltas[i].Path < deltas[j].Path
+	})
+	return deltas
+}
+
+func fileDeltaOperation(before taskstore.WorkspaceFileState, hadBefore bool, after taskstore.WorkspaceFileState, hasAfter bool) string {
+	if hasAfter {
+		status := after.IndexStatus + after.WorktreeStatus
+		switch {
+		case strings.ContainsAny(status, "R") || after.OriginalPath != "":
+			return "renamed"
+		case strings.ContainsAny(status, "C"):
+			return "copied"
+		case strings.ContainsAny(status, "D"):
+			return "deleted"
+		case !hadBefore && (strings.ContainsAny(status, "A?") || after.IndexStatus == "?" || after.WorktreeStatus == "?"):
+			return "added"
+		default:
+			return "modified"
+		}
+	}
+	if before.IndexStatus == "?" || before.WorktreeStatus == "?" || strings.ContainsAny(before.IndexStatus+before.WorktreeStatus, "A") {
+		return "deleted"
+	}
+	return "reverted"
 }
 
 func gitOutput(ctx context.Context, root string, args ...string) ([]byte, error) {

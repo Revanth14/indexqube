@@ -3,7 +3,7 @@ BIN_DIR ?= $(CURDIR)/bin
 GATEWAY_BIN ?= $(BIN_DIR)/indexqube-gateway
 IQ_BIN ?= $(BIN_DIR)/iq
 
-.PHONY: dev fmt fmt-check vet test test-race bench alpha-check build build-gateway build-iq check clean
+.PHONY: dev fmt fmt-check vet test test-race bench alpha-check control-smoke build build-gateway build-iq check clean
 
 dev:
 	cd gateway && GOCACHE=$(GOCACHE) go run ./cmd/gateway
@@ -32,6 +32,9 @@ bench:
 
 alpha-check:
 	bash scripts/manual_alpha_check.sh
+
+control-smoke: build-iq
+	bash scripts/control_plane_smoke.sh
 
 build: build-gateway build-iq
 

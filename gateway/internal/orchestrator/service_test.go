@@ -37,11 +37,34 @@ func TestOrchestratorCodexProcess(t *testing.T) {
 		os.Exit(3)
 	}
 	prompt, _ := io.ReadAll(os.Stdin)
+	writeChange := (mode == "write" || mode == "unreported-write" || mode == "failed-write") &&
+		!strings.Contains(string(prompt), "inspect the durable change")
+	if writeChange {
+		if os.Getenv("INDEXQUBE_WORKSPACE_LOCK_FD") == "" {
+			os.Exit(8)
+		}
+		if err := os.WriteFile("codex-orchestrated-write.txt", []byte("durable write evidence\n"), 0o600); err != nil {
+			os.Exit(9)
+		}
+	}
 	sessionID := "codex-thread-fixture"
 	if strings.Contains(string(prompt), "INDEXQUBE CANONICAL SESSION RECOVERY") {
 		sessionID = "codex-thread-recovered"
 	}
 	_ = enc.Encode(map[string]any{"type": "thread.started", "thread_id": sessionID})
+	_ = enc.Encode(map[string]any{"type": "item.completed", "item": map[string]any{
+		"id": "command-1", "type": "command_execution", "command": "go test ./...", "status": "completed",
+		"exit_code": 0, "aggregated_output": "ok",
+	}})
+	if writeChange && mode == "write" {
+		_ = enc.Encode(map[string]any{"type": "item.completed", "item": map[string]any{
+			"id": "file-1", "type": "file_change", "changes": []map[string]any{{"path": "codex-orchestrated-write.txt", "kind": "add"}},
+		}})
+	}
+	if mode == "failed-write" {
+		_ = enc.Encode(map[string]any{"type": "error", "message": "fixture failed after write"})
+		os.Exit(3)
+	}
 	_ = enc.Encode(map[string]any{"type": "item.completed", "item": map[string]any{
 		"id": "message-1", "type": "agent_message", "text": "codex fixture answer",
 	}})
@@ -79,7 +102,7 @@ func TestFakeTaskPersistsCanonicalMilestone(t *testing.T) {
 	}
 }
 
-func TestCodexReadOnlyTaskUsesCanonicalStateAndRejectsWriteBeforeCreation(t *testing.T) {
+func TestCodexReadOnlyTaskUsesCanonicalStateAndRecoversLostSession(t *testing.T) {
 	service, store, root := newTestService(t)
 	binary, err := os.Executable()
 	if err != nil {
@@ -102,17 +125,6 @@ func TestCodexReadOnlyTaskUsesCanonicalStateAndRejectsWriteBeforeCreation(t *tes
 	if err != nil || !ok || session.NativeSessionID != "codex-thread-fixture" {
 		t.Fatalf("session=%+v ok=%v err=%v", session, ok, err)
 	}
-	before, _ := store.CountRows(context.Background(), "tasks")
-	if _, err := service.StartTask(context.Background(), StartTaskInput{
-		Workspace: root, Prompt: "write", Provider: agent.BackendCodex, Permission: agent.PermissionWrite,
-	}); err == nil {
-		t.Fatal("expected Codex write permission rejection")
-	}
-	after, _ := store.CountRows(context.Background(), "tasks")
-	if after != before {
-		t.Fatalf("write rejection created task: before=%d after=%d", before, after)
-	}
-
 	afterSequence, err := service.LatestEventSequence(context.Background(), task.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -130,6 +142,120 @@ func TestCodexReadOnlyTaskUsesCanonicalStateAndRejectsWriteBeforeCreation(t *tes
 	recovered, ok, err := store.LatestBackendSession(context.Background(), task.ID, agent.BackendCodex)
 	if err != nil || !ok || recovered.NativeSessionID != "codex-thread-recovered" || recovered.PredecessorID != session.ID {
 		t.Fatalf("recovered session=%+v ok=%v err=%v", recovered, ok, err)
+	}
+}
+
+func TestCodexWriteTaskPersistsEvidenceAndContinues(t *testing.T) {
+	service, store, root := newTestService(t)
+	binary, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.registry = NewRegistry(codexbackend.NewCommand(agent.NewRunner(), binary,
+		[]string{"-test.run=TestOrchestratorCodexProcess", "--"},
+		[]string{"INDEXQUBE_ORCHESTRATOR_CODEX_HELPER=write"}, "codex-cli test"))
+	task, err := service.StartTask(context.Background(), StartTaskInput{
+		Workspace: root, Prompt: "make a durable change", Backend: agent.BackendCodex, Permission: agent.PermissionWrite,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := waitForTerminal(t, service, task.ID)
+	if events[len(events)-1].Type != agent.EventCompleted {
+		t.Fatalf("terminal=%+v", events[len(events)-1])
+	}
+	if raw, err := os.ReadFile(filepath.Join(root, "codex-orchestrated-write.txt")); err != nil || string(raw) != "durable write evidence\n" {
+		t.Fatalf("workspace write raw=%q err=%v", raw, err)
+	}
+	evidence, ok, err := store.TaskEvidence(context.Background(), task.ID)
+	if err != nil || !ok {
+		t.Fatalf("evidence ok=%v err=%v", ok, err)
+	}
+	if len(evidence.Commands) != 1 || evidence.Commands[0].Command != "go test ./..." {
+		t.Fatalf("commands=%+v", evidence.Commands)
+	}
+	if len(evidence.Files) != 1 || evidence.Files[0].Path != "codex-orchestrated-write.txt" {
+		t.Fatalf("files=%+v", evidence.Files)
+	}
+	if len(evidence.Snapshots) != 2 || !evidence.Routes[0].MutationObserved {
+		t.Fatalf("snapshots=%d routes=%+v", len(evidence.Snapshots), evidence.Routes)
+	}
+
+	after, err := service.LatestEventSequence(context.Background(), task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.ContinueTask(context.Background(), ContinueTaskInput{TaskID: task.ID, Prompt: "inspect the durable change"}); err != nil {
+		t.Fatal(err)
+	}
+	events = waitForTerminalAfter(t, service, task.ID, after)
+	if events[len(events)-1].Type != agent.EventCompleted {
+		t.Fatalf("continuation terminal=%+v", events[len(events)-1])
+	}
+	evidence, ok, err = store.TaskEvidence(context.Background(), task.ID)
+	if err != nil || !ok || len(evidence.Turns) != 2 || len(evidence.Routes) != 2 || evidence.Task.Status != taskstore.TaskOpen {
+		t.Fatalf("continued evidence=%+v ok=%v err=%v", evidence, ok, err)
+	}
+}
+
+func TestAuthoritativeWorkspaceDeltaFlagsUnreportedAndFailedWrites(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		mode         string
+		wantTerminal agent.EventType
+	}{
+		{name: "successful but unreported", mode: "unreported-write", wantTerminal: agent.EventCompleted},
+		{name: "failed after unreported write", mode: "failed-write", wantTerminal: agent.EventError},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			service, store, root := newTestService(t)
+			binary, err := os.Executable()
+			if err != nil {
+				t.Fatal(err)
+			}
+			service.registry = NewRegistry(codexbackend.NewCommand(agent.NewRunner(), binary,
+				[]string{"-test.run=TestOrchestratorCodexProcess", "--"},
+				[]string{"INDEXQUBE_ORCHESTRATOR_CODEX_HELPER=" + tc.mode}, "codex-cli test"))
+			task, err := service.StartTask(context.Background(), StartTaskInput{
+				Workspace: root, Prompt: "write without reporting it", Backend: agent.BackendCodex, Permission: agent.PermissionWrite,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			events := waitForTerminal(t, service, task.ID)
+			if events[len(events)-1].Type != tc.wantTerminal {
+				t.Fatalf("terminal=%+v", events[len(events)-1])
+			}
+			state, ok, err := service.TaskState(context.Background(), task.ID)
+			if err != nil || !ok || state.Task.Status != taskstore.TaskNeedsAttention {
+				t.Fatalf("state=%+v ok=%v err=%v", state, ok, err)
+			}
+			evidence, ok, err := store.TaskEvidence(context.Background(), task.ID)
+			if err != nil || !ok || !evidence.EvidenceMismatch || len(evidence.Files) != 1 || len(evidence.ReportedFiles) != 0 {
+				t.Fatalf("evidence=%+v ok=%v err=%v", evidence, ok, err)
+			}
+			foundWarning := false
+			for _, event := range evidence.Events {
+				if event.Type == agent.EventWarning && event.Metadata["error_code"] == "workspace_evidence_mismatch" {
+					foundWarning = true
+				}
+			}
+			if !foundWarning {
+				t.Fatal("missing workspace evidence mismatch warning")
+			}
+		})
+	}
+}
+
+func TestCompareMutationEvidenceAllowsBothSidesOfRename(t *testing.T) {
+	deltas := []taskstore.WorkspaceFileDelta{{Path: "new name.go", PreviousPath: "old name.go", Operation: "renamed"}}
+	if mismatch, message := compareMutationEvidence(deltas, map[string]struct{}{
+		"new name.go": {}, "old name.go": {},
+	}); mismatch {
+		t.Fatalf("unexpected mismatch: %s", message)
+	}
+	if mismatch, _ := compareMutationEvidence(deltas, map[string]struct{}{"old name.go": {}}); !mismatch {
+		t.Fatal("missing destination path should mismatch")
 	}
 }
 

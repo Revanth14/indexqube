@@ -88,20 +88,51 @@ type RouteAttempt struct {
 }
 
 type WorkspaceSnapshot struct {
-	ID            string    `json:"snapshot_id"`
-	TaskID        string    `json:"task_id"`
-	TurnID        string    `json:"turn_id"`
-	Phase         string    `json:"phase"`
-	WorkspaceID   string    `json:"workspace_id"`
-	HeadCommit    string    `json:"head_commit,omitempty"`
-	Branch        string    `json:"branch,omitempty"`
-	StagedHash    string    `json:"staged_hash"`
-	UnstagedHash  string    `json:"unstaged_hash"`
-	UntrackedHash string    `json:"untracked_hash"`
-	Fingerprint   string    `json:"fingerprint"`
-	StatusSummary string    `json:"status_summary,omitempty"`
-	BoundedDiff   string    `json:"bounded_diff,omitempty"`
-	CapturedAt    time.Time `json:"captured_at"`
+	ID            string               `json:"snapshot_id"`
+	TaskID        string               `json:"task_id"`
+	TurnID        string               `json:"turn_id"`
+	Phase         string               `json:"phase"`
+	WorkspaceID   string               `json:"workspace_id"`
+	HeadCommit    string               `json:"head_commit,omitempty"`
+	Branch        string               `json:"branch,omitempty"`
+	StagedHash    string               `json:"staged_hash"`
+	UnstagedHash  string               `json:"unstaged_hash"`
+	UntrackedHash string               `json:"untracked_hash"`
+	Fingerprint   string               `json:"fingerprint"`
+	StatusSummary string               `json:"status_summary,omitempty"`
+	BoundedDiff   string               `json:"bounded_diff,omitempty"`
+	CapturedAt    time.Time            `json:"captured_at"`
+	Files         []WorkspaceFileState `json:"files,omitempty"`
+}
+
+// WorkspaceFileState is the canonical Git-visible state of one dirty path at
+// a snapshot boundary. A per-path fingerprint lets IndexQube distinguish an
+// agent edit from a pre-existing dirty baseline even when porcelain status is
+// unchanged (for example M before and M after).
+type WorkspaceFileState struct {
+	SnapshotID     string `json:"snapshot_id"`
+	TaskID         string `json:"task_id"`
+	TurnID         string `json:"turn_id"`
+	Path           string `json:"path"`
+	OriginalPath   string `json:"original_path,omitempty"`
+	IndexStatus    string `json:"index_status,omitempty"`
+	WorktreeStatus string `json:"worktree_status,omitempty"`
+	Fingerprint    string `json:"fingerprint"`
+}
+
+// WorkspaceFileDelta is authoritative mutation evidence derived from the
+// before/after file states. Agent events are compared with, never substituted
+// for, this record.
+type WorkspaceFileDelta struct {
+	ID                string    `json:"delta_id"`
+	TaskID            string    `json:"task_id"`
+	TurnID            string    `json:"turn_id"`
+	Path              string    `json:"path"`
+	PreviousPath      string    `json:"previous_path,omitempty"`
+	Operation         string    `json:"operation"`
+	BeforeFingerprint string    `json:"before_fingerprint,omitempty"`
+	AfterFingerprint  string    `json:"after_fingerprint,omitempty"`
+	RecordedAt        time.Time `json:"recorded_at"`
 }
 
 type CreateTaskInput struct {
@@ -145,4 +176,44 @@ type TaskState struct {
 	Task       Task            `json:"task"`
 	LatestTurn *Turn           `json:"latest_turn,omitempty"`
 	Session    *BackendSession `json:"latest_backend_session,omitempty"`
+}
+
+// CommandEvidence and FileEvidence are projections over normalized events.
+// They keep clients from having to understand backend-specific event shapes.
+type CommandEvidence struct {
+	EventID          string          `json:"event_id"`
+	TurnID           string          `json:"turn_id"`
+	Backend          agent.BackendID `json:"backend"`
+	Command          string          `json:"command"`
+	Status           string          `json:"status,omitempty"`
+	ExitCode         *int            `json:"exit_code,omitempty"`
+	AggregatedOutput string          `json:"aggregated_output,omitempty"`
+	ObservedAt       time.Time       `json:"observed_at"`
+}
+
+type FileEvidence struct {
+	EventID      string          `json:"event_id"`
+	TurnID       string          `json:"turn_id"`
+	Backend      agent.BackendID `json:"backend"`
+	Path         string          `json:"path"`
+	PreviousPath string          `json:"previous_path,omitempty"`
+	Operation    string          `json:"operation,omitempty"`
+	Source       string          `json:"source,omitempty"`
+	ObservedAt   time.Time       `json:"observed_at"`
+}
+
+// TaskEvidence is the canonical read model consumed by CLI, TUI, and dashboard
+// clients. It is assembled from normalized durable records rather than stored
+// as another source of truth.
+type TaskEvidence struct {
+	Task             Task                `json:"task"`
+	Turns            []Turn              `json:"turns"`
+	Sessions         []BackendSession    `json:"backend_sessions"`
+	Routes           []RouteAttempt      `json:"route_attempts"`
+	Snapshots        []WorkspaceSnapshot `json:"workspace_snapshots"`
+	Commands         []CommandEvidence   `json:"commands"`
+	Files            []FileEvidence      `json:"files_changed"`
+	ReportedFiles    []FileEvidence      `json:"agent_reported_files"`
+	EvidenceMismatch bool                `json:"evidence_mismatch"`
+	Events           []agent.Event       `json:"events"`
 }

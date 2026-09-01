@@ -23,17 +23,79 @@ import (
 func runTask(args []string) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if len(args) > 0 && args[0] == "status" {
-		if err := runTaskStatus(ctx, args[1:], os.Stdout); err != nil {
-			fmt.Fprintf(os.Stderr, "iq: task status failed: %v\n", err)
-			os.Exit(1)
+	if len(args) > 0 {
+		switch args[0] {
+		case "status":
+			if err := runTaskStatus(ctx, args[1:], os.Stdout); err != nil {
+				fmt.Fprintf(os.Stderr, "iq: task status failed: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		case "show":
+			if err := runTaskShow(ctx, args[1:], os.Stdout); err != nil {
+				fmt.Fprintf(os.Stderr, "iq: task show failed: %v\n", err)
+				os.Exit(1)
+			}
+			return
 		}
-		return
 	}
 	if err := runTaskCommand(ctx, args, os.Stdout, os.Stderr); err != nil {
 		fmt.Fprintf(os.Stderr, "iq: task failed: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func runTasks(args []string) {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := runTasksCommand(ctx, args, os.Stdout, os.Stderr); err != nil {
+		fmt.Fprintf(os.Stderr, "iq: tasks failed: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func runTasksCommand(ctx context.Context, args []string, out, errOut io.Writer) error {
+	fs := flag.NewFlagSet("tasks", flag.ContinueOnError)
+	fs.SetOutput(errOut)
+	limit := fs.Int("limit", 50, "maximum tasks to show")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return fmt.Errorf("usage: iq tasks [--limit N]")
+	}
+	controlURL, err := resolveControlURL()
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("%s/control/v1/tasks?limit=%d", controlURL, *limit), nil)
+	if err != nil {
+		return err
+	}
+	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	if err != nil {
+		return fmt.Errorf("list tasks: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return responseError("list tasks", resp)
+	}
+	var result struct {
+		Tasks []taskstore.Task `json:"tasks"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return fmt.Errorf("decode tasks: %w", err)
+	}
+	if len(result.Tasks) == 0 {
+		fmt.Fprintln(out, "No tasks.")
+		return nil
+	}
+	fmt.Fprintln(out, "TASK\tSTATUS\tBACKEND\tPERMISSION\tUPDATED\tGOAL")
+	for _, task := range result.Tasks {
+		fmt.Fprintf(out, "%s\t%s\t%s\t%s\t%s\t%s\n", task.ID, task.Status, task.PreferredBackend,
+			task.Permission, task.UpdatedAt.Local().Format("2006-01-02 15:04"), oneLine(task.OriginalGoal, 80))
+	}
+	return nil
 }
 
 func runTaskStatus(ctx context.Context, args []string, out io.Writer) error {
@@ -74,14 +136,109 @@ func runTaskStatus(ctx context.Context, args []string, out io.Writer) error {
 	return nil
 }
 
+func runTaskShow(ctx context.Context, args []string, out io.Writer) error {
+	if len(args) != 1 || strings.TrimSpace(args[0]) == "" {
+		return fmt.Errorf("usage: iq task show TASK")
+	}
+	controlURL, err := resolveControlURL()
+	if err != nil {
+		return err
+	}
+	taskID := strings.TrimSpace(args[0])
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, controlURL+"/control/v1/tasks/"+taskID+"/evidence", nil)
+	if err != nil {
+		return err
+	}
+	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	if err != nil {
+		return fmt.Errorf("get task evidence: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return responseError("get task evidence", resp)
+	}
+	var evidence taskstore.TaskEvidence
+	if err := json.NewDecoder(resp.Body).Decode(&evidence); err != nil {
+		return fmt.Errorf("decode task evidence: %w", err)
+	}
+	renderTaskEvidence(out, evidence)
+	return nil
+}
+
+func renderTaskEvidence(out io.Writer, evidence taskstore.TaskEvidence) {
+	fmt.Fprintf(out, "Task: %s\nStatus: %s\nBackend: %s\nPermission: %s\nWorkspace: %s\nGoal: %s\n",
+		evidence.Task.ID, evidence.Task.Status, evidence.Task.PreferredBackend, evidence.Task.Permission,
+		evidence.Task.WorkspacePath, evidence.Task.OriginalGoal)
+	if len(evidence.Turns) > 0 {
+		fmt.Fprintln(out, "\nTurns:")
+		for _, turn := range evidence.Turns {
+			fmt.Fprintf(out, "  %d. %s — %s\n", turn.Sequence, turn.Status, oneLine(turn.UserMessage, 120))
+			if turn.AssistantMessage != "" {
+				fmt.Fprintf(out, "     %s\n", oneLine(turn.AssistantMessage, 160))
+			}
+			if turn.ErrorCode != "" {
+				fmt.Fprintf(out, "     error: %s: %s\n", turn.ErrorCode, oneLine(turn.ErrorMessage, 160))
+			}
+		}
+	}
+	if len(evidence.Commands) > 0 {
+		fmt.Fprintln(out, "\nCommands:")
+		for _, command := range evidence.Commands {
+			exit := ""
+			if command.ExitCode != nil {
+				exit = fmt.Sprintf(" exit=%d", *command.ExitCode)
+			}
+			fmt.Fprintf(out, "  [%s%s] %s\n", command.Status, exit, oneLine(command.Command, 200))
+		}
+	}
+	if len(evidence.Files) > 0 {
+		fmt.Fprintln(out, "\nFiles changed (workspace-authoritative):")
+		for _, file := range evidence.Files {
+			previous := ""
+			if file.PreviousPath != "" {
+				previous = " (from " + file.PreviousPath + ")"
+			}
+			fmt.Fprintf(out, "  %s %s%s\n", file.Operation, file.Path, previous)
+		}
+	}
+	if evidence.EvidenceMismatch {
+		fmt.Fprintln(out, "\nAttention: agent file events do not match the authoritative workspace delta.")
+		if len(evidence.ReportedFiles) > 0 {
+			fmt.Fprintln(out, "Agent-reported files:")
+			for _, file := range evidence.ReportedFiles {
+				fmt.Fprintf(out, "  %s %s\n", file.Operation, file.Path)
+			}
+		}
+	}
+	if len(evidence.Routes) > 0 {
+		fmt.Fprintln(out, "\nRoute attempts:")
+		for _, route := range evidence.Routes {
+			fmt.Fprintf(out, "  %s #%d — %s (%s)\n", route.Backend, route.Ordinal, route.Status, route.DecisionReason)
+		}
+	}
+	fmt.Fprintf(out, "\nEvidence: %d snapshots, %d events, %d native sessions\n",
+		len(evidence.Snapshots), len(evidence.Events), len(evidence.Sessions))
+}
+
 func runTaskCommand(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("task", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	provider := fs.String("provider", string(agent.BackendFake), "agent backend (fake or codex read-only)")
+	backend := fs.String("backend", "", "agent backend (fake or codex)")
+	provider := fs.String("provider", "", "deprecated alias for --backend")
 	workspacePath := fs.String("workspace", "", "Git workspace (default: current directory)")
 	write := fs.Bool("write", false, "grant workspace-write permission")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if *backend != "" && *provider != "" && *backend != *provider {
+		return fmt.Errorf("--backend and deprecated --provider alias disagree")
+	}
+	backendID := *backend
+	if backendID == "" {
+		backendID = *provider
+	}
+	if backendID == "" {
+		backendID = string(agent.BackendFake)
 	}
 	prompt := strings.TrimSpace(strings.Join(fs.Args(), " "))
 	if prompt == "" {
@@ -105,7 +262,7 @@ func runTaskCommand(ctx context.Context, args []string, stdout, stderr io.Writer
 	body, err := json.Marshal(map[string]any{
 		"workspace":  *workspacePath,
 		"prompt":     prompt,
-		"provider":   *provider,
+		"backend":    backendID,
 		"permission": permission,
 	})
 	if err != nil {
@@ -260,7 +417,17 @@ func streamTaskEvents(ctx context.Context, controlURL, taskID string, after int6
 			}
 		case agent.EventFileChanged:
 			if event.File != nil {
-				fmt.Fprintf(stderr, "  [iq] %s %s\n", event.File.Operation, event.File.Path)
+				changes := event.File.Changes
+				if len(changes) == 0 && event.File.Path != "" {
+					changes = []agent.FileChange{{Path: event.File.Path, Operation: event.File.Operation}}
+				}
+				for _, change := range changes {
+					fmt.Fprintf(stderr, "  [iq] %s %s\n", change.Operation, change.Path)
+				}
+			}
+		case agent.EventCommandFinished:
+			if event.Command != nil {
+				fmt.Fprintf(stderr, "  [iq] command %s: %s\n", event.Command.Status, oneLine(event.Command.Command, 160))
 			}
 		case agent.EventCompleted:
 			return nil
@@ -277,6 +444,14 @@ func streamTaskEvents(ctx context.Context, controlURL, taskID string, after int6
 		return err
 	}
 	return fmt.Errorf("event stream ended before a terminal event")
+}
+
+func oneLine(value string, limit int) string {
+	value = strings.Join(strings.Fields(value), " ")
+	if limit > 0 && len(value) > limit {
+		return value[:limit] + "…"
+	}
+	return value
 }
 
 func cancelTask(controlURL, taskID string) {

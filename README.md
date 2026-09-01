@@ -37,6 +37,31 @@ iq status
 iq doctor
 ```
 
+Durable coding-agent tasks use the daemon's separate loopback control API:
+
+```bash
+iq task --backend codex "explain the retry path"
+iq task --backend codex --write "add retry coverage and update the implementation"
+iq tasks
+iq task show TASK_ID
+iq continue TASK_ID "check the edge cases"
+```
+
+`--write` is an explicit up-front workspace-write grant for that IndexQube
+task. The Codex child remains inside its workspace-write sandbox, is supervised
+under IndexQube's OS workspace lock and fencing epoch, and routes any Codex
+escalation requests through the CLI's automatic reviewer. Interactive durable
+mid-turn approvals are not part of this first write milestone.
+
+`iq task show` reads an assembled `TaskEvidence` view from SQLite: canonical
+turns, native-session lineage, route attempts, workspace snapshots, normalized
+commands, changed files, and the underlying event timeline. Changed-file
+evidence is derived from per-path pre/post Git state, including edits inside an
+already-dirty baseline, and compared with agent-reported events. A mismatch is
+persisted and moves the task to `needs_attention`. Evidence remains available
+after the daemon restarts; native Codex sessions are continuation optimizations
+rather than the task's source of truth.
+
 Supported setup targets:
 
 ```bash

@@ -1,5 +1,5 @@
 // Package codex adapts the Codex CLI JSONL protocol to IndexQube's normalized
-// backend contract. V1 deliberately supports read-only execution only.
+// backend contract.
 package codex
 
 import (
@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -40,8 +41,8 @@ func NewCommand(runner *agent.Runner, binary string, prefixArgs, env []string, v
 func (b *Backend) ID() agent.BackendID { return agent.BackendCodex }
 
 func (b *Backend) ValidatePermission(permission agent.PermissionMode) error {
-	if permission != agent.PermissionReadOnly {
-		return fmt.Errorf("codex backend: only read-only permission is enabled")
+	if permission != agent.PermissionReadOnly && permission != agent.PermissionWrite {
+		return fmt.Errorf("codex backend: unsupported permission %q", permission)
 	}
 	return nil
 }
@@ -82,6 +83,9 @@ func (b *Backend) Execute(ctx context.Context, req agent.Request, sink agent.Eve
 	if err := b.ValidatePermission(req.Permission); err != nil {
 		return agent.Result{}, err
 	}
+	if req.Permission == agent.PermissionWrite && req.Guard == nil {
+		return agent.Result{}, fmt.Errorf("codex backend: workspace-write requires an IndexQube write guard")
+	}
 	if b.runner == nil || b.binary == "" {
 		return agent.Result{}, fmt.Errorf("codex backend: executable is not configured")
 	}
@@ -110,13 +114,14 @@ func (b *Backend) Execute(ctx context.Context, req agent.Request, sink agent.Eve
 			event.TurnID = req.TurnID
 			event.Backend = b.ID()
 			event.Timestamp = time.Now().UTC()
+			normalizeFileEvent(req.Workspace, event.File)
 		}
 		return event, ok, nil
 	})
 	processResult, runErr := b.runner.Run(ctx, agent.ProcessSpec{
 		Path: b.binary, Args: append(append([]string(nil), b.prefixArgs...), args...), Dir: req.Workspace,
 		Env: b.env, Stdin: []byte(req.Prompt + "\n"),
-	}, nil, decoder, sink)
+	}, req.Guard, decoder, sink)
 	result.ExitCode = processResult.ExitCode
 	if runErr != nil && req.NativeSessionID != "" && isResumeLost(runErr.Error()+" "+processResult.Stderr) {
 		result.ResumeLost = true
@@ -128,13 +133,30 @@ func (b *Backend) Execute(ctx context.Context, req agent.Request, sink agent.Eve
 }
 
 func (b *Backend) commandArgs(req agent.Request) []string {
+	sandbox := "read-only"
 	permissionOverrides := []string{"-c", `sandbox_mode="read-only"`, "-c", `approval_policy="never"`}
+	parentOptions := []string{}
+	if req.Permission == agent.PermissionWrite {
+		sandbox = "workspace-write"
+		permissionOverrides = []string{"-c", `sandbox_mode="workspace-write"`}
+		// codex exec is non-interactive. --approve-for-me keeps execution in the
+		// workspace-write sandbox while routing escalation requests through the
+		// CLI's automatic reviewer. The user's explicit `iq task --write` grant
+		// remains the outer IndexQube authorization boundary.
+		parentOptions = append(parentOptions, "--approve-for-me")
+	}
 	if req.NativeSessionID != "" {
-		args := []string{"exec", "resume", "--json"}
+		args := append([]string{"exec"}, parentOptions...)
+		args = append(args, "resume", "--json")
 		args = append(args, permissionOverrides...)
 		return append(args, req.NativeSessionID, "-")
 	}
-	args := []string{"exec", "--json", "--sandbox", "read-only", "--color", "never", "-C", req.Workspace}
+	args := append([]string{"exec"}, parentOptions...)
+	args = append(args, "--json")
+	if req.Permission == agent.PermissionReadOnly {
+		args = append(args, "--sandbox", sandbox)
+	}
+	args = append(args, "--color", "never", "-C", req.Workspace)
 	args = append(args, permissionOverrides...)
 	return append(args, "-")
 }
@@ -191,13 +213,27 @@ func decodeEvent(line []byte) (agent.Event, bool, string, string, string, error)
 			if !started {
 				typ = agent.EventCommandFinished
 			}
-			event := agent.Event{Type: typ, Tool: &agent.ToolEvent{Name: "command", Status: item.Status}, Metadata: metadata}
+			event := agent.Event{
+				Type: typ, Tool: &agent.ToolEvent{Name: "command", Status: item.Status}, Metadata: metadata,
+				Command: &agent.CommandEvent{
+					Command: bounded(item.Command, 4096), Status: bounded(item.Status, 128),
+					ExitCode: item.ExitCode, AggregatedOutput: bounded(item.AggregatedOutput, 16<<10),
+				},
+			}
 			if item.ExitCode != nil {
 				event.Result = &agent.ResultEvent{ExitCode: *item.ExitCode, Status: item.Status}
 			}
 			return event, true, "", "", "", nil
 		case "file_change":
-			return agent.Event{Type: agent.EventFileChanged, File: &agent.FileEvent{Path: firstChangedPath(item.Changes), Operation: "changed"}, Metadata: metadata}, true, "", "", "", nil
+			if started {
+				return agent.Event{}, false, "", "", "", nil
+			}
+			changes := changedPaths(item.Changes)
+			path := ""
+			if len(changes) > 0 {
+				path = changes[0].Path
+			}
+			return agent.Event{Type: agent.EventFileChanged, File: &agent.FileEvent{Path: path, Operation: "changed", Changes: changes}, Metadata: metadata}, true, "", "", "", nil
 		case "mcp_tool_call", "web_search":
 			typ := agent.EventToolStarted
 			if !started {
@@ -244,14 +280,46 @@ func errorText(wire wireEnvelope) string {
 	return bounded(string(wire.Error), 1024)
 }
 
-func firstChangedPath(raw json.RawMessage) string {
+func changedPaths(raw json.RawMessage) []agent.FileChange {
 	var changes []struct {
 		Path string `json:"path"`
+		Kind string `json:"kind,omitempty"`
 	}
-	if json.Unmarshal(raw, &changes) == nil && len(changes) > 0 {
-		return bounded(changes[0].Path, 1024)
+	if json.Unmarshal(raw, &changes) != nil {
+		return nil
 	}
-	return ""
+	result := make([]agent.FileChange, 0, len(changes))
+	for _, change := range changes {
+		if strings.TrimSpace(change.Path) == "" {
+			continue
+		}
+		operation := change.Kind
+		if operation == "" {
+			operation = "changed"
+		}
+		result = append(result, agent.FileChange{Path: bounded(change.Path, 1024), Operation: bounded(operation, 128)})
+	}
+	return result
+}
+
+func normalizeFileEvent(workspace string, event *agent.FileEvent) {
+	if event == nil || strings.TrimSpace(workspace) == "" {
+		return
+	}
+	normalize := func(path string) string {
+		if path == "" || !filepath.IsAbs(path) {
+			return filepath.ToSlash(path)
+		}
+		relative, err := filepath.Rel(workspace, path)
+		if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			return path
+		}
+		return filepath.ToSlash(relative)
+	}
+	event.Path = normalize(event.Path)
+	for index := range event.Changes {
+		event.Changes[index].Path = normalize(event.Changes[index].Path)
+	}
 }
 
 func isResumeLost(text string) bool {

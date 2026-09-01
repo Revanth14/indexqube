@@ -49,9 +49,27 @@ type ToolEvent struct {
 	Status string `json:"status,omitempty"`
 }
 
-type FileEvent struct {
+// CommandEvent is durable, user-visible evidence of a command requested by an
+// agent. Output is bounded by each adapter before the event enters canonical
+// storage.
+type CommandEvent struct {
+	Command          string `json:"command"`
+	Status           string `json:"status,omitempty"`
+	ExitCode         *int   `json:"exit_code,omitempty"`
+	AggregatedOutput string `json:"aggregated_output,omitempty"`
+}
+
+type FileChange struct {
 	Path      string `json:"path"`
 	Operation string `json:"operation,omitempty"`
+}
+
+type FileEvent struct {
+	// Path and Operation retain the original single-change event contract.
+	// Changes carries every path when a backend reports a batch of edits.
+	Path      string       `json:"path"`
+	Operation string       `json:"operation,omitempty"`
+	Changes   []FileChange `json:"changes,omitempty"`
 }
 
 type ResultEvent struct {
@@ -73,6 +91,7 @@ type Event struct {
 	Timestamp time.Time         `json:"timestamp"`
 	Message   *MessageEvent     `json:"message,omitempty"`
 	Tool      *ToolEvent        `json:"tool,omitempty"`
+	Command   *CommandEvent     `json:"command,omitempty"`
 	File      *FileEvent        `json:"file,omitempty"`
 	Result    *ResultEvent      `json:"result,omitempty"`
 	Metadata  map[string]string `json:"metadata,omitempty"`

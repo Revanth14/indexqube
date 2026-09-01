@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -27,16 +29,33 @@ func TestCodexProcessHelper(t *testing.T) {
 		}
 	}
 	requireArg("--json")
-	requireArg(`sandbox_mode="read-only"`)
-	requireArg(`approval_policy="never"`)
+	writeMode := mode == "write"
+	if writeMode {
+		requireArg(`sandbox_mode="workspace-write"`)
+		requireArg("--approve-for-me")
+		if os.Getenv("INDEXQUBE_TEST_WRITE_GUARD") != "attached" {
+			fmt.Fprintln(os.Stderr, "missing write guard environment")
+			os.Exit(11)
+		}
+	} else {
+		requireArg(`sandbox_mode="read-only"`)
+		requireArg(`approval_policy="never"`)
+	}
 	if !strings.Contains(string(prompt), "fixture prompt") {
 		fmt.Fprintln(os.Stderr, "missing stdin prompt")
 		os.Exit(10)
 	}
 	isResume := slices.Contains(args, "resume")
 	if !isResume {
-		requireArg("--sandbox")
-		requireArg("read-only")
+		if writeMode {
+			if slices.Contains(args, "--sandbox") {
+				fmt.Fprintln(os.Stderr, "--approve-for-me cannot be combined with --sandbox")
+				os.Exit(13)
+			}
+		} else {
+			requireArg("--sandbox")
+			requireArg("read-only")
+		}
 		requireArg("-C")
 	} else {
 		requireArg("resume")
@@ -56,6 +75,19 @@ func TestCodexProcessHelper(t *testing.T) {
 		"id": "cmd-1", "type": "command_execution", "command": "git status", "status": "in_progress",
 	}})
 	_ = enc.Encode(map[string]any{"type": "item.completed", "item": map[string]any{
+		"id": "cmd-1", "type": "command_execution", "command": "git status", "status": "completed",
+		"exit_code": 0, "aggregated_output": "clean",
+	}})
+	if writeMode {
+		if err := os.WriteFile(filepath.Join(".", "codex-write.txt"), []byte("written by codex fixture\n"), 0o600); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(12)
+		}
+		_ = enc.Encode(map[string]any{"type": "item.completed", "item": map[string]any{
+			"id": "file-1", "type": "file_change", "changes": []map[string]any{{"path": "codex-write.txt", "kind": "add"}},
+		}})
+	}
+	_ = enc.Encode(map[string]any{"type": "item.completed", "item": map[string]any{
 		"id": "msg-1", "type": "agent_message", "text": "fixture answer",
 	}})
 	_ = enc.Encode(map[string]any{"type": "turn.completed", "usage": map[string]int{"input_tokens": 1}})
@@ -68,6 +100,8 @@ func TestDecodeDocumentedJSONLShape(t *testing.T) {
 		`{"type":"turn.started"}`,
 		`{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"bash -lc ls","status":"in_progress"}}`,
 		`{"type":"item.completed","item":{"id":"item_2","type":"command_execution","command":"bash -lc ls","status":"completed","exit_code":0}}`,
+		`{"type":"item.started","item":{"id":"item_file","type":"file_change","changes":[{"path":"a.go","kind":"update"}]}}`,
+		`{"type":"item.completed","item":{"id":"item_file","type":"file_change","changes":[{"path":"a.go","kind":"update"},{"path":"b.go","kind":"add"}]}}`,
 		`{"type":"item.completed","item":{"id":"item_3","type":"agent_message","text":"Repo contains docs."}}`,
 		`{"type":"turn.completed","usage":{"input_tokens":10}}`,
 	}
@@ -88,7 +122,7 @@ func TestDecodeDocumentedJSONLShape(t *testing.T) {
 			session = gotSession
 		}
 	}
-	want := []agent.EventType{agent.EventSessionStarted, agent.EventToolStarted, agent.EventCommandFinished, agent.EventAssistantMessage, agent.EventCompleted}
+	want := []agent.EventType{agent.EventSessionStarted, agent.EventToolStarted, agent.EventCommandFinished, agent.EventFileChanged, agent.EventAssistantMessage, agent.EventCompleted}
 	if !slices.Equal(types, want) {
 		t.Fatalf("types=%v want=%v", types, want)
 	}
@@ -103,25 +137,31 @@ func TestBackendExecutesInitialAndResumeReadOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct {
-		name      string
-		mode      string
-		nativeID  string
-		wantLost  bool
-		wantError bool
+		name       string
+		mode       string
+		nativeID   string
+		permission agent.PermissionMode
+		wantLost   bool
+		wantError  bool
 	}{
-		{name: "initial", mode: "initial"},
-		{name: "resume", mode: "resume", nativeID: "codex-session-1"},
-		{name: "resume lost", mode: "resume-lost", nativeID: "codex-session-1", wantLost: true, wantError: true},
+		{name: "initial", mode: "initial", permission: agent.PermissionReadOnly},
+		{name: "resume", mode: "resume", nativeID: "codex-session-1", permission: agent.PermissionReadOnly},
+		{name: "resume lost", mode: "resume-lost", nativeID: "codex-session-1", permission: agent.PermissionReadOnly, wantLost: true, wantError: true},
+		{name: "workspace write", mode: "write", permission: agent.PermissionWrite},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			backend := NewCommand(agent.NewRunner(), binary,
 				[]string{"-test.run=TestCodexProcessHelper", "--"},
 				[]string{"INDEXQUBE_CODEX_HELPER=" + tc.mode}, "codex-cli test")
 			var events []agent.Event
-			result, err := backend.Execute(context.Background(), agent.Request{
+			request := agent.Request{
 				TaskID: "task", TurnID: "turn", Workspace: t.TempDir(), Prompt: "fixture prompt",
-				Permission: agent.PermissionReadOnly, NativeSessionID: tc.nativeID,
-			}, agent.EventSinkFunc(func(_ context.Context, event agent.Event) error {
+				Permission: tc.permission, NativeSessionID: tc.nativeID,
+			}
+			if tc.permission == agent.PermissionWrite {
+				request.Guard = testProcessGuard{}
+			}
+			result, err := backend.Execute(context.Background(), request, agent.EventSinkFunc(func(_ context.Context, event agent.Event) error {
 				events = append(events, event)
 				return nil
 			}))
@@ -134,25 +174,56 @@ func TestBackendExecutesInitialAndResumeReadOnly(t *testing.T) {
 			if !tc.wantError && (result.NativeSessionID != "codex-session-1" || result.FinalMessage != "fixture answer") {
 				t.Fatalf("result=%+v", result)
 			}
-			if tc.mode == "initial" && len(events) != 4 {
+			if tc.mode == "initial" && len(events) != 5 {
 				t.Fatalf("events=%+v", events)
+			}
+			if tc.mode == "write" {
+				if _, err := os.Stat(filepath.Join(request.Workspace, "codex-write.txt")); err != nil {
+					t.Fatalf("write fixture missing: %v", err)
+				}
 			}
 		})
 	}
 }
 
-func TestBackendRejectsWritePermission(t *testing.T) {
+func TestBackendRequiresWriteGuardAndRejectsUnknownPermission(t *testing.T) {
 	backend := New(agent.NewRunner(), "codex")
 	_, err := backend.Execute(context.Background(), agent.Request{Permission: agent.PermissionWrite}, agent.EventSinkFunc(func(context.Context, agent.Event) error { return nil }))
-	if err == nil || !strings.Contains(err.Error(), "read-only") {
+	if err == nil || !strings.Contains(err.Error(), "write guard") {
 		t.Fatalf("error=%v", err)
 	}
+	_, err = backend.Execute(context.Background(), agent.Request{Permission: agent.PermissionMode("root")}, agent.EventSinkFunc(func(context.Context, agent.Event) error { return nil }))
+	if err == nil || !strings.Contains(err.Error(), "unsupported") {
+		t.Fatalf("error=%v", err)
+	}
+}
+
+type testProcessGuard struct{}
+
+func (testProcessGuard) PrepareCommand(cmd *exec.Cmd) error {
+	cmd.Env = append(cmd.Env, "INDEXQUBE_TEST_WRITE_GUARD=attached")
+	return nil
 }
 
 func TestDetectedVersionIgnoresCLIWarnings(t *testing.T) {
 	got := detectedVersion("WARNING: could not create aliases\ncodex-cli 0.149.1\n")
 	if got != "codex-cli 0.149.1" {
 		t.Fatalf("version=%q", got)
+	}
+}
+
+func TestNormalizeFileEventMakesWorkspacePathsRelative(t *testing.T) {
+	root := t.TempDir()
+	event := &agent.FileEvent{
+		Path: filepath.Join(root, "internal", "client.go"),
+		Changes: []agent.FileChange{
+			{Path: filepath.Join(root, "internal", "client.go"), Operation: "update"},
+			{Path: filepath.Join(root, "internal", "client_test.go"), Operation: "add"},
+		},
+	}
+	normalizeFileEvent(root, event)
+	if event.Path != "internal/client.go" || event.Changes[1].Path != "internal/client_test.go" {
+		t.Fatalf("event=%+v", event)
 	}
 }
 

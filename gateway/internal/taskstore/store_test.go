@@ -92,3 +92,86 @@ func TestAppendEventIsOrderedAndTransactionalWithOutbox(t *testing.T) {
 		t.Fatalf("outbox count=%d want 2", count)
 	}
 }
+
+func TestTaskEvidenceSurvivesStoreReopen(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tasks.db")
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	now := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	task, turn, attempt, err := store.CreateTask(ctx, CreateTaskInput{
+		TaskID: "task_evidence", TurnID: "turn_evidence", RouteAttemptID: "route_evidence",
+		WorkspaceID: "ws_evidence", WorkspacePath: "/repo", Goal: "change a file",
+		Permission: agent.PermissionWrite, PreferredBackend: agent.BackendCodex, Now: now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.StartTurn(ctx, task.ID, turn.ID, attempt.ID, 7, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	exitCode := 0
+	for _, event := range []agent.Event{
+		{TaskID: task.ID, TurnID: turn.ID, Type: agent.EventCommandFinished, Backend: agent.BackendCodex,
+			Command: &agent.CommandEvent{Command: "go test ./...", Status: "completed", ExitCode: &exitCode}, Timestamp: now.Add(2 * time.Second)},
+		{TaskID: task.ID, TurnID: turn.ID, Type: agent.EventFileChanged, Backend: agent.BackendCodex,
+			File: &agent.FileEvent{Path: "client.go", Operation: "update"}, Timestamp: now.Add(3 * time.Second)},
+	} {
+		if _, err := store.AppendEvent(ctx, event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.AddWorkspaceFileDeltas(ctx, []WorkspaceFileDelta{{
+		ID: "delta_1", TaskID: task.ID, TurnID: turn.ID, Path: "client.go", Operation: "modified",
+		AfterFingerprint: "after", RecordedAt: now.Add(3 * time.Second),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddSnapshot(ctx, WorkspaceSnapshot{
+		ID: "snap_evidence", TaskID: task.ID, TurnID: turn.ID, Phase: "post", WorkspaceID: task.WorkspaceID,
+		StagedHash: "staged", UnstagedHash: "unstaged", UntrackedHash: "untracked", Fingerprint: "post",
+		CapturedAt: now.Add(3 * time.Second), Files: []WorkspaceFileState{{
+			SnapshotID: "snap_evidence", TaskID: task.ID, TurnID: turn.ID, Path: "client.go",
+			WorktreeStatus: "M", Fingerprint: "after",
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CompleteTurn(ctx, task.ID, turn.ID, attempt.ID, "done", "post", true, false, now.Add(4*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	tasks, err := reopened.ListTasks(ctx, 10)
+	if err != nil || len(tasks) != 1 || tasks[0].ID != task.ID {
+		t.Fatalf("tasks=%+v err=%v", tasks, err)
+	}
+	evidence, ok, err := reopened.TaskEvidence(ctx, task.ID)
+	if err != nil || !ok {
+		t.Fatalf("evidence ok=%v err=%v", ok, err)
+	}
+	if len(evidence.Commands) != 1 || evidence.Commands[0].Command != "go test ./..." {
+		t.Fatalf("commands=%+v", evidence.Commands)
+	}
+	if len(evidence.Files) != 1 || evidence.Files[0].Path != "client.go" {
+		t.Fatalf("files=%+v", evidence.Files)
+	}
+	if len(evidence.ReportedFiles) != 1 || evidence.EvidenceMismatch {
+		t.Fatalf("reported=%+v mismatch=%v", evidence.ReportedFiles, evidence.EvidenceMismatch)
+	}
+	if len(evidence.Turns) != 1 || evidence.Turns[0].AssistantMessage != "done" || len(evidence.Routes) != 1 {
+		t.Fatalf("evidence=%+v", evidence)
+	}
+	if len(evidence.Snapshots) != 1 || len(evidence.Snapshots[0].Files) != 1 || evidence.Snapshots[0].Files[0].Fingerprint != "after" {
+		t.Fatalf("snapshots=%+v", evidence.Snapshots)
+	}
+}
