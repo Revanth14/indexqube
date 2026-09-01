@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -74,27 +73,53 @@ func NewLocalVerifier() *LocalVerifier {
 }
 
 type checkSpec struct {
-	name    string
-	kind    string
-	command string
-	args    []string
-	dir     string
-	cwd     string
+	name            string
+	kind            string
+	command         string
+	args            []string
+	dir             string
+	cwd             string
+	env             map[string]string
+	timeout         time.Duration
+	temporaryTarget bool
 }
 
 func (v *LocalVerifier) Verify(ctx context.Context, request Request) Result {
 	started := time.Now().UTC()
 	result := Result{Status: StatusSkipped, StartedAt: started}
-	checks := detectGoChecks(request.Workspace, request.ChangedPaths)
+	checks, skipSummary, err := planChecks(request.Workspace, request.ChangedPaths)
+	if err != nil {
+		now := time.Now().UTC()
+		name := "Verification planning"
+		kind := "detection"
+		command := ""
+		var planErr *planningError
+		if errors.As(err, &planErr) {
+			name = planErr.name
+			kind = planErr.kind
+			command = planErr.command
+		}
+		result.Status = StatusFailed
+		result.Summary = "verification planning failed"
+		result.Checks = []CheckResult{{
+			Name: name, Kind: kind, Command: command, CWD: ".", Status: CheckFailed, Output: err.Error(),
+			StartedAt: now, CompletedAt: now,
+		}}
+		result.CompletedAt = now
+		return result
+	}
 	if len(checks) == 0 {
-		result.Summary = "no supported project verification detected for the changed paths"
+		result.Summary = skipSummary
+		if result.Summary == "" {
+			result.Summary = "no supported project verification detected for the changed paths"
+		}
 		result.CompletedAt = time.Now().UTC()
 		return result
 	}
 
-	timeout := v.Timeout
-	if timeout <= 0 {
-		timeout = 2 * time.Minute
+	defaultTimeout := v.Timeout
+	if defaultTimeout <= 0 {
+		defaultTimeout = 2 * time.Minute
 	}
 	outputLimit := v.OutputLimit
 	if outputLimit <= 0 {
@@ -103,38 +128,56 @@ func (v *LocalVerifier) Verify(ctx context.Context, request Request) Result {
 	result.Status = StatusVerified
 	for _, check := range checks {
 		checkStarted := time.Now().UTC()
+		var runErr error
+		timeout := check.timeout
+		if timeout <= 0 {
+			timeout = defaultTimeout
+		}
 		checkCtx, cancel := context.WithTimeout(ctx, timeout)
-		cmd := exec.CommandContext(checkCtx, check.args[0], check.args[1:]...)
-		cmd.Dir = check.dir
-		// Detected verification must not fetch dependencies or rewrite module
-		// metadata. A cold dependency cache therefore fails visibly instead of
-		// turning a local check into an implicit network operation.
-		cmd.Env = offlineGoEnv()
 		output := &boundedBuffer{limit: outputLimit}
-		cmd.Stdout = output
-		cmd.Stderr = output
-		var err error
-		if request.Guard != nil {
-			err = request.Guard.PrepareCommand(cmd)
-		}
-		if err == nil {
-			err = cmd.Run()
-		}
-		cancel()
-
 		exitCode := 0
 		status := CheckPassed
-		if err != nil {
+
+		env := mergeEnvironment(os.Environ(), check.env)
+		cleanup := func() {}
+		if check.temporaryTarget {
+			var target string
+			target, runErr = os.MkdirTemp("", "indexqube-verification-")
+			if runErr == nil {
+				env = mergeEnvironment(env, map[string]string{"CARGO_TARGET_DIR": target})
+				cleanup = func() { _ = os.RemoveAll(target) }
+			}
+		}
+
+		if runErr == nil {
+			cmd := exec.CommandContext(checkCtx, check.args[0], check.args[1:]...)
+			cmd.WaitDelay = 2 * time.Second
+			prepareVerificationProcess(cmd)
+			cmd.Dir = check.dir
+			cmd.Env = env
+			cmd.Stdout = output
+			cmd.Stderr = output
+			if request.Guard != nil {
+				runErr = request.Guard.PrepareCommand(cmd)
+			}
+			if runErr == nil {
+				runErr = cmd.Run()
+			}
+		}
+		cancel()
+		cleanup()
+
+		if runErr != nil {
 			status = CheckFailed
 			exitCode = -1
 			var exitErr *exec.ExitError
-			if errors.As(err, &exitErr) {
+			if errors.As(runErr, &exitErr) {
 				exitCode = exitErr.ExitCode()
 			}
 			if errors.Is(checkCtx.Err(), context.DeadlineExceeded) {
 				output.appendMessage(fmt.Sprintf("verification timed out after %s", timeout))
-			} else if !errors.As(err, &exitErr) {
-				output.appendMessage(err.Error())
+			} else if !errors.As(runErr, &exitErr) {
+				output.appendMessage(runErr.Error())
 			}
 			result.Status = StatusFailed
 		}
@@ -160,102 +203,30 @@ func (v *LocalVerifier) Verify(ctx context.Context, request Request) Result {
 	return result
 }
 
-func offlineGoEnv() []string {
-	base := os.Environ()
-	env := make([]string, 0, len(base)+3)
+func mergeEnvironment(base []string, overrides map[string]string) []string {
+	if len(overrides) == 0 {
+		return append([]string(nil), base...)
+	}
+	keys := make([]string, 0, len(overrides))
+	for key := range overrides {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	blocked := make(map[string]struct{}, len(keys))
+	for _, key := range keys {
+		blocked[key] = struct{}{}
+	}
+	env := make([]string, 0, len(base)+len(overrides))
 	for _, entry := range base {
-		if strings.HasPrefix(entry, "GOPROXY=") || strings.HasPrefix(entry, "GOSUMDB=") ||
-			strings.HasPrefix(entry, "GOTOOLCHAIN=") {
-			continue
-		}
-		env = append(env, entry)
-	}
-	return append(env, "GOPROXY=off", "GOSUMDB=off", "GOTOOLCHAIN=local")
-}
-
-func detectGoChecks(workspace string, changedPaths []string) []checkSpec {
-	root, err := filepath.Abs(workspace)
-	if err != nil {
-		return nil
-	}
-	realRoot, err := filepath.EvalSymlinks(root)
-	if err != nil {
-		return nil
-	}
-	moduleDirs := make(map[string]struct{})
-	for _, changed := range changedPaths {
-		clean := filepath.Clean(filepath.FromSlash(changed))
-		if clean == "." || filepath.IsAbs(clean) || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
-			continue
-		}
-		base := filepath.Base(clean)
-		if filepath.Ext(base) != ".go" && base != "go.mod" && base != "go.sum" {
-			continue
-		}
-		start := filepath.Join(root, clean)
-		if info, statErr := os.Stat(start); statErr == nil && info.IsDir() {
-			// Keep directory paths as-is.
-		} else {
-			start = filepath.Dir(start)
-		}
-		if moduleDir := nearestGoModule(root, start); moduleDir != "" {
-			realModuleDir, err := filepath.EvalSymlinks(moduleDir)
-			if err != nil {
-				continue
-			}
-			rel, err := filepath.Rel(realRoot, realModuleDir)
-			if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-				continue
-			}
-			moduleDirs[realModuleDir] = struct{}{}
+		key, _, found := strings.Cut(entry, "=")
+		if _, replace := blocked[key]; !found || !replace {
+			env = append(env, entry)
 		}
 	}
-	dirs := make([]string, 0, len(moduleDirs))
-	for dir := range moduleDirs {
-		dirs = append(dirs, dir)
+	for _, key := range keys {
+		env = append(env, key+"="+overrides[key])
 	}
-	sort.Strings(dirs)
-	checks := make([]checkSpec, 0, len(dirs))
-	for _, dir := range dirs {
-		cwd, err := filepath.Rel(realRoot, dir)
-		if err != nil || strings.HasPrefix(cwd, "..") {
-			continue
-		}
-		if cwd == "." {
-			cwd = "."
-		}
-		name := "Go tests"
-		if cwd != "." {
-			name += " (" + filepath.ToSlash(cwd) + ")"
-		}
-		checks = append(checks, checkSpec{
-			name: name, kind: "test", command: "go test -mod=readonly ./...",
-			args: []string{"go", "test", "-mod=readonly", "./..."}, dir: dir, cwd: filepath.ToSlash(cwd),
-		})
-	}
-	return checks
-}
-
-func nearestGoModule(root, start string) string {
-	root = filepath.Clean(root)
-	current := filepath.Clean(start)
-	for {
-		rel, err := filepath.Rel(root, current)
-		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			return ""
-		}
-		if info, err := os.Stat(filepath.Join(current, "go.mod")); err == nil && !info.IsDir() {
-			return current
-		}
-		if current == root {
-			return ""
-		}
-		parent := filepath.Dir(current)
-		if parent == current {
-			return ""
-		}
-		current = parent
-	}
+	return env
 }
 
 type boundedBuffer struct {

@@ -50,7 +50,7 @@ func TestTaskShowRendersDurableVerification(t *testing.T) {
 	var out bytes.Buffer
 	renderTaskEvidence(&out, evidence)
 	for _, want := range []string{
-		"Verification:", "verification_failed", "[failed exit=1] go test -mod=readonly ./... (cwd gateway)",
+		"Verification:", "verification_failed", "[failed exit=1] Go tests — go test -mod=readonly ./... (cwd gateway)",
 		"FAIL example.com/package",
 	} {
 		if !strings.Contains(out.String(), want) {

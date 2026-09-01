@@ -331,6 +331,9 @@ func (s *Service) execute(ctx context.Context, task taskstore.Task, turn tasksto
 		changedPaths := make([]string, 0, len(fileDeltas))
 		for _, delta := range fileDeltas {
 			changedPaths = append(changedPaths, delta.Path)
+			if delta.PreviousPath != "" && delta.PreviousPath != delta.Path {
+				changedPaths = append(changedPaths, delta.PreviousPath)
+			}
 		}
 		verificationResult := s.verifier.Verify(ctx, verification.Request{
 			Workspace: identity.Root, ChangedPaths: changedPaths, Guard: processGuard,

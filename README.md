@@ -40,8 +40,8 @@ The operating rule is simple: **the agent is temporary; the task is not.**
 | OS workspace locks, fencing epochs, and dirty-baseline reconciliation | Shipped foundation |
 | Durable command/file approvals and retry-safe cancellation | Shipped foundation |
 | Changed-file, command, route, snapshot, and session evidence | Shipped foundation |
-| Automatic offline Go verification after successful write turns | Shipped foundation |
-| Configured recipes and Node, Python, or Rust verification | Next |
+| Configured recipes plus automatic Go, Node, Python, and Rust verification | Shipped foundation |
+| Security audit integration as a separate verification check | Next |
 | Claude Code as an orchestrated task backend and explicit handoff | Planned |
 | TUI, authenticated control API, and release installer | Planned |
 
@@ -149,18 +149,76 @@ inside an already-dirty baseline. IndexQube compares that authoritative delta
 with agent-reported file events. A mismatch is persisted and moves the task to
 `needs_attention`.
 
-For successful write turns that touch Go files or module metadata, IndexQube
-finds the nearest `go.mod` and runs:
+After a successful write turn, IndexQube first looks for an explicit
+`.indexqube/verification.json`. If no recipe exists, it conservatively detects
+checks from the changed paths:
 
-```bash
-go test -mod=readonly ./...
+| Ecosystem | Detection | Command |
+|---|---|---|
+| Go | Nearest `go.mod` | `go test -mod=readonly ./...` |
+| Node | Nearest `package.json` with a non-empty `test` script | `npm test`, `pnpm test`, `yarn test`, or `bun run test` |
+| Python | Nearest project with an explicit pytest signal | `python3 -m pytest -p no:cacheprovider`, or the matching uv/Poetry/PDM runner |
+| Rust | Nearest `Cargo.toml` | `cargo test --offline`, with `--locked` when a lockfile exists |
+
+Dependency-manager offline controls are set for every automatic check. Rust
+build output uses a temporary target directory, and Python bytecode and pytest
+cache writes are disabled.
+
+### Configured recipes
+
+Use an argv array rather than a shell command string:
+
+```json
+{
+  "version": 1,
+  "checks": [
+    {
+      "name": "API tests",
+      "kind": "test",
+      "command": ["make", "test"],
+      "cwd": "services/api",
+      "paths": ["services/api"],
+      "timeout_seconds": 180,
+      "env": {
+        "APP_ENV": "test"
+      }
+    }
+  ]
+}
 ```
 
-The check runs with dependency downloads disabled, a two-minute timeout,
-bounded output, and the existing workspace lock. If verification changes the
-workspace, the run fails closed. A failed check preserves the agent's completed
-turn but moves the task to `needs_attention`. Changes with no supported recipe
-are recorded honestly as `verification_skipped`.
+Commit the recipe with the project before relying on it:
+
+```bash
+git add .indexqube/verification.json
+git commit -m "Configure IndexQube verification"
+```
+
+Configured recipes are authoritative and replace auto-detection for that
+workspace. `paths` entries are workspace-relative prefixes; omit `paths` to run
+a check after every successful write turn. `kind` can be `test`, `lint`,
+`typecheck`, `build`, `security`, or `custom`. Timeouts default to two minutes
+and can be raised to ten minutes. The recipe must be Git-tracked before a turn
+starts; IndexQube never executes an untracked recipe.
+
+Recipe parsing is strict. Absolute executables, shell entry points, escaping or
+symlinked working directories, protected environment overrides, oversized
+commands, and unknown fields fail closed. If an agent creates, edits, deletes,
+or renames the recipe during a turn, IndexQube records a configuration failure
+instead of executing the new instructions. A reviewed workspace-relative
+script can be invoked directly.
+
+Every executed check has bounded output, a bounded process group, and the
+existing workspace lock. If verification changes tracked or unignored Git
+workspace state, the run fails closed. A failed check preserves the agent's
+completed turn but moves the task to `needs_attention`. Changes with no
+supported recipe are recorded honestly as `verification_skipped`.
+
+Verification executes repository code. Offline package-manager settings prevent
+implicit dependency downloads, but they are not a complete OS or network
+sandbox; project tests and reviewed custom recipes retain the host access
+available to their process. Git-ignored side effects are outside the current
+workspace-stability comparison.
 
 ## Architecture
 
@@ -256,7 +314,7 @@ PLAN.md                            product gates and implementation order
 
 Work is currently focused on:
 
-1. configurable verification recipes and additional ecosystems;
+1. security audit evidence as a separate verification check;
 2. control API authentication;
 3. Claude Code task execution and deterministic handoff;
 4. an attachable local TUI;

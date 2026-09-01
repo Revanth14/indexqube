@@ -253,7 +253,13 @@ func renderTaskEvidence(out io.Writer, evidence taskstore.TaskEvidence) {
 				if command == "" {
 					command = check.Name
 				}
-				fmt.Fprintf(out, "    [%s%s] %s%s\n", check.Status, exit, oneLine(command, 200), location)
+				label := check.Name
+				if label == "" {
+					label = command
+				} else if command != "" && command != label {
+					label += " — " + command
+				}
+				fmt.Fprintf(out, "    [%s%s] %s%s\n", check.Status, exit, oneLine(label, 240), location)
 				if check.Output != "" {
 					fmt.Fprintf(out, "      %s\n", oneLine(check.Output, 180))
 				}
