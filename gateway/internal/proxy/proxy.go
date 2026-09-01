@@ -353,6 +353,7 @@ func (p *Proxy) registerRoutes() {
 	p.mux.HandleFunc("GET /v1/models", p.handleModels)
 	p.mux.HandleFunc("POST /v1/messages/count_tokens", p.handleClaudeCountTokens)
 	p.mux.HandleFunc("POST /v1/messages", p.handleClaudeMessages)
+	p.mux.HandleFunc("POST /v1/responses", p.handleOpenAIResponses)
 	p.mux.HandleFunc("POST /v1/chat/completions", p.handleChatCompletions)
 	p.mux.HandleFunc("POST /v1/optimize", p.handleOptimize)
 	p.mux.HandleFunc("POST /v1/telemetry", p.handleTelemetry)

@@ -130,7 +130,7 @@ func TestOverflowCount(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
-	h.Record(500)        // within range
+	h.Record(500)       // within range
 	h.RecordN(9_999, 3) // above HighestTrackableValue — clamped, counted as overflow
 
 	if h.OverflowCount() != 3 {

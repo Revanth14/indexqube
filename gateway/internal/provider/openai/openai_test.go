@@ -287,9 +287,9 @@ func TestBuildRequest_PreservesMessagesInline(t *testing.T) {
 func TestIsErrorChunk(t *testing.T) {
 	t.Parallel()
 	cases := map[string]bool{
-		`{"error":{"message":"x"}}`:                                   true,
-		`  {"error":{"x":1}}`:                                         true, // leading whitespace tolerated
-		`{"id":"x","object":"chat.completion.chunk"}`:                 false,
+		`{"error":{"message":"x"}}`:                                     true,
+		`  {"error":{"x":1}}`:                                           true, // leading whitespace tolerated
+		`{"id":"x","object":"chat.completion.chunk"}`:                   false,
 		`{"choices":[{"delta":{"content":"this has the word error"}}]}`: false,
 		``: false,
 	}

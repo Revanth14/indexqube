@@ -1,6 +1,6 @@
 # IndexQube
 
-A stateless L7 proxy written in Go that sits between Claude Code and Anthropic's API. It deduplicates file context using content-defined chunking, detects agentic loops via a velocity guard, and records tail latency with a from-scratch HDR Histogram. The storage layer is a custom LSM-tree engine with skiplist MemTable, 4KB-page SSTables, Bloom filters, and leveled compaction.
+A local L7 proxy written in Go for agentic coding workloads. IndexQube can run as a one-shot `iq claude` wrapper or as a persistent `iq start` daemon that supported agents route through locally. Its deepest path today is Claude Code/Anthropic Messages optimization; it also exposes OpenAI-compatible ingress for Codex and other clients that can point their base URL at a local gateway.
 
 ---
 
@@ -9,36 +9,130 @@ A stateless L7 proxy written in Go that sits between Claude Code and Anthropic's
 ```mermaid
 graph LR
     A[Claude Code] -->|POST /v1/messages| B[iq proxy :8080]
+    O[Codex / OpenAI-compatible clients] -->|POST /v1/responses| B
     B --> C[Optimizer]
     C --> D[Rabin-Karp Chunker]
     D --> E[LSM / SQLite Cache]
     E -->|cache hit: strip block| C
-    C -->|compressed request| F[Anthropic API]
+    C -->|compressed request| F[Upstream model API]
     F -->|SSE stream| B
     B -->|zero-copy flush| A
+    B -->|flushed stream| O
     B --> G[HDR Histogram]
-    B --> H[Supabase telemetry]
+    B --> H[Local metrics / optional telemetry]
 ```
 
 **Request reduction:** a 190,000-token payload with repeated file reads compresses to ~47,000 tokens after deduplication — 75% fewer tokens forwarded upstream.
 
 ---
 
+## Local Usage
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Revanth14/indexqube/main/install.sh | bash
+
+iq start          # starts the local daemon at http://127.0.0.1:17373
+iq setup          # configures detected supported agents with backups
+iq status
+iq doctor
+```
+
+Durable coding-agent tasks use the daemon's separate loopback control API:
+
+```bash
+iq task --backend codex "explain the retry path"
+iq task --backend codex --write "add retry coverage and update the implementation"
+iq tasks
+iq task show TASK_ID
+iq approvals                  # pending approval requests
+iq approve APPROVAL_ID        # or: iq deny APPROVAL_ID
+iq continue TASK_ID "check the edge cases"
+```
+
+`--write` is an explicit up-front workspace-write grant for that IndexQube
+task. The Codex App Server child remains inside its workspace-write sandbox and
+is supervised under IndexQube's OS workspace lock and fencing epoch. When Codex
+requests a command or file-change escalation, the task moves to
+`awaiting_approval`, the request is committed to SQLite, and the task stream
+prints the exact `iq approve` / `iq deny` command. IndexQube commits the decision
+before the backend resumes. Pending requests are cancelled on daemon recovery
+and are never silently approved after a restart.
+
+`iq task show` reads an assembled `TaskEvidence` view from SQLite: canonical
+turns, native-session lineage, route attempts, workspace snapshots, normalized
+commands, changed files, and the underlying event timeline. Changed-file
+evidence is derived from per-path pre/post Git state, including edits inside an
+already-dirty baseline, and compared with agent-reported events. A mismatch is
+persisted and moves the task to `needs_attention`. Evidence remains available
+after the daemon restarts; native Codex sessions are continuation optimizations
+rather than the task's source of truth.
+
+The optional real-agent smoke lanes exercise both the authenticated App Server
+write path and a real durable approval round trip:
+
+```bash
+IQ_SMOKE_REAL_CODEX=1 make control-smoke
+IQ_SMOKE_REAL_APPROVAL=1 make control-smoke
+```
+
+Supported setup targets:
+
+```bash
+iq setup claude   # adds ANTHROPIC_BASE_URL for direct Claude Code usage
+iq setup codex    # adds an IndexQube Responses provider to ~/.codex/config.toml
+iq unsetup        # restores recorded backups
+```
+
+Security report from an audited Claude session:
+
+```bash
+cd gateway
+./iq claude --dev --dump-payloads
+./iq audit latest
+```
+
+`iq audit` reads the latest `.indexqube/dumps/iq-session-*.jsonl` file plus the
+current git diff and writes a local Markdown report under `.indexqube/reports`.
+The first rule set flags secret exposure, sensitive file references, prompt
+injection text, dangerous commands, risky dependency changes, and high-signal
+generated-code vulnerability patterns.
+
+The daemon defaults to local-only telemetry. It stores state, logs, backups,
+sessions, and cache data under `~/.indexqube`.
+
+---
+
+## Development
+
+The supported repository checks are Go-only; the retired browser and VS Code
+extension surfaces are not part of the current build.
+
+```bash
+make check       # format check, vet, unit tests, and both binary builds
+make test-race   # race-enabled suite used by CI
+make build       # writes bin/iq and bin/indexqube-gateway
+```
+
+Use `INDEXQUBE_HOME=/path/to/state` to isolate daemon state, logs, cache,
+session data, setup backups, and the anonymous local machine identifier.
+
+---
+
 ## How a request flows
 
 1. **TCP ingress** — `net.Listener` accepts; `net/http` spawns a goroutine per connection
-2. **Guard check** — `governor` estimates token spend via `len(body)/4`; velocity guard blocks sessions burning >$0.75 in 60s
-3. **Deduplication** — Rabin-Karp chunker splits `tool_result` blocks into variable-size content-addressed chunks; known chunks are stripped and replaced with `[iq:ref <12-byte-hash>]`
-4. **Upstream dispatch** — re-marshaled JSON forwarded with user's `x-api-key`; custom `http.Transport` with connection pooling and TLS 1.3 session resumption
+2. **Request shaping** — the proxy caps body size, assigns missing request IDs, preserves protected instruction content, and applies conservative missing-ID backpressure
+3. **Deduplication** — Rabin-Karp chunker splits old `tool_result` blocks into variable-size content-addressed chunks; known spans are replaced with readable placeholders when doing so will not break Claude prompt caching
+4. **Upstream dispatch** — JSON is forwarded with the user's provider credential; custom `http.Transport` provides connection pooling and TLS session reuse
 5. **SSE streaming** — `http.Flusher` flushes each upstream chunk immediately; sub-millisecond local latency, zero buffering
 6. **Latency recording** — HDR Histogram captures end-to-end microseconds per request
-7. **Out-of-band telemetry** — deferred goroutine sends session data to Supabase; times out silently so the hot path is never blocked
+7. **Observability** — local session and cache metrics are recorded; remote telemetry is optional and never on the daemon by default
 
 ---
 
 ## Custom LSM Storage Engine
 
-The metadata cache (`internal/store/lsm/`) is a purpose-built LSM-tree engine — not a wrapper around RocksDB or LevelDB. The IndexQube workload is append-heavy (new file chunks written constantly, rarely updated), which is exactly the access pattern where LSM outperforms B-trees.
+The local response-cache backend (`internal/store/lsm/`) is a purpose-built LSM-tree engine — not a wrapper around RocksDB or LevelDB. The IndexQube workload is append-heavy (new cache entries written constantly, rarely updated), which is exactly the access pattern where LSM outperforms B-trees.
 
 ### Why LSM over B-tree
 
@@ -195,7 +289,7 @@ gateway/Dockerfile    — multi-stage Go build
 | Endpoint | Probe | Returns |
 |----------|-------|---------|
 | `/healthz` | Liveness | 200 always — if it responds, the process is alive |
-| `/readyz` | Readiness | 200 when cache warm + DB connected + upstream reachable; 503 during startup/drain |
+| `/readyz` | Readiness | 200 when local governor/adapters are configured; no tenant credential or upstream probe |
 | `/metrics` | Scrape | Prometheus-compatible: `p50_ms`, `p99_ms`, `cache_hit_rate`, `tokens_saved_total` |
 
 ### Graceful shutdown — why SSE makes this non-trivial
@@ -204,7 +298,7 @@ Standard HTTP: a request completes in milliseconds. A hard `SIGKILL` mid-request
 
 SSE connections are long-lived — a Claude Code session can hold a stream open for minutes. A hard kill mid-stream corrupts the TUI: the client receives a truncated SSE frame with no `data: [DONE]` sentinel, leaving the terminal in a broken state.
 
-The gateway handles `SIGTERM` with a 30-second drain:
+The gateway handles `SIGTERM` with a 15-second drain:
 
 ```go
 ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -213,14 +307,14 @@ defer stop()
 go func() {
     <-ctx.Done()
     // /readyz returns 503 immediately — k8s stops routing new connections
-    // server.Shutdown waits up to 30s for in-flight SSE streams to complete
-    shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+    // server.Shutdown waits up to 15s for in-flight SSE streams to complete
+    shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
     defer cancel()
     server.Shutdown(shutdownCtx)
 }()
 ```
 
-When k8s sends `SIGTERM`, `/readyz` immediately returns 503 — the load balancer stops routing new connections within seconds. The 30-second window lets active SSE streams reach their natural `[DONE]` boundary before the process exits.
+When k8s sends `SIGTERM`, `/readyz` immediately returns 503 — the load balancer stops routing new connections within seconds. The 15-second window lets active SSE streams reach their natural `[DONE]` boundary before the process exits.
 
 ---
 
@@ -236,7 +330,7 @@ Each SSTable block includes a CRC32 checksum. A read that fails the checksum ret
 If a long-running reader holds its Read Mark for an extended period, the checkpoint cannot advance and the WAL file grows unboundedly. Mitigation: `PRAGMA wal_checkpoint(TRUNCATE)` is triggered when WAL size exceeds 50MB, and all queries use `defer rows.Close()` to release Read Marks promptly.
 
 **Upstream timeout:**
-`http.Transport` has explicit dial, TLS handshake, and response header timeouts. A hung upstream returns a 504 to the client without leaking the goroutine. The HDR Histogram records the timeout duration, making upstream degradation visible in p99 before it affects average latency.
+`http.Transport` has explicit dial, TLS handshake, idle-connection, and expect-continue timeouts. Streaming response bodies intentionally rely on request cancellation rather than a fixed write deadline, so long Claude Code generations are not cut off by the proxy.
 
 ---
 
@@ -305,12 +399,11 @@ Disabling system pruning entirely leaves tokens on the table for sessions with l
 
 ## Known Limitations and Future Work
 
-### Velocity guard and circuit breaker deleted
+### Velocity guard disabled
 
-The governor package's velocity guard and circuit breaker exist in the codebase (`internal/governor/`) but the proxy no longer invokes them (removed in `c9214ca`). Two bugs made them fire on legitimate sessions rather than only runaway loops:
+The Claude-specific velocity guard is not active in the request path. The provider circuit breaker in `internal/governor` still protects upstream dispatch after repeated provider failures. Two bugs made the old Claude velocity guard fire on legitimate sessions rather than only runaway loops:
 
 1. **Session key collapse** — sessions without the expected `x-session-id` header fell back to the literal key `"no-session"`, collapsing all such sessions into one velocity bucket. One heavy session would block all others sharing the fallback key.
 2. **Token estimation overcounting** — `len(body)/4` counted JSON structural overhead (keys, brackets, nesting) as billable token content, inflating estimates by 30–40% and making normal large sessions appear to exceed the block threshold.
 
 The correct fix: (1) derive session key from a stable client fingerprint that never collapses multiple real sessions, (2) estimate tokens from message content only — not raw body size, (3) make guards opt-in via `INDEXQUBE_GUARDS_ENABLED=1` so they never fire in default deployments.
-

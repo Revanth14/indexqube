@@ -18,6 +18,7 @@ import (
 	"github.com/Revanth14/indexqube/gateway/internal/config"
 	"github.com/Revanth14/indexqube/gateway/internal/domain"
 	"github.com/Revanth14/indexqube/gateway/internal/governor"
+	"github.com/Revanth14/indexqube/gateway/internal/localstate"
 	"github.com/Revanth14/indexqube/gateway/internal/memory"
 	"github.com/Revanth14/indexqube/gateway/internal/middleware"
 	"github.com/Revanth14/indexqube/gateway/internal/provider/anthropic"
@@ -98,8 +99,11 @@ func run(ctx context.Context, publicListener net.Listener) error {
 		c = supabase.NewCache(pool, cfg.Cache.MaxEntryBytes)
 		logger.Info("using supabase response cache")
 	} else if cfg.Cache.Enabled {
-		if home, err := os.UserHomeDir(); err == nil {
-			cacheDir := filepath.Join(home, ".indexqube", "cache")
+		stateDir, stateErr := localstate.Ensure()
+		if stateErr != nil {
+			logger.Warn("failed to resolve local state directory; falling back to memory cache", slog.Any("err", stateErr))
+		} else {
+			cacheDir := filepath.Join(stateDir, "cache")
 			if err := os.MkdirAll(cacheDir, 0o700); err == nil {
 				lsmCache, err := cache.NewLSMCache(cacheDir, cfg.Cache.MaxEntryBytes, cfg.Cache.TTL)
 				if err != nil {
@@ -189,16 +193,16 @@ func run(ctx context.Context, publicListener net.Listener) error {
 	agentSessions := telemetry.NewAgentSessionStore(0) // 4 h TTL default
 
 	var sessionTracker *sessions.Tracker
-	if home, err := os.UserHomeDir(); err == nil {
-		dbDir := filepath.Join(home, ".indexqube")
-		if err := os.MkdirAll(dbDir, 0o700); err == nil {
-			t, err := sessions.Open(filepath.Join(dbDir, "sessions.db"), logger)
-			if err != nil {
-				logger.Warn("session tracker init failed; continuing without local persistence", slog.Any("err", err))
-			} else {
-				sessionTracker = t
-				logger.Info("session tracker opened", slog.String("path", filepath.Join(dbDir, "sessions.db")))
-			}
+	stateDir, stateErr := localstate.Ensure()
+	if stateErr != nil {
+		logger.Warn("local state directory unavailable; continuing without session persistence", slog.Any("err", stateErr))
+	} else {
+		t, err := sessions.Open(filepath.Join(stateDir, "sessions.db"), logger)
+		if err != nil {
+			logger.Warn("session tracker init failed; continuing without local persistence", slog.Any("err", err))
+		} else {
+			sessionTracker = t
+			logger.Info("session tracker opened", slog.String("path", filepath.Join(stateDir, "sessions.db")))
 		}
 	}
 

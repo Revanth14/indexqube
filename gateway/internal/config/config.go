@@ -34,8 +34,8 @@ type ServerConfig struct {
 	ReadTimeout       time.Duration
 	// WriteTimeout MUST be 0 for the streaming proxy. Setting any non-zero
 	// value caps the maximum stream duration and breaks long generations.
-	WriteTimeout              time.Duration
-	IdleTimeout               time.Duration
+	WriteTimeout time.Duration
+	IdleTimeout  time.Duration
 	// AuthToken protects sensitive endpoints (/stats, /v1/agent-sessions,
 	// /v1/diagnostics) when the gateway binds to a non-loopback address.
 	// Empty disables auth entirely. Defaults to INDEXQUBE_AUTH_TOKEN,

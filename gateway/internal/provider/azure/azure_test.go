@@ -33,14 +33,14 @@ func TestValidateAzureEndpoint(t *testing.T) {
 	}{
 		{"https://myresource.openai.azure.com", false},
 		{"https://contoso.cognitiveservices.azure.com", false},
-		{"http://myresource.openai.azure.com", true},  // no https
-		{"", true},                                     // empty
-		{"ftp://example.com", true},                   // wrong scheme
-		{"https://", true},                             // missing host
-		{"https://10.0.0.1", true},                    // private IP
-		{"https://192.168.1.1", true},                 // private IP
-		{"https://172.16.0.1", true},                  // private IP
-		{"https://169.254.169.254", true},             // link-local (AWS metadata)
+		{"http://myresource.openai.azure.com", true}, // no https
+		{"", true},                        // empty
+		{"ftp://example.com", true},       // wrong scheme
+		{"https://", true},                // missing host
+		{"https://10.0.0.1", true},        // private IP
+		{"https://192.168.1.1", true},     // private IP
+		{"https://172.16.0.1", true},      // private IP
+		{"https://169.254.169.254", true}, // link-local (AWS metadata)
 	} {
 		err := validateAzureEndpoint(tc.endpoint)
 		if tc.wantErr && err == nil {

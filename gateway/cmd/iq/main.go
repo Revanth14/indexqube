@@ -24,6 +24,8 @@ import (
 
 	_ "modernc.org/sqlite" // pure-Go SQLite driver
 
+	"github.com/Revanth14/indexqube/gateway/internal/agent/fake"
+	"github.com/Revanth14/indexqube/gateway/internal/localstate"
 	"github.com/Revanth14/indexqube/gateway/internal/server"
 )
 
@@ -45,15 +47,47 @@ func main() {
 	}
 
 	switch os.Args[1] {
+	case "__fake-agent":
+		os.Exit(fake.RunHelper(os.Stdin, os.Stdout, os.Stderr))
+	case "task":
+		runTask(os.Args[2:])
+	case "tasks":
+		runTasks(os.Args[2:])
+	case "approvals":
+		runApprovals(os.Args[2:])
+	case "approve":
+		runApprove(os.Args[2:], "approve")
+	case "deny":
+		runApprove(os.Args[2:], "deny")
+	case "continue":
+		runContinue(os.Args[2:])
 	case "claude":
 		devMode, dumpPayloads, claudeArgs := parseClaudeFlags(os.Args[2:])
 		runClaude(claudeArgs, devMode, dumpPayloads)
+	case "start":
+		runStart(os.Args[2:])
+	case "daemon":
+		runDaemon(os.Args[2:])
+	case "stop":
+		runStop(os.Args[2:])
+	case "status":
+		runStatus(os.Args[2:])
+	case "logs":
+		runLogs(os.Args[2:])
+	case "doctor":
+		runDoctor(os.Args[2:])
+	case "setup":
+		runSetup(os.Args[2:])
+	case "unsetup":
+		runUnsetup(os.Args[2:])
+	case "audit":
+		runAudit(os.Args[2:])
 	case "bench":
 		runBench(os.Args[2:])
 	case "gemini":
 		fmt.Println("  iq gemini — coming soon")
 	case "codex":
-		fmt.Println("  iq codex  — coming soon")
+		fmt.Println("  iq codex  — use `iq start` and `iq setup codex`")
 	case "help", "--help", "-h":
 		printHelp()
 	default:
@@ -204,11 +238,11 @@ type sessionMetrics struct {
 }
 
 func sessionsDBPath() string {
-	home, err := os.UserHomeDir()
+	home, err := localstate.Dir()
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(home, ".indexqube", "sessions.db")
+	return filepath.Join(home, "sessions.db")
 }
 
 // readSessionMetrics loads the most recent agent_sessions row whose ID matches
@@ -255,21 +289,22 @@ func printSessionSummary(sessionID string) {
 	cacheCreationTokens := m.cacheCreation
 	status := m.status
 
-	// Prompt-cache hit ratio: of the input the model actually billed this session,
-	// the fraction Anthropic served from its prompt cache (≈10% cost) instead of
-	// re-reading at full price. The headline signal for a subscription user — real,
-	// measured from upstream usage, not a byte estimate or a fabricated dollar figure.
+	// Prompt-cache reuse ratio: of the input Anthropic accounted for this session,
+	// the fraction served from its prompt cache instead of freshly processed. This
+	// is the primary subscription-session signal: real upstream usage, not a byte
+	// estimate or a fabricated dollar figure.
 	cacheHitRatio := 0.0
 	if inputTokensReal > 0 {
 		cacheHitRatio = float64(cacheReadTokens) / float64(inputTokensReal) * 100
 	}
-	// Fresh = the only portion billed at full input price this session.
+	// Fresh input is the portion that was neither served from cache nor written
+	// into the cache this session.
 	freshInput := inputTokensReal - cacheReadTokens - cacheCreationTokens
 	if freshInput < 0 {
 		freshInput = 0
 	}
 	// Estimated optimizer pruning (byte-based, pre-cache). A diagnostic only — it
-	// does NOT correspond to tokens Anthropic actually billed, so it is dimmed and
+	// does NOT correspond to Anthropic's upstream usage accounting, so it is dimmed and
 	// kept below the real metrics rather than shown as "saved".
 	estPercent := 0.0
 	if tokensAttempted > 0 {
@@ -293,22 +328,24 @@ func printSessionSummary(sessionID string) {
 
 	fmt.Fprintln(os.Stderr)
 	fmt.Fprintln(os.Stderr, "  \033[1;36m┌────────────────────────────────────────────────────────┐\033[0m")
-	fmt.Fprintln(os.Stderr, "  \033[1;36m│\033[0m                  \033[1;37mIndexQube Session Summary\033[0m             \033[1;36m│\033[0m")
+	fmt.Fprintln(os.Stderr, "  \033[1;36m│\033[0m                 \033[1;37mIndexQube · Claude Session\033[0m             \033[1;36m│\033[0m")
 	divider()
 	row("Requests", green, formatNumber(requestsTotal))
 	if inputTokensReal > 0 {
 		// Real, Anthropic-reported numbers lead.
-		row("Prompt-Cache Hit", purple, fmt.Sprintf("%.1f%%", cacheHitRatio))
-		row("Input Billed (real)", white, formatNumber(inputTokensReal)+" tok")
-		row("  from cache", cyan, formatNumber(cacheReadTokens)+" tok")
+		row("Prompt-cache reuse", purple, fmt.Sprintf("%.1f%%", cacheHitRatio))
+		row("Fresh input pressure", white, fmt.Sprintf("%.1f%%", float64(freshInput)/float64(inputTokensReal)*100))
+		row("Upstream input", white, formatNumber(inputTokensReal)+" tok")
+		row("  cache reuse", cyan, formatNumber(cacheReadTokens)+" tok")
 		row("  cache write", white, formatNumber(cacheCreationTokens)+" tok")
-		row("  fresh (full price)", white, formatNumber(freshInput)+" tok")
+		row("  fresh input", white, formatNumber(freshInput)+" tok")
 	} else {
-		row("Prompt-Cache Hit", grey, "— (no upstream usage)")
+		row("Prompt-cache reuse", grey, "— (no upstream usage)")
+		row("Fresh input pressure", grey, "—")
 	}
 	divider()
-	// Dimmed diagnostic, explicitly not a billing figure.
-	row("Optimizer (est.)", grey, fmt.Sprintf("%s tok  (%.1f%%)", formatNumber(tokensDeduplicated), estPercent))
+	// Dimmed diagnostic, explicitly not an upstream usage figure.
+	row("Optimizer estimate", grey, fmt.Sprintf("%s tok  (%.1f%%)", formatNumber(tokensDeduplicated), estPercent))
 	statusColor := green
 	if status == "killed" {
 		statusColor = "\033[1;31m" // red
@@ -413,10 +450,10 @@ func benchFreshInput(m sessionMetrics) int64 {
 	return f
 }
 
-// benchEffectiveInput weights input by Anthropic's standard multipliers
-// (cache read ≈0.1×, cache write ≈1.25×, fresh =1.0×) so the comparison reflects
-// real cost / rate-limit weight. Raw token sums hide that a cache miss (write)
-// costs ~12× a cache hit (read) — which is exactly the optimizer's failure mode.
+// benchEffectiveInput weights input by Anthropic's standard prompt-cache
+// multipliers (cache read ≈0.1×, cache write ≈1.25×, fresh =1.0×) so the
+// comparison reflects subscription usage pressure. Raw token sums hide that a
+// cache write has much more impact than a cache read.
 func benchEffectiveInput(m sessionMetrics) int64 {
 	return int64(float64(m.cacheRead)*0.1 + float64(m.cacheCreation)*1.25 + float64(benchFreshInput(m)))
 }
@@ -473,7 +510,7 @@ func printBenchComparison(directLabel string, d sessionMetrics, proxyLabel strin
 	row("Real input (tok)", d.inputReal, p.inputReal, true)
 	row("  cache read", d.cacheRead, p.cacheRead, false)
 	row("  cache write", d.cacheCreation, p.cacheCreation, false)
-	row("  fresh (full price)", benchFreshInput(d), benchFreshInput(p), true)
+	row("  fresh input", benchFreshInput(d), benchFreshInput(p), true)
 
 	dr, pr := benchCacheRatio(d), benchCacheRatio(p)
 	rcol := grey
@@ -485,9 +522,9 @@ func printBenchComparison(directLabel string, d sessionMetrics, proxyLabel strin
 	fmt.Fprintf(w, "  %-22s %13.1f%% %13.1f%% %s%+13.1f%s\n",
 		"Cache-hit ratio", dr, pr, rcol, pr-dr, "pp"+reset)
 
-	// The bottom line: cost-weighted input. This is what actually moves billing
-	// and rate-limit headroom (read×0.1, write×1.25, fresh×1.0).
-	row("Effective (cost-wt)", benchEffectiveInput(d), benchEffectiveInput(p), true)
+	// The bottom line: usage-weighted input. This is what reflects subscription
+	// usage pressure (read×0.1, write×1.25, fresh×1.0).
+	row("Usage-weighted input", benchEffectiveInput(d), benchEffectiveInput(p), true)
 
 	fmt.Fprintln(w, "  ──────────────────────────────────────────────────────────────")
 
@@ -500,14 +537,14 @@ func printBenchComparison(directLabel string, d sessionMetrics, proxyLabel strin
 		fmt.Fprintf(w, "  %seach arm's own cache-hit ratio is still valid: proxy=%.1f%%, direct=%.1f%%%s\n", grey, pr, dr, reset)
 	case pe < de:
 		pct := float64(de-pe) / float64(de) * 100
-		fmt.Fprintf(w, "  %s✓ Proxy's cost-weighted input is %s lower than direct (%.1f%%).%s\n", green, formatNumber(de-pe), pct, reset)
+		fmt.Fprintf(w, "  %s✓ Proxy's usage-weighted input is %s lower than direct (%.1f%%).%s\n", green, formatNumber(de-pe), pct, reset)
 	case pe > de:
 		pct := float64(pe-de) / float64(de) * 100
-		fmt.Fprintf(w, "  %s✗ Proxy's cost-weighted input is %s HIGHER than direct (%.1f%%) — investigate.%s\n", red, formatNumber(pe-de), pct, reset)
+		fmt.Fprintf(w, "  %s✗ Proxy's usage-weighted input is %s HIGHER than direct (%.1f%%) — investigate.%s\n", red, formatNumber(pe-de), pct, reset)
 	default:
-		fmt.Fprintf(w, "  %s≈ Proxy and direct are at cost parity.%s\n", grey, reset)
+		fmt.Fprintf(w, "  %s≈ Proxy and direct have equal usage-weighted input.%s\n", grey, reset)
 	}
-	fmt.Fprintf(w, "  %scost-wt: cache read×0.1, write×1.25, fresh×1.0 (Anthropic's standard weights)%s\n", grey, reset)
+	fmt.Fprintf(w, "  %susage weights: cache read×0.1, write×1.25, fresh×1.0%s\n", grey, reset)
 	fmt.Fprintln(w)
 }
 
@@ -517,15 +554,31 @@ func printHelp() {
 
   USAGE
     iq                   Start Claude Code (default)
+    iq task [flags] TEXT Create a durable agent task (--backend fake|codex, --write)
+    iq tasks             List durable tasks
+    iq task status TASK  Inspect canonical task and latest-turn state
+    iq task show TASK    Show durable turns, commands, files, routes, and snapshots
+    iq approvals          List pending durable approval requests
+    iq approve APPROVAL   Approve one waiting backend action
+    iq deny APPROVAL      Deny one waiting backend action
+    iq continue TASK TEXT Continue a task; recover if its native session is lost
     iq claude            Start Claude Code via IndexQube
     iq claude --dev      Start Claude Code, dev mode (relaxed guards)
     iq claude --dump-payloads
                          Dump Anthropic payloads to .indexqube/dumps/iq-session-*.jsonl
+    iq start             Start the local IndexQube daemon on 127.0.0.1:17373
+    iq stop              Stop the local daemon
+    iq status            Show daemon status
+    iq logs              Print recent daemon logs
+    iq doctor            Check daemon and supported agent setup
+    iq setup [agent...]  Configure supported agents (claude, codex)
+    iq unsetup [agent...] Restore IndexQube setup backups
+    iq audit [latest]     Write a local agent security report from the latest dump
     iq bench             Proxy-vs-direct A/B: runs the same prompt in optimize
                          and observe modes, prints real Anthropic usage side by side
                          (flags: --prompt "...", --cooldown 6m)
     iq gemini            Gemini via IndexQube (coming soon)
-    iq codex             Codex via IndexQube  (coming soon)
+    iq codex             Use iq setup codex
     iq help              Show this help
 
   DEV MODE

@@ -25,11 +25,11 @@ var _ domain.TokenWriter = (*Tee)(nil)
 // Entry returns (nil, false) and the response is NOT cached -- the
 // stream the client received is unaffected.
 type Tee struct {
-	inner            domain.TokenWriter
-	maxCaptureBytes  int64
-	captured         [][]byte
-	capturedBytes    int64
-	abandoned        bool
+	inner           domain.TokenWriter
+	maxCaptureBytes int64
+	captured        [][]byte
+	capturedBytes   int64
+	abandoned       bool
 }
 
 // NewTee returns a Tee wrapping inner. If maxCaptureBytes <= 0 the cap

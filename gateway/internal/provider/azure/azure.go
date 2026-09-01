@@ -93,20 +93,20 @@ func (a *Adapter) Dispatch(ctx context.Context, req *domain.InferenceRequest, tw
 	// setups, we expect the client to pass the endpoint via headers or we
 	// use a global fallback. Since Azure endpoints are tenant-specific
 	// (e.g. {resource}.openai.azure.com), we must ensure it's provided.
-	
-	// Implementation note: req.Credential.APIKey for Azure is expected to be 
+
+	// Implementation note: req.Credential.APIKey for Azure is expected to be
 	// the "api-key" value. The endpoint must be resolved.
 	// For v1, we assume the APIKey might contain "endpoint|key" or we use a header.
 	// However, the current domain.Credential only has APIKey.
-	
-	// TODO: Refine credential extraction for Azure. 
-	// For now, we'll look for an "X-IQ-Azure-Endpoint" header or similar, 
-	// but let's stick to the MAANG standard: allow the client to specify the 
+
+	// TODO: Refine credential extraction for Azure.
+	// For now, we'll look for an "X-IQ-Azure-Endpoint" header or similar,
+	// but let's stick to the MAANG standard: allow the client to specify the
 	// full target if possible, or use a configured default.
-	
+
 	endpoint := req.AzureEndpoint
 	apiKey := req.Credential.APIKey
-	
+
 	// Fallback: if AzureEndpoint header is missing, check if it's encoded in the APIKey (endpoint|key).
 	if endpoint == "" {
 		if parts := strings.Split(req.Credential.APIKey, "|"); len(parts) == 2 {

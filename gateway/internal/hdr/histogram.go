@@ -19,10 +19,10 @@
 //
 // Values are stored in a flat counts array that conceptually forms a 2-D grid:
 //
-//	 Bucket 0 │ sub-bucket [0 … S)   covers values [0 … S)   — resolution 1
-//	 Bucket 1 │ sub-bucket [S/2 … S) covers values [S … 2S)  — resolution 2
-//	 Bucket 2 │ sub-bucket [S/2 … S) covers values [2S … 4S) — resolution 4
-//	 …
+//	Bucket 0 │ sub-bucket [0 … S)   covers values [0 … S)   — resolution 1
+//	Bucket 1 │ sub-bucket [S/2 … S) covers values [S … 2S)  — resolution 2
+//	Bucket 2 │ sub-bucket [S/2 … S) covers values [2S … 4S) — resolution 4
+//	…
 //
 // where S = subBucketCount (a power of two derived from SignificantFigures).
 // Within each bucket the sub-bucket index encodes the top significant digits of
@@ -88,14 +88,14 @@ func DefaultConfig() Config {
 // Snapshot is an immutable point-in-time summary exported by Histogram.Snapshot.
 // All latency values use the same unit as the recorded values (e.g., µs).
 type Snapshot struct {
-	Count int64
-	Min   int64
-	Max   int64
-	Mean  float64
-	P50   int64
-	P90   int64
-	P95   int64
-	P99   int64
+	Count         int64
+	Min           int64
+	Max           int64
+	Mean          float64
+	P50           int64
+	P90           int64
+	P95           int64
+	P99           int64
 	P999          int64 // 99.9th percentile
 	OverflowCount int64 // values clamped above HighestTrackableValue
 }

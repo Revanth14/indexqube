@@ -5,8 +5,8 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/aws/aws-sdk-go-v2/service/bedrock"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/bedrock"
 )
 
 // FetchBedrockModels calls ListFoundationModels, filters for Anthropic Claude
