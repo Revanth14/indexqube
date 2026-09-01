@@ -345,57 +345,6 @@
         gap: 0.5rem;
       }
 
-      /* ── INSTALL BOX ── */
-      .install {
-        width: 100%;
-        max-width: 560px;
-        text-align: left;
-      }
-
-      .install-title {
-        font-size: 0.85rem;
-        color: var(--muted);
-        margin-bottom: 0.75rem;
-        letter-spacing: 0.05em;
-      }
-
-      .install-cmd {
-        background: var(--surface);
-        border: 1px solid var(--border);
-        border-radius: 8px;
-        padding: 0.85rem 1.2rem;
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        cursor: pointer;
-        transition: border-color 0.15s;
-        gap: 1rem;
-      }
-
-      .install-cmd:hover {
-        border-color: var(--green);
-      }
-
-      .cmd-text {
-        color: var(--green);
-        font-size: 0.82rem;
-      }
-
-      .cmd-copy {
-        font-size: 0.7rem;
-        color: var(--muted);
-        white-space: nowrap;
-        flex-shrink: 0;
-        transition: color 0.15s;
-      }
-
-      .install-next {
-        margin-top: 0.75rem;
-        font-size: 0.78rem;
-        color: var(--muted);
-        padding-left: 0.2rem;
-      }
-
       /* ── HOW IT WORKS ── */
       .how-it-works {
         padding: 4rem 2rem 5rem;
@@ -656,7 +605,6 @@
     <nav>
       <div class="logo">index<span>qube</span></div>
       <div class="nav-links">
-        <a href="#install">install</a>
         <a href="#features">features</a>
         <a href="#how-it-works">how it works</a>
         <a
@@ -669,7 +617,7 @@
     </nav>
 
     <main class="hero">
-      <div class="badge">v0.0.2 — available now</div>
+      <div class="badge">development preview</div>
 
       <div class="hero-text">
         <h1>stop hitting limits<br /><span class="green">mid-session</span></h1>
@@ -678,24 +626,6 @@
           IndexQube sits between your terminal and Claude, deduplicating tokens
           before they're sent — 15–17% fewer tokens, measured on real sessions.
         </p>
-      </div>
-
-      <!-- install box -->
-      <div class="install" id="install">
-        <div class="install-title">// one command install</div>
-        <div class="install-cmd" onclick="copyInstall()" title="click to copy">
-          <span class="cmd-text"
-            >curl -fsSL https://indexqube.com/install | bash</span
-          >
-          <span class="cmd-copy" id="copy-label">copy</span>
-        </div>
-        <div class="install-next">
-          then run: <span class="line-after">iq claude</span>
-          <span class="line-dim">/</span>
-          <span class="line-after">iq codex</span>
-          <span class="line-dim">/</span>
-          <span class="line-after">iq gemini</span>
-        </div>
       </div>
 
       <!-- live stats -->
@@ -947,17 +877,8 @@
     </section>
 
     <section class="bottom-cta">
-      <h2>Ready? Install in <span class="green">30 seconds.</span></h2>
-      <p class="sub">One command. No account. Works with Claude Code.</p>
-      <div class="install">
-        <div class="install-cmd" onclick="copyInstall()" title="click to copy">
-          <span class="cmd-text">curl -fsSL https://indexqube.com/install | bash</span>
-          <span class="cmd-copy" id="copy-label-2">copy</span>
-        </div>
-        <div class="install-next">
-          then run: <span class="line-after">iq claude</span>
-        </div>
-      </div>
+      <h2>Alpha packaging is <span class="green">in progress.</span></h2>
+      <p class="sub">Public installation instructions will return after the release flow is verified.</p>
     </section>
 
     <footer>
@@ -970,22 +891,6 @@
     </footer>
 
     <script>
-      function copyInstall() {
-        navigator.clipboard.writeText(
-          "curl -fsSL https://indexqube.com/install | bash",
-        );
-        ["copy-label", "copy-label-2"].forEach((id) => {
-          const label = document.getElementById(id);
-          if (!label) return;
-          label.textContent = "copied!";
-          label.style.color = "var(--green)";
-          setTimeout(() => {
-            label.textContent = "copy";
-            label.style.color = "";
-          }, 2000);
-        });
-      }
-
       // ── Live stats polling ──
       const STATS_URL = "https://dev-api.indexqube.com/stats";
       const POLL_INTERVAL = 5000;

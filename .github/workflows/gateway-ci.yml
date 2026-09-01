@@ -5,14 +5,12 @@ on:
     paths:
       - 'gateway/**'
       - 'Makefile'
-      - 'install.sh'
       - '.github/workflows/gateway-ci.yml'
   push:
     branches: [main]
     paths:
       - 'gateway/**'
       - 'Makefile'
-      - 'install.sh'
       - '.github/workflows/gateway-ci.yml'
 
 permissions:

@@ -26,11 +26,13 @@ graph LR
 
 ---
 
-## Local Usage
+## Current CLI
+
+Public installation instructions are intentionally withheld while the alpha
+packaging and release flow are being rebuilt. The commands below document the
+current contributor-facing CLI; they are not an installation guide.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Revanth14/indexqube/main/install.sh | bash
-
 iq start          # starts the local daemon at http://127.0.0.1:17373
 iq setup          # configures detected supported agents with backups
 iq status
