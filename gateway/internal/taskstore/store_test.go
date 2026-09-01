@@ -2,6 +2,7 @@ package taskstore
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -9,6 +10,16 @@ import (
 
 	"github.com/Revanth14/indexqube/gateway/internal/agent"
 )
+
+func openTestStore(t *testing.T) *Store {
+	t.Helper()
+	store, err := Open(filepath.Join(t.TempDir(), "tasks.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	return store
+}
 
 func TestCreateTaskPersistsCanonicalBundleAndLineage(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "tasks.db")
@@ -173,5 +184,100 @@ func TestTaskEvidenceSurvivesStoreReopen(t *testing.T) {
 	}
 	if len(evidence.Snapshots) != 1 || len(evidence.Snapshots[0].Files) != 1 || evidence.Snapshots[0].Files[0].Fingerprint != "after" {
 		t.Fatalf("snapshots=%+v", evidence.Snapshots)
+	}
+}
+
+func TestApprovalDecisionIsDurableAndOneShot(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tasks.db")
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	now := time.Date(2026, 9, 1, 15, 0, 0, 0, time.UTC)
+	task, turn, attempt, err := store.CreateTask(ctx, CreateTaskInput{
+		TaskID: "task_approval", TurnID: "turn_approval", RouteAttemptID: "route_approval",
+		WorkspaceID: "ws", WorkspacePath: "/repo", Goal: "run guarded command",
+		Permission: agent.PermissionWrite, PreferredBackend: agent.BackendCodex, Now: now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.StartTurn(ctx, task.ID, turn.ID, attempt.ID, 3, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	approval, err := store.CreateApproval(ctx, CreateApprovalInput{Approval: Approval{
+		ID: "approval_1", TaskID: task.ID, TurnID: turn.ID, Backend: agent.BackendCodex,
+		BackendRequestID: "91", Kind: agent.ApprovalCommand, ItemID: "cmd_1",
+		Reason: "network access", Command: "curl https://example.com", CWD: "/repo",
+	}, Now: now.Add(2 * time.Second)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if approval.Status != ApprovalPending {
+		t.Fatalf("approval=%+v", approval)
+	}
+	state, ok, err := store.TaskState(ctx, task.ID)
+	if err != nil || !ok || state.Task.Status != TaskAwaitingApproval || state.LatestTurn.Status != TurnAwaitingApproval {
+		t.Fatalf("state=%+v ok=%v err=%v", state, ok, err)
+	}
+	resolved, err := store.ResolveApproval(ctx, approval.ID, agent.ApprovalAccept, ApprovalApproved, now.Add(3*time.Second))
+	if err != nil || resolved.Status != ApprovalApproved || resolved.Decision != agent.ApprovalAccept {
+		t.Fatalf("resolved=%+v err=%v", resolved, err)
+	}
+	if _, err := store.ResolveApproval(ctx, approval.ID, agent.ApprovalDecline, ApprovalDenied, now.Add(4*time.Second)); !errors.Is(err, ErrApprovalNotPending) {
+		t.Fatalf("second decision error=%v", err)
+	}
+	state, ok, err = store.TaskState(ctx, task.ID)
+	if err != nil || !ok || state.Task.Status != TaskRunning || state.LatestTurn.Status != TurnRunning {
+		t.Fatalf("resumed state=%+v ok=%v err=%v", state, ok, err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	approvals, err := reopened.ListApprovals(ctx, task.ID, "", 10)
+	if err != nil || len(approvals) != 1 || approvals[0].Status != ApprovalApproved || approvals[0].DecidedAt == nil {
+		t.Fatalf("approvals=%+v err=%v", approvals, err)
+	}
+	evidence, ok, err := reopened.TaskEvidence(ctx, task.ID)
+	if err != nil || !ok || len(evidence.Approvals) != 1 || evidence.Approvals[0].ID != approval.ID {
+		t.Fatalf("evidence=%+v ok=%v err=%v", evidence, ok, err)
+	}
+}
+
+func TestTerminalTurnCancelsPendingApproval(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	task, turn, attempt, err := store.CreateTask(ctx, CreateTaskInput{
+		TaskID: "task_cancel_approval", TurnID: "turn_cancel_approval", RouteAttemptID: "route_cancel_approval",
+		WorkspaceID: "ws", WorkspacePath: "/repo", Goal: "guarded", Permission: agent.PermissionReadOnly,
+		PreferredBackend: agent.BackendFake, Now: now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.StartTurn(ctx, task.ID, turn.ID, attempt.ID, 0, now); err != nil {
+		t.Fatal(err)
+	}
+	approval, err := store.CreateApproval(ctx, CreateApprovalInput{Approval: Approval{
+		ID: "approval_cancel", TaskID: task.ID, TurnID: turn.ID, Backend: agent.BackendFake,
+		BackendRequestID: "request_cancel", Kind: agent.ApprovalCommand,
+	}, Now: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CancelTurn(ctx, task.ID, turn.ID, attempt.ID, "cancelled", "", false, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	stored, ok, err := store.ApprovalByID(ctx, approval.ID)
+	if err != nil || !ok || stored.Status != ApprovalCancelled || stored.Decision != agent.ApprovalCancel {
+		t.Fatalf("approval=%+v ok=%v err=%v", stored, ok, err)
 	}
 }

@@ -12,6 +12,7 @@ import (
 
 	"github.com/Revanth14/indexqube/gateway/internal/agent"
 	"github.com/Revanth14/indexqube/gateway/internal/orchestrator"
+	"github.com/Revanth14/indexqube/gateway/internal/taskstore"
 )
 
 type Handler struct {
@@ -23,6 +24,8 @@ func NewHandler(service *orchestrator.Service) *Handler {
 	h := &Handler{service: service, mux: http.NewServeMux()}
 	h.mux.HandleFunc("GET /control/healthz", h.health)
 	h.mux.HandleFunc("GET /control/v1/backends", h.backends)
+	h.mux.HandleFunc("GET /control/v1/approvals", h.listApprovals)
+	h.mux.HandleFunc("POST /control/v1/approvals/{approvalID}/decision", h.decideApproval)
 	h.mux.HandleFunc("GET /control/v1/tasks", h.listTasks)
 	h.mux.HandleFunc("POST /control/v1/tasks", h.createTask)
 	h.mux.HandleFunc("GET /control/v1/tasks/{taskID}", h.getTask)
@@ -117,6 +120,38 @@ func (h *Handler) listTasks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"tasks": tasks})
+}
+
+func (h *Handler) listApprovals(w http.ResponseWriter, r *http.Request) {
+	limit, _ := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("limit")))
+	status := taskstore.ApprovalStatus(strings.TrimSpace(r.URL.Query().Get("status")))
+	approvals, err := h.service.Approvals(r.Context(), strings.TrimSpace(r.URL.Query().Get("task_id")), status, limit)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"approvals": approvals})
+}
+
+type approvalDecisionRequest struct {
+	Decision string `json:"decision"`
+}
+
+func (h *Handler) decideApproval(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	var body approvalDecisionRequest
+	if err := dec.Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err)
+		return
+	}
+	approval, err := h.service.DecideApproval(r.Context(), r.PathValue("approvalID"), body.Decision)
+	if err != nil {
+		writeError(w, http.StatusConflict, "approval_rejected", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, approval)
 }
 
 func (h *Handler) getTask(w http.ResponseWriter, r *http.Request) {

@@ -44,14 +44,19 @@ iq task --backend codex "explain the retry path"
 iq task --backend codex --write "add retry coverage and update the implementation"
 iq tasks
 iq task show TASK_ID
+iq approvals                  # pending approval requests
+iq approve APPROVAL_ID        # or: iq deny APPROVAL_ID
 iq continue TASK_ID "check the edge cases"
 ```
 
 `--write` is an explicit up-front workspace-write grant for that IndexQube
-task. The Codex child remains inside its workspace-write sandbox, is supervised
-under IndexQube's OS workspace lock and fencing epoch, and routes any Codex
-escalation requests through the CLI's automatic reviewer. Interactive durable
-mid-turn approvals are not part of this first write milestone.
+task. The Codex App Server child remains inside its workspace-write sandbox and
+is supervised under IndexQube's OS workspace lock and fencing epoch. When Codex
+requests a command or file-change escalation, the task moves to
+`awaiting_approval`, the request is committed to SQLite, and the task stream
+prints the exact `iq approve` / `iq deny` command. IndexQube commits the decision
+before the backend resumes. Pending requests are cancelled on daemon recovery
+and are never silently approved after a restart.
 
 `iq task show` reads an assembled `TaskEvidence` view from SQLite: canonical
 turns, native-session lineage, route attempts, workspace snapshots, normalized
@@ -61,6 +66,14 @@ already-dirty baseline, and compared with agent-reported events. A mismatch is
 persisted and moves the task to `needs_attention`. Evidence remains available
 after the daemon restarts; native Codex sessions are continuation optimizations
 rather than the task's source of truth.
+
+The optional real-agent smoke lanes exercise both the authenticated App Server
+write path and a real durable approval round trip:
+
+```bash
+IQ_SMOKE_REAL_CODEX=1 make control-smoke
+IQ_SMOKE_REAL_APPROVAL=1 make control-smoke
+```
 
 Supported setup targets:
 

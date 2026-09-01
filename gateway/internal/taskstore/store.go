@@ -134,6 +134,32 @@ CREATE TABLE IF NOT EXISTS workspace_file_deltas (
 CREATE INDEX IF NOT EXISTS workspace_file_states_turn_idx ON workspace_file_states(turn_id, snapshot_id);
 CREATE INDEX IF NOT EXISTS workspace_file_deltas_task_idx ON workspace_file_deltas(task_id, recorded_at);
 
+CREATE TABLE IF NOT EXISTS approvals (
+    approval_id         TEXT PRIMARY KEY,
+    task_id             TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
+    turn_id             TEXT NOT NULL REFERENCES turns(turn_id) ON DELETE CASCADE,
+    backend             TEXT NOT NULL,
+    backend_request_id  TEXT NOT NULL,
+    kind                TEXT NOT NULL,
+    item_id             TEXT NOT NULL DEFAULT '',
+    native_thread_id    TEXT NOT NULL DEFAULT '',
+    native_turn_id      TEXT NOT NULL DEFAULT '',
+    reason              TEXT NOT NULL DEFAULT '',
+    command_text        TEXT NOT NULL DEFAULT '',
+    cwd                 TEXT NOT NULL DEFAULT '',
+    grant_root          TEXT NOT NULL DEFAULT '',
+    network_host        TEXT NOT NULL DEFAULT '',
+    network_protocol    TEXT NOT NULL DEFAULT '',
+    status              TEXT NOT NULL,
+    decision            TEXT NOT NULL DEFAULT '',
+    requested_at        INTEGER NOT NULL,
+    decided_at          INTEGER,
+    UNIQUE(turn_id, backend_request_id)
+);
+
+CREATE INDEX IF NOT EXISTS approvals_task_idx ON approvals(task_id, requested_at);
+CREATE INDEX IF NOT EXISTS approvals_status_idx ON approvals(status, requested_at);
+
 CREATE TABLE IF NOT EXISTS events (
     event_id            TEXT PRIMARY KEY,
     task_id             TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
@@ -458,6 +484,160 @@ func (s *Store) AddWorkspaceFileDeltas(ctx context.Context, deltas []WorkspaceFi
 	return tx.Commit()
 }
 
+// CreateApproval durably records the backend request and moves the task and
+// turn into awaiting_approval in the same transaction. A client can therefore
+// never observe a pause without the request needed to resolve it.
+func (s *Store) CreateApproval(ctx context.Context, in CreateApprovalInput) (Approval, error) {
+	approval := in.Approval
+	if approval.ID == "" {
+		approval.ID = NewID("approval")
+	}
+	if in.Now.IsZero() {
+		in.Now = time.Now().UTC()
+	}
+	approval.Status = ApprovalPending
+	approval.Decision = ""
+	approval.RequestedAt = in.Now
+	approval.DecidedAt = nil
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Approval{}, err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, `INSERT INTO approvals
+		(approval_id,task_id,turn_id,backend,backend_request_id,kind,item_id,native_thread_id,native_turn_id,
+		reason,command_text,cwd,grant_root,network_host,network_protocol,status,decision,requested_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, approval.ID, approval.TaskID, approval.TurnID,
+		approval.Backend, approval.BackendRequestID, approval.Kind, approval.ItemID, approval.NativeThreadID,
+		approval.NativeTurnID, approval.Reason, approval.Command, approval.CWD, approval.GrantRoot,
+		approval.NetworkHost, approval.NetworkProtocol, approval.Status, approval.Decision, in.Now.UnixMilli()); err != nil {
+		return Approval{}, err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE turns SET status=? WHERE turn_id=? AND status IN (?,?)`,
+		TurnAwaitingApproval, approval.TurnID, TurnRunning, TurnAwaitingApproval); err != nil {
+		return Approval{}, err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE tasks SET status=?,revision=revision+1,updated_at=? WHERE task_id=? AND status IN (?,?)`,
+		TaskAwaitingApproval, in.Now.UnixMilli(), approval.TaskID, TaskRunning, TaskAwaitingApproval); err != nil {
+		return Approval{}, err
+	}
+	if err = tx.Commit(); err != nil {
+		return Approval{}, err
+	}
+	return approval, nil
+}
+
+var ErrApprovalNotPending = errors.New("taskstore: approval is not pending")
+
+// ResolveApproval commits the decision before the orchestrator wakes the
+// backend process. If this was the final pending request for the turn, task and
+// turn state return to running in the same transaction.
+func (s *Store) ResolveApproval(ctx context.Context, approvalID string, decision agent.ApprovalDecision, status ApprovalStatus, now time.Time) (Approval, error) {
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Approval{}, err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `UPDATE approvals SET status=?,decision=?,decided_at=? WHERE approval_id=? AND status=?`,
+		status, decision, now.UnixMilli(), approvalID, ApprovalPending)
+	if err != nil {
+		return Approval{}, err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return Approval{}, err
+	}
+	if rows != 1 {
+		return Approval{}, ErrApprovalNotPending
+	}
+	approval, err := scanApproval(tx.QueryRowContext(ctx, `SELECT approval_id,task_id,turn_id,backend,backend_request_id,kind,
+		item_id,native_thread_id,native_turn_id,reason,command_text,cwd,grant_root,network_host,network_protocol,
+		status,decision,requested_at,decided_at FROM approvals WHERE approval_id=?`, approvalID))
+	if err != nil {
+		return Approval{}, err
+	}
+	var pending int
+	if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM approvals WHERE turn_id=? AND status=?`, approval.TurnID, ApprovalPending).Scan(&pending); err != nil {
+		return Approval{}, err
+	}
+	if pending == 0 {
+		if _, err = tx.ExecContext(ctx, `UPDATE turns SET status=? WHERE turn_id=? AND status=?`,
+			TurnRunning, approval.TurnID, TurnAwaitingApproval); err != nil {
+			return Approval{}, err
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE tasks SET status=?,revision=revision+1,updated_at=? WHERE task_id=? AND status=?`,
+			TaskRunning, now.UnixMilli(), approval.TaskID, TaskAwaitingApproval); err != nil {
+			return Approval{}, err
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		return Approval{}, err
+	}
+	return approval, nil
+}
+
+func (s *Store) ApprovalByID(ctx context.Context, approvalID string) (Approval, bool, error) {
+	approval, err := scanApproval(s.db.QueryRowContext(ctx, `SELECT approval_id,task_id,turn_id,backend,backend_request_id,kind,
+		item_id,native_thread_id,native_turn_id,reason,command_text,cwd,grant_root,network_host,network_protocol,
+		status,decision,requested_at,decided_at FROM approvals WHERE approval_id=?`, approvalID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Approval{}, false, nil
+	}
+	if err != nil {
+		return Approval{}, false, err
+	}
+	return approval, true, nil
+}
+
+func (s *Store) ListApprovals(ctx context.Context, taskID string, status ApprovalStatus, limit int) ([]Approval, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT approval_id,task_id,turn_id,backend,backend_request_id,kind,
+		item_id,native_thread_id,native_turn_id,reason,command_text,cwd,grant_root,network_host,network_protocol,
+		status,decision,requested_at,decided_at FROM approvals
+		WHERE (?='' OR task_id=?) AND (?='' OR status=?) ORDER BY requested_at DESC,approval_id DESC LIMIT ?`,
+		taskID, taskID, status, status, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	approvals := make([]Approval, 0)
+	for rows.Next() {
+		approval, err := scanApproval(rows)
+		if err != nil {
+			return nil, err
+		}
+		approvals = append(approvals, approval)
+	}
+	return approvals, rows.Err()
+}
+
+func scanApproval(row rowScanner) (Approval, error) {
+	var approval Approval
+	var requested int64
+	var decided sql.NullInt64
+	if err := row.Scan(&approval.ID, &approval.TaskID, &approval.TurnID, &approval.Backend,
+		&approval.BackendRequestID, &approval.Kind, &approval.ItemID, &approval.NativeThreadID,
+		&approval.NativeTurnID, &approval.Reason, &approval.Command, &approval.CWD, &approval.GrantRoot,
+		&approval.NetworkHost, &approval.NetworkProtocol, &approval.Status, &approval.Decision,
+		&requested, &decided); err != nil {
+		return Approval{}, err
+	}
+	approval.RequestedAt = time.UnixMilli(requested).UTC()
+	if decided.Valid {
+		value := time.UnixMilli(decided.Int64).UTC()
+		approval.DecidedAt = &value
+	}
+	return approval, nil
+}
+
 func (s *Store) AppendEvent(ctx context.Context, event agent.Event) (agent.Event, error) {
 	if event.ID == "" {
 		event.ID = NewID("evt")
@@ -561,6 +741,10 @@ func (s *Store) finishTurn(ctx context.Context, taskID, turnID, attemptID string
 		return err
 	}
 	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, `UPDATE approvals SET status=?,decision=?,decided_at=? WHERE turn_id=? AND status=?`,
+		ApprovalCancelled, agent.ApprovalCancel, now.UnixMilli(), turnID, ApprovalPending); err != nil {
+		return err
+	}
 	if _, err = tx.ExecContext(ctx, `UPDATE turns SET status=?,assistant_message=?,error_code=?,error_message=?,completed_at=? WHERE turn_id=?`,
 		turnStatus, assistant, code, message, now.UnixMilli(), turnID); err != nil {
 		return err
@@ -672,6 +856,9 @@ func (s *Store) TaskEvidence(ctx context.Context, taskID string) (TaskEvidence, 
 		return TaskEvidence{}, false, err
 	}
 	if evidence.Files, err = s.workspaceFileEvidence(ctx, taskID); err != nil {
+		return TaskEvidence{}, false, err
+	}
+	if evidence.Approvals, err = s.ListApprovals(ctx, taskID, "", 200); err != nil {
 		return TaskEvidence{}, false, err
 	}
 	evidence.Commands, evidence.ReportedFiles = projectEvidence(evidence.Events)
@@ -986,7 +1173,8 @@ func (s *Store) InterruptedRuns(ctx context.Context) ([]InterruptedRun, error) {
 		t.workspace_id,t.workspace_path,t.permission_mode,tr.status,
 		COALESCE((SELECT ra.pre_fingerprint FROM route_attempts ra WHERE ra.turn_id=tr.turn_id ORDER BY ra.ordinal DESC LIMIT 1),'')
 		FROM tasks t JOIN turns tr ON tr.task_id=t.task_id
-		WHERE t.status=? AND tr.status IN (?,?) ORDER BY t.created_at,tr.sequence`, TaskRunning, TurnQueued, TurnRunning)
+		WHERE t.status IN (?,?) AND tr.status IN (?,?,?) ORDER BY t.created_at,tr.sequence`,
+		TaskRunning, TaskAwaitingApproval, TurnQueued, TurnRunning, TurnAwaitingApproval)
 	if err != nil {
 		return nil, err
 	}
@@ -1047,7 +1235,7 @@ func (s *Store) CountRows(ctx context.Context, table string) (int, error) {
 	allowed := map[string]bool{
 		"tasks": true, "turns": true, "backend_sessions": true, "route_attempts": true,
 		"workspace_snapshots": true, "workspace_file_states": true, "workspace_file_deltas": true,
-		"events": true, "outbox": true, "workspace_write_epochs": true,
+		"approvals": true, "events": true, "outbox": true, "workspace_write_epochs": true,
 	}
 	if !allowed[table] {
 		return 0, fmt.Errorf("taskstore: unsupported table %q", table)

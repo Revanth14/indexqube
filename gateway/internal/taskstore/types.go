@@ -10,20 +10,22 @@ import (
 type TaskStatus string
 
 const (
-	TaskOpen           TaskStatus = "open"
-	TaskRunning        TaskStatus = "running"
-	TaskNeedsAttention TaskStatus = "needs_attention"
-	TaskClosed         TaskStatus = "closed"
+	TaskOpen             TaskStatus = "open"
+	TaskRunning          TaskStatus = "running"
+	TaskNeedsAttention   TaskStatus = "needs_attention"
+	TaskAwaitingApproval TaskStatus = "awaiting_approval"
+	TaskClosed           TaskStatus = "closed"
 )
 
 type TurnStatus string
 
 const (
-	TurnQueued    TurnStatus = "queued"
-	TurnRunning   TurnStatus = "running"
-	TurnSucceeded TurnStatus = "succeeded"
-	TurnFailed    TurnStatus = "failed"
-	TurnCancelled TurnStatus = "cancelled"
+	TurnQueued           TurnStatus = "queued"
+	TurnRunning          TurnStatus = "running"
+	TurnAwaitingApproval TurnStatus = "awaiting_approval"
+	TurnSucceeded        TurnStatus = "succeeded"
+	TurnFailed           TurnStatus = "failed"
+	TurnCancelled        TurnStatus = "cancelled"
 )
 
 type Task struct {
@@ -202,6 +204,46 @@ type FileEvidence struct {
 	ObservedAt   time.Time       `json:"observed_at"`
 }
 
+type ApprovalStatus string
+
+const (
+	ApprovalPending   ApprovalStatus = "pending"
+	ApprovalApproved  ApprovalStatus = "approved"
+	ApprovalDenied    ApprovalStatus = "denied"
+	ApprovalCancelled ApprovalStatus = "cancelled"
+	ApprovalExpired   ApprovalStatus = "expired"
+)
+
+// Approval is IndexQube's canonical record of one backend authorization
+// boundary. BackendRequestID is opaque provider routing state; Approval.ID is
+// the stable identifier exposed to users and clients.
+type Approval struct {
+	ID               string                 `json:"approval_id"`
+	TaskID           string                 `json:"task_id"`
+	TurnID           string                 `json:"turn_id"`
+	Backend          agent.BackendID        `json:"backend"`
+	BackendRequestID string                 `json:"backend_request_id"`
+	Kind             agent.ApprovalKind     `json:"kind"`
+	ItemID           string                 `json:"item_id,omitempty"`
+	NativeThreadID   string                 `json:"native_thread_id,omitempty"`
+	NativeTurnID     string                 `json:"native_turn_id,omitempty"`
+	Reason           string                 `json:"reason,omitempty"`
+	Command          string                 `json:"command,omitempty"`
+	CWD              string                 `json:"cwd,omitempty"`
+	GrantRoot        string                 `json:"grant_root,omitempty"`
+	NetworkHost      string                 `json:"network_host,omitempty"`
+	NetworkProtocol  string                 `json:"network_protocol,omitempty"`
+	Status           ApprovalStatus         `json:"status"`
+	Decision         agent.ApprovalDecision `json:"decision,omitempty"`
+	RequestedAt      time.Time              `json:"requested_at"`
+	DecidedAt        *time.Time             `json:"decided_at,omitempty"`
+}
+
+type CreateApprovalInput struct {
+	Approval
+	Now time.Time
+}
+
 // TaskEvidence is the canonical read model consumed by CLI, TUI, and dashboard
 // clients. It is assembled from normalized durable records rather than stored
 // as another source of truth.
@@ -214,6 +256,7 @@ type TaskEvidence struct {
 	Commands         []CommandEvidence   `json:"commands"`
 	Files            []FileEvidence      `json:"files_changed"`
 	ReportedFiles    []FileEvidence      `json:"agent_reported_files"`
+	Approvals        []Approval          `json:"approvals"`
 	EvidenceMismatch bool                `json:"evidence_mismatch"`
 	Events           []agent.Event       `json:"events"`
 }

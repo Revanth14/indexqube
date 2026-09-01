@@ -26,18 +26,20 @@ const (
 type EventType string
 
 const (
-	EventRouteSelected    EventType = "route_selected"
-	EventSessionStarted   EventType = "session_started"
-	EventAssistantDelta   EventType = "assistant_delta"
-	EventAssistantMessage EventType = "assistant_message"
-	EventToolStarted      EventType = "tool_started"
-	EventToolFinished     EventType = "tool_finished"
-	EventFileChanged      EventType = "file_changed"
-	EventCommandFinished  EventType = "command_finished"
-	EventWarning          EventType = "warning"
-	EventError            EventType = "error"
-	EventCompleted        EventType = "completed"
-	EventCancelled        EventType = "cancelled"
+	EventRouteSelected     EventType = "route_selected"
+	EventSessionStarted    EventType = "session_started"
+	EventAssistantDelta    EventType = "assistant_delta"
+	EventAssistantMessage  EventType = "assistant_message"
+	EventToolStarted       EventType = "tool_started"
+	EventToolFinished      EventType = "tool_finished"
+	EventFileChanged       EventType = "file_changed"
+	EventCommandFinished   EventType = "command_finished"
+	EventApprovalRequested EventType = "approval_requested"
+	EventApprovalResolved  EventType = "approval_resolved"
+	EventWarning           EventType = "warning"
+	EventError             EventType = "error"
+	EventCompleted         EventType = "completed"
+	EventCancelled         EventType = "cancelled"
 )
 
 type MessageEvent struct {
@@ -78,6 +80,57 @@ type ResultEvent struct {
 	Error    string `json:"error,omitempty"`
 }
 
+// ApprovalKind identifies the operation class a backend wants the user to
+// authorize. The values are backend-neutral even when the provider uses a
+// different method name on the wire.
+type ApprovalKind string
+
+const (
+	ApprovalCommand    ApprovalKind = "command"
+	ApprovalFileChange ApprovalKind = "file_change"
+)
+
+// ApprovalDecision is the normalized response sent back to an agent backend.
+// Session-wide grants are deliberately excluded from the first durable
+// protocol so a restart can never inherit an implicit authorization.
+type ApprovalDecision string
+
+const (
+	ApprovalAccept  ApprovalDecision = "accept"
+	ApprovalDecline ApprovalDecision = "decline"
+	ApprovalCancel  ApprovalDecision = "cancel"
+)
+
+// ApprovalRequest contains the bounded, user-visible portion of a backend
+// approval request. BackendRequestID is opaque and is used only to route the
+// durable IndexQube decision back to the waiting backend process.
+type ApprovalRequest struct {
+	BackendRequestID string       `json:"backend_request_id"`
+	Kind             ApprovalKind `json:"kind"`
+	ItemID           string       `json:"item_id,omitempty"`
+	NativeThreadID   string       `json:"native_thread_id,omitempty"`
+	NativeTurnID     string       `json:"native_turn_id,omitempty"`
+	Reason           string       `json:"reason,omitempty"`
+	Command          string       `json:"command,omitempty"`
+	CWD              string       `json:"cwd,omitempty"`
+	GrantRoot        string       `json:"grant_root,omitempty"`
+	NetworkHost      string       `json:"network_host,omitempty"`
+	NetworkProtocol  string       `json:"network_protocol,omitempty"`
+}
+
+type ApprovalEvent struct {
+	ApprovalID      string           `json:"approval_id"`
+	Kind            ApprovalKind     `json:"kind"`
+	Status          string           `json:"status"`
+	Decision        ApprovalDecision `json:"decision,omitempty"`
+	Reason          string           `json:"reason,omitempty"`
+	Command         string           `json:"command,omitempty"`
+	CWD             string           `json:"cwd,omitempty"`
+	GrantRoot       string           `json:"grant_root,omitempty"`
+	NetworkHost     string           `json:"network_host,omitempty"`
+	NetworkProtocol string           `json:"network_protocol,omitempty"`
+}
+
 // Event is the canonical event envelope. Metadata is intentionally small and
 // string-only; adapters may retain provider IDs and version information, but
 // must not put arbitrary provider payloads here.
@@ -93,6 +146,7 @@ type Event struct {
 	Tool      *ToolEvent        `json:"tool,omitempty"`
 	Command   *CommandEvent     `json:"command,omitempty"`
 	File      *FileEvent        `json:"file,omitempty"`
+	Approval  *ApprovalEvent    `json:"approval,omitempty"`
 	Result    *ResultEvent      `json:"result,omitempty"`
 	Metadata  map[string]string `json:"metadata,omitempty"`
 }
@@ -127,6 +181,7 @@ type Request struct {
 	NativeSessionID string
 	WriteEpoch      uint64
 	Guard           ProcessGuard
+	Approvals       ApprovalHandler
 }
 
 type Result struct {
@@ -145,6 +200,13 @@ type EventSinkFunc func(context.Context, Event) error
 
 func (f EventSinkFunc) Publish(ctx context.Context, event Event) error {
 	return f(ctx, event)
+}
+
+// ApprovalHandler persists an approval request before blocking the backend
+// and returns only after the user, cancellation, or timeout supplies a durable
+// decision.
+type ApprovalHandler interface {
+	RequestApproval(context.Context, ApprovalRequest) (ApprovalDecision, error)
 }
 
 type Backend interface {

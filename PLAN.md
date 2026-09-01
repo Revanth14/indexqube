@@ -44,11 +44,11 @@ The original plan described a greenfield project. That is no longer accurate. Th
 | Recovery | Shipped foundation | Interrupted daemon work is reconciled; lost native sessions can be replaced from canonical history when safe. |
 | Control API | Shipped foundation | Create, list, inspect, continue, cancel, backend health, assembled task evidence, and replayable/live SSE task events exist. |
 | Task CLI | Shipped foundation | `iq task`, `iq tasks`, `iq task status`, `iq task show`, and `iq continue` use the control API and stream normalized events. |
-| Codex task backend | Partial | Read-only and guarded workspace-write execution, event parsing, command/file evidence, native-session resume, and lost-session detection work; durable interactive approvals remain. |
+| Codex task backend | Shipped foundation | Read-only execution plus guarded App Server workspace-write execution, durable command/file approvals, event parsing, evidence, native-session resume, and lost-session detection work. |
 | Claude task backend | Missing | Claude traffic can use the proxy, but Claude Code is not yet an orchestrated task backend. |
 | Routing and handoff | Partial | Backend selection is explicit and a lost session can recover within one backend; there is no policy router or cross-backend handoff. |
 | Verification | Missing | Auditing exists, but task-scoped build/test/lint verification and durable verification results do not. |
-| User experience | Partial | Commands work, but there is no task list, interactive approval flow, TUI, or active dashboard. Running `iq` still opens the legacy Claude wrapper. |
+| User experience | Partial | Durable task listing, evidence inspection, and approval commands work; there is no TUI or active dashboard, and bare `iq` still opens the legacy Claude wrapper. |
 | Data plane | Advanced | Claude Messages and OpenAI Responses ingress, provider adapters, streaming, optimization, prompt-cache preservation, LSM/SQLite caches, telemetry, setup, audit, and benchmarking exist. |
 | Distributed coordination | Deferred | Redis is absent and is not required for the local product. Kubernetes assets apply to the gateway, not the canonical local task engine. |
 
@@ -115,7 +115,7 @@ Goal: make the new control-plane branch safe to merge and easy to evaluate.
 - [x] Add task listing to the store, API, and CLI so users can rediscover task IDs after a restart.
 - [x] Expose turns, sessions, route attempts, snapshots, commands, files, and events through `TaskEvidence`.
 - [x] Make `backend` canonical in the task CLI/API while retaining `provider` as a compatibility alias.
-- [ ] Complete the real-Codex alpha run and merge the foundation branch.
+- [ ] Merge the foundation branch; authenticated real-Codex write and approval alpha smokes are green.
 - Merge only with `make check` and the manual smoke flow green.
 
 Exit criteria:
@@ -138,12 +138,12 @@ All commands return durable, consistent state and no task becomes undiscoverable
 Goal: one real agent can safely finish useful read and write tasks under IndexQube ownership.
 
 - [x] Enable Codex `workspace_write` with the existing lock and fencing guard inherited by the child process.
-- [x] Treat `iq task --write` as the explicit up-front grant for the non-interactive execution milestone; keep Codex inside its workspace-write sandbox and automatic reviewer.
-- Define an approval protocol instead of forcing `approval_policy="never"` for every task:
+- [x] Treat `iq task --write` as the explicit workspace grant while keeping Codex inside its workspace-write sandbox and OS-guarded child lifetime.
+- [x] Implement durable App Server approval requests and decisions:
   - backend emits `approval_requested`;
-  - task pauses durably;
-  - CLI/API records approve or deny;
-  - restart does not silently approve a pending action.
+  - task pauses durably as `awaiting_approval`;
+  - `iq approvals`, `iq approve`, and `iq deny` record the user's choice before the backend resumes;
+  - cancellation, timeout, and restart never silently approve a pending action.
 - [x] Persist bounded command evidence and every changed path reported by normalized Codex events.
 - [x] Compare per-path pre/post state even when the adapter does not report a file event; persist the authoritative delta and move mismatches to `needs_attention`.
 - Make cancellation idempotent and expose a clear final task state.
@@ -248,13 +248,13 @@ Work in this order:
 1. **Done:** merge-readiness documentation and a restart-aware control-plane smoke script.
 2. **Done:** `iq tasks` and `iq task show TASK`, backed by durable list and `TaskEvidence` APIs.
 3. **Done:** Codex workspace-write execution with locked child lifetime and integration coverage.
-4. Durable approval request/response state and CLI commands.
+4. **Done:** durable App Server approval request/response state and CLI commands.
 5. **Done:** mutation reconciliation based on per-path pre/post snapshots, independent of adapter events.
-6. Control API authentication before any browser surface is enabled.
-7. Claude Code backend and protocol fixtures.
-8. Explicit handoff and task pinning.
-9. Conservative failure classification and automatic fallback.
-10. Verification schema, configured checks, and post-turn verifier.
+6. Idempotent cancellation plus explicit close/reopen task semantics.
+7. Verification schema, configured checks, and post-turn verifier for the demo gate.
+8. Control API authentication before any browser surface is enabled.
+9. Claude Code backend and protocol fixtures.
+10. Explicit handoff, task pinning, and conservative failure classification.
 11. TUI.
 12. V1 hardening, packaging, and alpha feedback.
 

@@ -21,6 +21,30 @@ func TestRunnerProcessHelper(t *testing.T) {
 		time.Sleep(30 * time.Second)
 		os.Exit(0)
 	}
+	if mode == "interactive-exit" {
+		_, _ = os.Stdout.WriteString("{\"method\":\"approval\"}\n")
+		os.Exit(0)
+	}
+}
+
+func TestInteractiveRunnerWakesBlockedHandlerWhenChildExits(t *testing.T) {
+	binary, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	_, err = NewRunner().RunInteractive(context.Background(), ProcessSpec{
+		Path: binary, Args: []string{"-test.run=TestRunnerProcessHelper"}, Env: []string{"INDEXQUBE_RUNNER_HELPER=interactive-exit"},
+	}, nil, nil, func(ctx context.Context, _ []byte, _ func([]byte) error) (bool, error) {
+		<-ctx.Done()
+		return false, ctx.Err()
+	})
+	if err == nil {
+		t.Fatal("expected interactive protocol error")
+	}
+	if elapsed := time.Since(started); elapsed > 3*time.Second {
+		t.Fatalf("interactive child exit took %s", elapsed)
+	}
 }
 
 func TestRunnerStreamsDecodedEvents(t *testing.T) {

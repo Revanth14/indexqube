@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -351,6 +352,164 @@ func TestFakeCancellationStopsChildAndCommitsCancelledEvent(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatal("fake backend did not start")
+}
+
+type approvalBackend struct{}
+
+func (approvalBackend) ID() agent.BackendID { return agent.BackendFake }
+
+func (approvalBackend) Probe(context.Context) agent.BackendHealth {
+	return agent.BackendHealth{Backend: agent.BackendFake, Status: agent.HealthAvailable, Version: "approval-test", CheckedAt: time.Now().UTC()}
+}
+
+func (approvalBackend) Execute(ctx context.Context, req agent.Request, sink agent.EventSink) (agent.Result, error) {
+	if req.Approvals == nil {
+		return agent.Result{}, errors.New("missing approval handler")
+	}
+	decision, err := req.Approvals.RequestApproval(ctx, agent.ApprovalRequest{
+		BackendRequestID: "backend-request-1", Kind: agent.ApprovalCommand, ItemID: "command-1",
+		NativeThreadID: "approval-thread", NativeTurnID: "approval-turn", Reason: "run the guarded fixture",
+		Command: "write approved-change.txt", CWD: req.Workspace,
+	})
+	if err != nil {
+		return agent.Result{}, err
+	}
+	if decision == agent.ApprovalAccept {
+		if err := os.WriteFile(filepath.Join(req.Workspace, "approved-change.txt"), []byte("approved\n"), 0o600); err != nil {
+			return agent.Result{}, err
+		}
+		if err := sink.Publish(ctx, agent.Event{Type: agent.EventFileChanged,
+			File: &agent.FileEvent{Path: "approved-change.txt", Operation: "add"}}); err != nil {
+			return agent.Result{}, err
+		}
+	} else if decision == agent.ApprovalCancel {
+		return agent.Result{}, errors.New("approval cancelled")
+	}
+	return agent.Result{NativeSessionID: "approval-thread", FinalMessage: "approval fixture complete", MutationSeen: decision == agent.ApprovalAccept}, nil
+}
+
+func TestDurableApprovalApproveDenyCancelAndTimeout(t *testing.T) {
+	for _, tc := range []struct {
+		name               string
+		action             string
+		wantApprovalStatus taskstore.ApprovalStatus
+		wantTerminal       agent.EventType
+		wantFile           bool
+	}{
+		{name: "approve", action: "approve", wantApprovalStatus: taskstore.ApprovalApproved, wantTerminal: agent.EventCompleted, wantFile: true},
+		{name: "deny", action: "deny", wantApprovalStatus: taskstore.ApprovalDenied, wantTerminal: agent.EventCompleted},
+		{name: "cancel", action: "cancel", wantApprovalStatus: taskstore.ApprovalCancelled, wantTerminal: agent.EventCancelled},
+		{name: "timeout", action: "timeout", wantApprovalStatus: taskstore.ApprovalExpired, wantTerminal: agent.EventError},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			service, store, root := newTestService(t)
+			service.registry = NewRegistry(approvalBackend{})
+			if tc.action == "timeout" {
+				service.approvalTimeout = 40 * time.Millisecond
+			}
+			task, err := service.StartTask(context.Background(), StartTaskInput{
+				Workspace: root, Prompt: "guard this action", Backend: agent.BackendFake, Permission: agent.PermissionWrite,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			approvalEvent := waitForApprovalRequest(t, service, task.ID)
+			approvalID := approvalEvent.Approval.ApprovalID
+			state, ok, err := service.TaskState(context.Background(), task.ID)
+			if err != nil || !ok || state.Task.Status != taskstore.TaskAwaitingApproval || state.LatestTurn.Status != taskstore.TurnAwaitingApproval {
+				t.Fatalf("awaiting state=%+v ok=%v err=%v", state, ok, err)
+			}
+			switch tc.action {
+			case "approve", "deny":
+				if _, err := service.DecideApproval(context.Background(), approvalID, tc.action); err != nil {
+					t.Fatal(err)
+				}
+			case "cancel":
+				if !service.Cancel(task.ID) {
+					t.Fatal("cancel returned false")
+				}
+			case "timeout":
+			}
+			events := waitForTerminal(t, service, task.ID)
+			if events[len(events)-1].Type != tc.wantTerminal {
+				t.Fatalf("terminal=%+v", events[len(events)-1])
+			}
+			approval, found, err := store.ApprovalByID(context.Background(), approvalID)
+			if err != nil || !found || approval.Status != tc.wantApprovalStatus {
+				t.Fatalf("approval=%+v found=%v err=%v", approval, found, err)
+			}
+			_, statErr := os.Stat(filepath.Join(root, "approved-change.txt"))
+			if tc.wantFile && statErr != nil {
+				t.Fatalf("approved file missing: %v", statErr)
+			}
+			if !tc.wantFile && !os.IsNotExist(statErr) {
+				t.Fatalf("unexpected approved file: %v", statErr)
+			}
+			if tc.action == "approve" {
+				if _, err := service.DecideApproval(context.Background(), approvalID, "deny"); err == nil {
+					t.Fatal("second decision unexpectedly succeeded")
+				}
+			}
+		})
+	}
+}
+
+func TestReconcileCancelsPendingApprovalWithoutAuthorizingIt(t *testing.T) {
+	service, store, root := newTestService(t)
+	identity, err := workspace.Resolve(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	task, turn, attempt, err := store.CreateTask(context.Background(), taskstore.CreateTaskInput{
+		TaskID: "task_restart_approval", TurnID: "turn_restart_approval", RouteAttemptID: "route_restart_approval",
+		WorkspaceID: identity.ID, WorkspacePath: root, Goal: "guarded", Permission: agent.PermissionWrite,
+		PreferredBackend: agent.BackendFake, Now: now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.StartTurn(context.Background(), task.ID, turn.ID, attempt.ID, 1, now); err != nil {
+		t.Fatal(err)
+	}
+	approval, err := store.CreateApproval(context.Background(), taskstore.CreateApprovalInput{Approval: taskstore.Approval{
+		ID: "approval_restart", TaskID: task.ID, TurnID: turn.ID, Backend: agent.BackendFake,
+		BackendRequestID: "restart-request", Kind: agent.ApprovalCommand, Command: "dangerous action",
+	}, Now: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := service.ReconcileInterrupted(context.Background())
+	if err != nil || report.NeedsAttention != 1 {
+		t.Fatalf("report=%+v err=%v", report, err)
+	}
+	stored, ok, err := store.ApprovalByID(context.Background(), approval.ID)
+	if err != nil || !ok || stored.Status != taskstore.ApprovalCancelled || stored.Decision != agent.ApprovalCancel {
+		t.Fatalf("approval=%+v ok=%v err=%v", stored, ok, err)
+	}
+	state, ok, err := service.TaskState(context.Background(), task.ID)
+	if err != nil || !ok || state.Task.Status != taskstore.TaskNeedsAttention {
+		t.Fatalf("state=%+v ok=%v err=%v", state, ok, err)
+	}
+}
+
+func waitForApprovalRequest(t *testing.T, service *Service, taskID string) agent.Event {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		events, err := service.EventsAfter(context.Background(), taskID, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, event := range events {
+			if event.Type == agent.EventApprovalRequested && event.Approval != nil {
+				return event
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("timed out waiting for approval request")
+	return agent.Event{}
 }
 
 func TestLostNativeSessionStartsNewSessionFromCanonicalState(t *testing.T) {

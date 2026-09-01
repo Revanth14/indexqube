@@ -20,6 +20,8 @@ import (
 
 var ErrStaleWriteEpoch = errors.New("orchestrator: event belongs to a stale write epoch")
 
+const defaultApprovalTimeout = 30 * time.Minute
+
 type StartTaskInput struct {
 	Workspace string          `json:"workspace"`
 	Prompt    string          `json:"prompt"`
@@ -49,16 +51,22 @@ type Service struct {
 	registry *Registry
 	bus      *eventBus
 
-	mu      sync.Mutex
-	cancels map[string]context.CancelFunc
-	wg      sync.WaitGroup
+	mu              sync.Mutex
+	cancels         map[string]context.CancelFunc
+	approvalWaiters map[string]chan agent.ApprovalDecision
+	approvalTimeout time.Duration
+	wg              sync.WaitGroup
 }
 
 func NewService(ctx context.Context, store *taskstore.Store, locks *workspace.LockManager, registry *Registry) (*Service, error) {
 	if ctx == nil || store == nil || locks == nil || registry == nil {
 		return nil, fmt.Errorf("orchestrator: context, store, locks, and registry are required")
 	}
-	return &Service{ctx: ctx, store: store, locks: locks, registry: registry, bus: newEventBus(), cancels: make(map[string]context.CancelFunc)}, nil
+	return &Service{
+		ctx: ctx, store: store, locks: locks, registry: registry, bus: newEventBus(),
+		cancels: make(map[string]context.CancelFunc), approvalWaiters: make(map[string]chan agent.ApprovalDecision),
+		approvalTimeout: defaultApprovalTimeout,
+	}, nil
 }
 
 func (s *Service) StartTask(ctx context.Context, input StartTaskInput) (taskstore.Task, error) {
@@ -237,6 +245,7 @@ func (s *Service) execute(ctx context.Context, task taskstore.Task, turn tasksto
 	result, runErr := backend.Execute(ctx, agent.Request{
 		TaskID: task.ID, TurnID: turn.ID, Workspace: identity.Root, Prompt: turn.UserMessage,
 		Permission: task.Permission, NativeSessionID: nativeSessionID, WriteEpoch: epoch, Guard: processGuard,
+		Approvals: &turnApprovalHandler{service: s, taskID: task.ID, turnID: turn.ID, backend: backend.ID()},
 	}, tracker)
 	mutationBeforeRecovery := false
 	recoveredNativeSession := false
@@ -271,6 +280,7 @@ func (s *Service) execute(ctx context.Context, task taskstore.Task, turn tasksto
 				result, runErr = backend.Execute(ctx, agent.Request{
 					TaskID: task.ID, TurnID: turn.ID, Workspace: identity.Root, Prompt: recoveryPrompt,
 					Permission: task.Permission, WriteEpoch: epoch, Guard: processGuard,
+					Approvals: &turnApprovalHandler{service: s, taskID: task.ID, turnID: turn.ID, backend: backend.ID()},
 				}, tracker)
 				recoveredNativeSession = true
 			}
@@ -393,6 +403,133 @@ func (s *Service) TaskEvidence(ctx context.Context, taskID string) (taskstore.Ta
 	return s.store.TaskEvidence(ctx, taskID)
 }
 
+func (s *Service) Approvals(ctx context.Context, taskID string, status taskstore.ApprovalStatus, limit int) ([]taskstore.Approval, error) {
+	if status != "" && status != taskstore.ApprovalPending && status != taskstore.ApprovalApproved &&
+		status != taskstore.ApprovalDenied && status != taskstore.ApprovalCancelled && status != taskstore.ApprovalExpired {
+		return nil, fmt.Errorf("orchestrator: invalid approval status %q", status)
+	}
+	return s.store.ListApprovals(ctx, taskID, status, limit)
+}
+
+// DecideApproval commits the user's choice before waking the waiting backend.
+// Decisions are intentionally one-shot; retrying an already resolved request
+// returns a conflict instead of extending its authority.
+func (s *Service) DecideApproval(ctx context.Context, approvalID, requestedDecision string) (taskstore.Approval, error) {
+	var decision agent.ApprovalDecision
+	var status taskstore.ApprovalStatus
+	switch strings.ToLower(strings.TrimSpace(requestedDecision)) {
+	case "approve", "approved", "accept":
+		decision, status = agent.ApprovalAccept, taskstore.ApprovalApproved
+	case "deny", "denied", "decline":
+		decision, status = agent.ApprovalDecline, taskstore.ApprovalDenied
+	default:
+		return taskstore.Approval{}, fmt.Errorf("orchestrator: decision must be approve or deny")
+	}
+	s.mu.Lock()
+	waiter, active := s.approvalWaiters[approvalID]
+	s.mu.Unlock()
+	if !active {
+		if approval, ok, err := s.store.ApprovalByID(ctx, approvalID); err != nil {
+			return taskstore.Approval{}, err
+		} else if !ok {
+			return taskstore.Approval{}, fmt.Errorf("orchestrator: approval %q not found", approvalID)
+		} else {
+			return taskstore.Approval{}, fmt.Errorf("orchestrator: approval %q is %s and has no active backend", approvalID, approval.Status)
+		}
+	}
+	approval, err := s.store.ResolveApproval(ctx, approvalID, decision, status, time.Now().UTC())
+	if err != nil {
+		return taskstore.Approval{}, err
+	}
+	_ = s.emit(context.Background(), agent.Event{
+		Type: agent.EventApprovalResolved, TaskID: approval.TaskID, TurnID: approval.TurnID, Backend: approval.Backend,
+		Approval: &agent.ApprovalEvent{ApprovalID: approval.ID, Kind: approval.Kind, Status: string(approval.Status),
+			Decision: approval.Decision, Reason: approval.Reason, Command: approval.Command, CWD: approval.CWD,
+			GrantRoot: approval.GrantRoot, NetworkHost: approval.NetworkHost, NetworkProtocol: approval.NetworkProtocol},
+	})
+	select {
+	case waiter <- decision:
+	default:
+		return taskstore.Approval{}, fmt.Errorf("orchestrator: approval %q backend is no longer waiting", approvalID)
+	}
+	return approval, nil
+}
+
+type turnApprovalHandler struct {
+	service *Service
+	taskID  string
+	turnID  string
+	backend agent.BackendID
+}
+
+func (h *turnApprovalHandler) RequestApproval(ctx context.Context, request agent.ApprovalRequest) (agent.ApprovalDecision, error) {
+	if request.BackendRequestID == "" {
+		return agent.ApprovalCancel, fmt.Errorf("orchestrator: backend approval request has no request ID")
+	}
+	approvalID := taskstore.NewID("approval")
+	waiter := make(chan agent.ApprovalDecision, 1)
+	h.service.mu.Lock()
+	h.service.approvalWaiters[approvalID] = waiter
+	h.service.mu.Unlock()
+	defer func() {
+		h.service.mu.Lock()
+		delete(h.service.approvalWaiters, approvalID)
+		h.service.mu.Unlock()
+	}()
+	approval, err := h.service.store.CreateApproval(ctx, taskstore.CreateApprovalInput{Approval: taskstore.Approval{
+		ID: approvalID, TaskID: h.taskID, TurnID: h.turnID, Backend: h.backend,
+		BackendRequestID: request.BackendRequestID, Kind: request.Kind, ItemID: request.ItemID,
+		NativeThreadID: request.NativeThreadID, NativeTurnID: request.NativeTurnID, Reason: boundedApprovalText(request.Reason, 2048),
+		Command: boundedApprovalText(request.Command, 4096), CWD: boundedApprovalText(request.CWD, 4096),
+		GrantRoot: boundedApprovalText(request.GrantRoot, 4096), NetworkHost: boundedApprovalText(request.NetworkHost, 1024),
+		NetworkProtocol: boundedApprovalText(request.NetworkProtocol, 128),
+	}, Now: time.Now().UTC()})
+	if err != nil {
+		return agent.ApprovalCancel, err
+	}
+	if err := h.service.emit(ctx, agent.Event{
+		Type: agent.EventApprovalRequested, TaskID: h.taskID, TurnID: h.turnID, Backend: h.backend,
+		Approval: &agent.ApprovalEvent{ApprovalID: approval.ID, Kind: approval.Kind, Status: string(approval.Status),
+			Reason: approval.Reason, Command: approval.Command, CWD: approval.CWD,
+			GrantRoot: approval.GrantRoot, NetworkHost: approval.NetworkHost, NetworkProtocol: approval.NetworkProtocol},
+	}); err != nil {
+		_, _ = h.service.store.ResolveApproval(context.Background(), approval.ID, agent.ApprovalCancel, taskstore.ApprovalCancelled, time.Now().UTC())
+		return agent.ApprovalCancel, err
+	}
+	timeout := h.service.approvalTimeout
+	if timeout <= 0 {
+		timeout = defaultApprovalTimeout
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case decision := <-waiter:
+		return decision, nil
+	case <-ctx.Done():
+		_, _ = h.service.store.ResolveApproval(context.Background(), approval.ID, agent.ApprovalCancel, taskstore.ApprovalCancelled, time.Now().UTC())
+		return agent.ApprovalCancel, ctx.Err()
+	case <-timer.C:
+		expired, resolveErr := h.service.store.ResolveApproval(context.Background(), approval.ID, agent.ApprovalCancel, taskstore.ApprovalExpired, time.Now().UTC())
+		if resolveErr == nil {
+			_ = h.service.emit(context.Background(), agent.Event{
+				Type: agent.EventApprovalResolved, TaskID: expired.TaskID, TurnID: expired.TurnID, Backend: expired.Backend,
+				Approval: &agent.ApprovalEvent{ApprovalID: expired.ID, Kind: expired.Kind, Status: string(expired.Status), Decision: expired.Decision,
+					Reason: expired.Reason, Command: expired.Command, CWD: expired.CWD, GrantRoot: expired.GrantRoot,
+					NetworkHost: expired.NetworkHost, NetworkProtocol: expired.NetworkProtocol},
+			})
+		}
+		return agent.ApprovalCancel, nil
+	}
+}
+
+func boundedApprovalText(value string, limit int) string {
+	value = strings.TrimSpace(value)
+	if limit > 0 && len(value) > limit {
+		return value[:limit]
+	}
+	return value
+}
+
 // ReconcileInterrupted converts stale queued/running turns into durable failed
 // turns before the control API starts accepting work. A started write turn is
 // always marked needs_attention: local Git equality cannot prove that commands
@@ -407,9 +544,13 @@ func (s *Service) ReconcileInterrupted(ctx context.Context) (ReconciliationRepor
 		code := "daemon_interrupted_pre_run"
 		message := "daemon stopped before backend execution began"
 		mutationRisk := false
-		if run.TurnStatus == taskstore.TurnRunning {
+		if run.TurnStatus == taskstore.TurnRunning || run.TurnStatus == taskstore.TurnAwaitingApproval {
 			code = "daemon_interrupted_read_only"
 			message = "daemon stopped during a read-only backend run; continuation is safe"
+			if run.TurnStatus == taskstore.TurnAwaitingApproval {
+				code = "daemon_interrupted_approval"
+				message = "daemon stopped while an approval was pending; the request was cancelled and never authorized"
+			}
 			if run.Permission == agent.PermissionWrite {
 				code = "daemon_interrupted_write"
 				message = "daemon stopped during a mutation-capable run; manual inspection is required"

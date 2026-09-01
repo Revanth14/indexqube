@@ -17,16 +17,26 @@ import (
 )
 
 type Backend struct {
-	runner     *agent.Runner
-	binary     string
-	prefixArgs []string
-	env        []string
-	mu         sync.Mutex
-	version    string
+	runner       *agent.Runner
+	binary       string
+	prefixArgs   []string
+	env          []string
+	mu           sync.Mutex
+	version      string
+	useAppServer bool
 }
 
 func New(runner *agent.Runner, binary string) *Backend {
-	return &Backend{runner: runner, binary: binary}
+	return &Backend{runner: runner, binary: binary, useAppServer: true}
+}
+
+// NewAppServerCommand lets protocol tests substitute a deterministic App
+// Server process while exercising the production bidirectional adapter.
+func NewAppServerCommand(runner *agent.Runner, binary string, prefixArgs, env []string, version string) *Backend {
+	return &Backend{
+		runner: runner, binary: binary, prefixArgs: append([]string(nil), prefixArgs...),
+		env: append([]string(nil), env...), version: version, useAppServer: true,
+	}
 }
 
 // NewCommand lets protocol tests substitute a deterministic command while
@@ -88,6 +98,9 @@ func (b *Backend) Execute(ctx context.Context, req agent.Request, sink agent.Eve
 	}
 	if b.runner == nil || b.binary == "" {
 		return agent.Result{}, fmt.Errorf("codex backend: executable is not configured")
+	}
+	if req.Permission == agent.PermissionWrite && b.useAppServer {
+		return b.executeAppServer(ctx, req, sink)
 	}
 	args := b.commandArgs(req)
 	result := agent.Result{}

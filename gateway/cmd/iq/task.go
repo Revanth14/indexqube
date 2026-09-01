@@ -210,6 +210,17 @@ func renderTaskEvidence(out io.Writer, evidence taskstore.TaskEvidence) {
 			}
 		}
 	}
+	if len(evidence.Approvals) > 0 {
+		fmt.Fprintln(out, "\nApprovals:")
+		for _, approval := range evidence.Approvals {
+			decision := ""
+			if approval.Decision != "" {
+				decision = " (" + string(approval.Decision) + ")"
+			}
+			fmt.Fprintf(out, "  %s — %s %s%s: %s\n", approval.ID, approval.Status, approval.Kind,
+				decision, approvalSummary(approval))
+		}
+	}
 	if len(evidence.Routes) > 0 {
 		fmt.Fprintln(out, "\nRoute attempts:")
 		for _, route := range evidence.Routes {
@@ -428,6 +439,27 @@ func streamTaskEvents(ctx context.Context, controlURL, taskID string, after int6
 		case agent.EventCommandFinished:
 			if event.Command != nil {
 				fmt.Fprintf(stderr, "  [iq] command %s: %s\n", event.Command.Status, oneLine(event.Command.Command, 160))
+			}
+		case agent.EventApprovalRequested:
+			if event.Approval != nil {
+				detail := event.Approval.Command
+				if detail == "" && event.Approval.NetworkHost != "" {
+					detail = event.Approval.NetworkProtocol + "://" + event.Approval.NetworkHost
+				}
+				if detail == "" {
+					detail = event.Approval.GrantRoot
+				}
+				if detail == "" {
+					detail = event.Approval.Reason
+				}
+				fmt.Fprintf(stderr, "  [iq] approval required %s (%s): %s\n", event.Approval.ApprovalID,
+					event.Approval.Kind, oneLine(detail, 160))
+				fmt.Fprintf(stderr, "  [iq] run: iq approve %s  (or iq deny %s)\n",
+					event.Approval.ApprovalID, event.Approval.ApprovalID)
+			}
+		case agent.EventApprovalResolved:
+			if event.Approval != nil {
+				fmt.Fprintf(stderr, "  [iq] approval %s: %s\n", event.Approval.ApprovalID, event.Approval.Status)
 			}
 		case agent.EventCompleted:
 			return nil
