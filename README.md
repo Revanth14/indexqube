@@ -7,11 +7,11 @@ the task alive across terminal exits, daemon restarts, and lost native sessions;
 guards workspace writes; records approvals; reconciles what changed; and stores
 verification evidence alongside the result.
 
-[Website](https://indexqube.com) · [Product plan](./PLAN.md)
+[Website](https://indexqube.com) · [Download v0.2.0](https://github.com/Revanth14/indexqube/releases/tag/v0.2.0) · [Product plan](./PLAN.md)
 
-> **Alpha:** the control plane and signed release pipeline are implemented, but
-> the first public V1 artifact has not been published. Treat source builds as a
-> contributor preview until a signed `v*` release is available.
+> **Alpha:** `v0.2.0` is the first signed public control-plane release. The core
+> task loop is implemented and release-gated, but interfaces may still change as
+> real-repository feedback expands.
 
 ## Why IndexQube
 
@@ -84,7 +84,7 @@ make build
 ./bin/iq
 ```
 
-After the first signed release is published, the zero-configuration install is:
+Install the latest signed release with:
 
 ```bash
 curl -fsSL https://github.com/Revanth14/indexqube/releases/latest/download/install.sh | sh
@@ -544,7 +544,7 @@ PLAN.md                            product gates and implementation order
 
 Work is currently focused on:
 
-1. publishing the signed `v0.2.0` alpha and collecting real-repository feedback;
+1. collecting real-repository feedback from the signed `v0.2.0` alpha;
 2. Apple Developer ID notarization as distribution credentials become available;
 3. broader CLI compatibility fixtures driven by alpha evidence.
 
