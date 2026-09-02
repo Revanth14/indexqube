@@ -15,6 +15,7 @@ import (
 )
 
 func TestApprovalCLIListsAndDecides(t *testing.T) {
+	token := installControlTestCredential(t)
 	now := time.Now().UTC()
 	approval := taskstore.Approval{
 		ID: "approval_cli", TaskID: "task_cli", TurnID: "turn_cli", Backend: agent.BackendCodex,
@@ -23,6 +24,9 @@ func TestApprovalCLIListsAndDecides(t *testing.T) {
 	var gotDecision string
 	oldClient := approvalHTTPClient
 	approvalHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.Header.Get("Authorization") != "Bearer "+token {
+			t.Errorf("missing control API authentication")
+		}
 		var status = http.StatusOK
 		var payload any
 		switch {
@@ -44,10 +48,10 @@ func TestApprovalCLIListsAndDecides(t *testing.T) {
 			payload = map[string]string{"error": "not found"}
 		}
 		raw, _ := json.Marshal(payload)
-		return &http.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(bytes.NewReader(raw)), Request: r}, nil
+		return &http.Response{StatusCode: status, Header: authenticatedControlHeader(), Body: io.NopCloser(bytes.NewReader(raw)), Request: r}, nil
 	})}
 	t.Cleanup(func() { approvalHTTPClient = oldClient })
-	t.Setenv("INDEXQUBE_CONTROL_URL", "http://indexqube.test")
+	t.Setenv("INDEXQUBE_CONTROL_URL", "http://127.0.0.1:17374")
 
 	var listed, errOut bytes.Buffer
 	if err := runApprovalsCommand(context.Background(), []string{"--task", "task_cli"}, &listed, &errOut); err != nil {

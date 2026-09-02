@@ -54,6 +54,18 @@ PY
 read -r proxy_port control_port <<<"$ports"
 control_url="http://127.0.0.1:$control_port"
 
+read_control_token() {
+  python3 -c 'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["token"])' \
+    "$state_dir/control-auth.json"
+}
+
+authenticated_control_status() {
+  local token="$1"
+  printf 'header = "Authorization: Bearer %s"\n' "$token" | \
+    curl --config - --silent --output /dev/null --write-out '%{http_code}' \
+      "$control_url/control/healthz"
+}
+
 start_daemon() {
   INDEXQUBE_HOME="$state_dir" "$iq_bin" daemon \
     --addr "127.0.0.1:$proxy_port" \
@@ -61,8 +73,11 @@ start_daemon() {
     >"$smoke_root/daemon.log" 2>&1 &
   daemon_pid=$!
   for _ in {1..100}; do
-    if curl -fsS "$control_url/control/healthz" >/dev/null 2>&1; then
-      return
+    if [[ -f "$state_dir/control-auth.json" ]]; then
+      token="$(read_control_token)"
+      if [[ "$(authenticated_control_status "$token")" == "200" ]]; then
+        return
+      fi
     fi
     sleep 0.05
   done
@@ -78,6 +93,17 @@ stop_daemon() {
 }
 
 start_daemon
+initial_control_token="$(read_control_token)"
+python3 -c 'import os, stat, sys; assert stat.S_IMODE(os.stat(sys.argv[1]).st_mode) == 0o700; assert stat.S_IMODE(os.stat(sys.argv[2]).st_mode) == 0o600' \
+  "$state_dir" "$state_dir/control-auth.json"
+if [[ "$(curl --silent --output /dev/null --write-out '%{http_code}' "$control_url/control/healthz")" != "401" ]]; then
+  printf 'control API accepted an unauthenticated health request\n' >&2
+  exit 1
+fi
+if [[ "$(authenticated_control_status 'wrong-token')" != "401" ]]; then
+  printf 'control API accepted an invalid credential\n' >&2
+  exit 1
+fi
 
 task_log="$smoke_root/task.log"
 INDEXQUBE_HOME="$state_dir" INDEXQUBE_CONTROL_URL="$control_url" \
@@ -100,6 +126,15 @@ if grep -q '^Attention:' <<<"$show_output"; then
 fi
 stop_daemon
 start_daemon
+rotated_control_token="$(read_control_token)"
+if [[ "$rotated_control_token" == "$initial_control_token" ]]; then
+  printf 'control API credential did not rotate across daemon restart\n' >&2
+  exit 1
+fi
+if [[ "$(authenticated_control_status "$initial_control_token")" != "401" ]]; then
+  printf 'control API accepted the prior daemon credential after restart\n' >&2
+  exit 1
+fi
 INDEXQUBE_HOME="$state_dir" INDEXQUBE_CONTROL_URL="$control_url" \
   "$iq_bin" task show "$task_id" | grep -q 'Evidence:'
 INDEXQUBE_HOME="$state_dir" INDEXQUBE_CONTROL_URL="$control_url" \

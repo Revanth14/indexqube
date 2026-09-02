@@ -41,3 +41,44 @@ func TestEnsureUsesDefaultHome(t *testing.T) {
 		t.Fatalf("state dir mode = %o, want 700", info.Mode().Perm())
 	}
 }
+
+func TestEnsureRepairsExistingDirectoryPermissions(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "state")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("INDEXQUBE_HOME", dir)
+	if _, err := Ensure(); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o700 {
+		t.Fatalf("state dir mode=%o, want 700", info.Mode().Perm())
+	}
+}
+
+func TestEnsureRejectsSymbolicLinkStateDirectory(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "target")
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "state")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("INDEXQUBE_HOME", link)
+	if _, err := Ensure(); err == nil {
+		t.Fatal("Ensure accepted symbolic-link state directory")
+	}
+}
+
+func TestEnsureRejectsFilesystemRoot(t *testing.T) {
+	t.Setenv("INDEXQUBE_HOME", string(filepath.Separator))
+	if _, err := Ensure(); err == nil {
+		t.Fatal("Ensure accepted filesystem root as state directory")
+	}
+}

@@ -260,7 +260,12 @@ func runDaemonForegroundWithControl(addr, controlAddr string) error {
 	if err != nil {
 		return fmt.Errorf("listen on control API %s: %w", controlAddr, err)
 	}
-	controlServer := &http.Server{Handler: control.NewHandler(service), ReadHeaderTimeout: 5 * time.Second}
+	controlToken, err := rotateControlCredential()
+	if err != nil {
+		controlListener.Close()
+		return err
+	}
+	controlServer := &http.Server{Handler: control.NewHandler(service, controlToken), ReadHeaderTimeout: 5 * time.Second}
 
 	prior, _ := readDaemonState()
 	logPath := ""
@@ -559,13 +564,26 @@ func isDaemonHealthy(addr string) bool {
 }
 
 func isControlHealthy(addr string) bool {
+	token, err := readControlCredential()
+	if err != nil {
+		return false
+	}
+	return isControlHealthyWithToken(addr, token)
+}
+
+func isControlHealthyWithToken(addr, token string) bool {
 	client := &http.Client{Timeout: 300 * time.Millisecond}
-	resp, err := client.Get(daemonURL(addr) + "/control/healthz") //nolint:noctx
+	req, err := http.NewRequest(http.MethodGet, daemonURL(addr)+"/control/healthz", nil) //nolint:noctx
+	if err != nil {
+		return false
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := client.Do(req)
 	if err != nil {
 		return false
 	}
 	defer resp.Body.Close()
-	return resp.StatusCode == http.StatusOK
+	return resp.StatusCode == http.StatusOK && resp.Header.Get(control.AuthContractHeader) == control.AuthContractValue
 }
 
 func waitForDaemon(addr, controlAddr string, timeout time.Duration) bool {

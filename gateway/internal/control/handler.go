@@ -19,10 +19,14 @@ import (
 type Handler struct {
 	service *orchestrator.Service
 	mux     *http.ServeMux
+	token   string
 }
 
-func NewHandler(service *orchestrator.Service) *Handler {
-	h := &Handler{service: service, mux: http.NewServeMux()}
+func NewHandler(service *orchestrator.Service, token string) *Handler {
+	if strings.TrimSpace(token) == "" {
+		panic("control API token must not be empty")
+	}
+	h := &Handler{service: service, mux: http.NewServeMux(), token: token}
 	h.mux.HandleFunc("GET /control/healthz", h.health)
 	h.mux.HandleFunc("GET /control/v1/backends", h.backends)
 	h.mux.HandleFunc("GET /control/v1/approvals", h.listApprovals)
@@ -70,6 +74,12 @@ func (h *Handler) continueTask(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set(AuthContractHeader, AuthContractValue)
+	if !authenticate(h.token, r) {
+		writeUnauthorized(w)
+		return
+	}
 	h.mux.ServeHTTP(w, r)
 }
 

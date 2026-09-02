@@ -74,7 +74,7 @@ func runTasksCommand(ctx context.Context, args []string, out, errOut io.Writer) 
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("%s/control/v1/tasks?limit=%d", controlURL, *limit), nil)
+	req, err := newControlRequest(ctx, http.MethodGet, fmt.Sprintf("%s/control/v1/tasks?limit=%d", controlURL, *limit), nil)
 	if err != nil {
 		return err
 	}
@@ -83,6 +83,9 @@ func runTasksCommand(ctx context.Context, args []string, out, errOut io.Writer) 
 		return fmt.Errorf("list tasks: %w", err)
 	}
 	defer resp.Body.Close()
+	if err := verifyControlResponse(resp); err != nil {
+		return err
+	}
 	if resp.StatusCode != http.StatusOK {
 		return responseError("list tasks", resp)
 	}
@@ -112,7 +115,7 @@ func runTaskStatus(ctx context.Context, args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, controlURL+"/control/v1/tasks/"+strings.TrimSpace(args[0])+"/state", nil)
+	req, err := newControlRequest(ctx, http.MethodGet, controlURL+"/control/v1/tasks/"+strings.TrimSpace(args[0])+"/state", nil)
 	if err != nil {
 		return err
 	}
@@ -121,6 +124,9 @@ func runTaskStatus(ctx context.Context, args []string, out io.Writer) error {
 		return fmt.Errorf("get task state: %w", err)
 	}
 	defer resp.Body.Close()
+	if err := verifyControlResponse(resp); err != nil {
+		return err
+	}
 	if resp.StatusCode != http.StatusOK {
 		return responseError("get task state", resp)
 	}
@@ -154,7 +160,7 @@ func runTaskShow(ctx context.Context, args []string, out io.Writer) error {
 		return err
 	}
 	taskID := strings.TrimSpace(args[0])
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, controlURL+"/control/v1/tasks/"+taskID+"/evidence", nil)
+	req, err := newControlRequest(ctx, http.MethodGet, controlURL+"/control/v1/tasks/"+taskID+"/evidence", nil)
 	if err != nil {
 		return err
 	}
@@ -163,6 +169,9 @@ func runTaskShow(ctx context.Context, args []string, out io.Writer) error {
 		return fmt.Errorf("get task evidence: %w", err)
 	}
 	defer resp.Body.Close()
+	if err := verifyControlResponse(resp); err != nil {
+		return err
+	}
 	if resp.StatusCode != http.StatusOK {
 		return responseError("get task evidence", resp)
 	}
@@ -335,7 +344,7 @@ func runTaskCommand(ctx context.Context, args []string, stdout, stderr io.Writer
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, controlURL+"/control/v1/tasks", bytes.NewReader(body))
+	req, err := newControlRequest(ctx, http.MethodPost, controlURL+"/control/v1/tasks", bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -345,6 +354,9 @@ func runTaskCommand(ctx context.Context, args []string, stdout, stderr io.Writer
 		return fmt.Errorf("create task: %w", err)
 	}
 	defer resp.Body.Close()
+	if err := verifyControlResponse(resp); err != nil {
+		return err
+	}
 	if resp.StatusCode != http.StatusAccepted {
 		return responseError("create task", resp)
 	}
@@ -389,7 +401,7 @@ func runContinueCommand(ctx context.Context, args []string, stdout, stderr io.Wr
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, controlURL+"/control/v1/tasks/"+taskID+"/turns", bytes.NewReader(body))
+	req, err := newControlRequest(ctx, http.MethodPost, controlURL+"/control/v1/tasks/"+taskID+"/turns", bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -399,6 +411,9 @@ func runContinueCommand(ctx context.Context, args []string, stdout, stderr io.Wr
 		return fmt.Errorf("continue task: %w", err)
 	}
 	defer resp.Body.Close()
+	if err := verifyControlResponse(resp); err != nil {
+		return err
+	}
 	if resp.StatusCode != http.StatusAccepted {
 		return responseError("continue task", resp)
 	}
@@ -421,7 +436,7 @@ func runContinueCommand(ctx context.Context, args []string, stdout, stderr io.Wr
 
 func resolveControlURL() (string, error) {
 	if explicit := strings.TrimRight(strings.TrimSpace(os.Getenv("INDEXQUBE_CONTROL_URL")), "/"); explicit != "" {
-		return explicit, nil
+		return validateControlURL(explicit)
 	}
 	if st, err := readDaemonState(); err == nil {
 		addr := normalizeDaemonAddr(st.ControlAddr)
@@ -429,7 +444,7 @@ func resolveControlURL() (string, error) {
 			addr = defaultControlAddr
 		}
 		if isControlHealthy(addr) {
-			return daemonURL(addr), nil
+			return validateControlURL(daemonURL(addr))
 		}
 	}
 	if err := startDaemon(defaultDaemonAddr); err != nil {
@@ -443,12 +458,12 @@ func resolveControlURL() (string, error) {
 	if addr == "" {
 		addr = defaultControlAddr
 	}
-	return daemonURL(addr), nil
+	return validateControlURL(daemonURL(addr))
 }
 
 func streamTaskEvents(ctx context.Context, controlURL, taskID string, after int64, stdout, stderr io.Writer) error {
 	eventsURL := fmt.Sprintf("%s/control/v1/tasks/%s/events?after=%d", controlURL, taskID, after)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, eventsURL, nil)
+	req, err := newControlRequest(ctx, http.MethodGet, eventsURL, nil)
 	if err != nil {
 		return err
 	}
@@ -458,6 +473,9 @@ func streamTaskEvents(ctx context.Context, controlURL, taskID string, after int6
 		return fmt.Errorf("stream task: %w", err)
 	}
 	defer resp.Body.Close()
+	if err := verifyControlResponse(resp); err != nil {
+		return err
+	}
 	if resp.StatusCode != http.StatusOK {
 		return responseError("stream task", resp)
 	}
@@ -552,12 +570,13 @@ func oneLine(value string, limit int) string {
 func cancelTask(controlURL, taskID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, controlURL+"/control/v1/tasks/"+taskID+"/cancel", nil)
+	req, err := newControlRequest(ctx, http.MethodPost, controlURL+"/control/v1/tasks/"+taskID+"/cancel", nil)
 	if err != nil {
 		return
 	}
 	resp, err := (&http.Client{Timeout: 2 * time.Second}).Do(req)
 	if err == nil {
+		_ = verifyControlResponse(resp)
 		resp.Body.Close()
 	}
 }

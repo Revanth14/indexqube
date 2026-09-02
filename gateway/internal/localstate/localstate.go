@@ -31,8 +31,30 @@ func Ensure() (string, error) {
 	if err != nil {
 		return "", err
 	}
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		return "", err
+	}
+	if filepath.Dir(absDir) == absDir {
+		return "", errors.New("IndexQube state path must not be a filesystem root")
+	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
+	}
+	info, err := os.Lstat(dir)
+	if err != nil {
+		return "", err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return "", errors.New("IndexQube state path must not be a symbolic link")
+	}
+	if !info.IsDir() {
+		return "", errors.New("IndexQube state path is not a directory")
+	}
+	if info.Mode().Perm() != 0o700 {
+		if err := os.Chmod(dir, 0o700); err != nil {
+			return "", err
+		}
 	}
 	return dir, nil
 }

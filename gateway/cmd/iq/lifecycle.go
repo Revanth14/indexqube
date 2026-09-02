@@ -35,7 +35,7 @@ func runCancelCommand(ctx context.Context, args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+	req, err := newControlRequest(ctx, http.MethodPost,
 		controlURL+"/control/v1/tasks/"+taskID+"/cancel", nil)
 	if err != nil {
 		return err
@@ -45,6 +45,9 @@ func runCancelCommand(ctx context.Context, args []string, out io.Writer) error {
 		return fmt.Errorf("cancel task: %w", err)
 	}
 	defer resp.Body.Close()
+	if err := verifyControlResponse(resp); err != nil {
+		return err
+	}
 	if resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusOK {
 		return responseError("cancel task", resp)
 	}
@@ -68,7 +71,7 @@ func runTaskLifecycleCommand(ctx context.Context, args []string, action string, 
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+	req, err := newControlRequest(ctx, http.MethodPost,
 		controlURL+"/control/v1/tasks/"+taskID+"/"+action, nil)
 	if err != nil {
 		return err
@@ -78,6 +81,9 @@ func runTaskLifecycleCommand(ctx context.Context, args []string, action string, 
 		return fmt.Errorf("%s task: %w", action, err)
 	}
 	defer resp.Body.Close()
+	if err := verifyControlResponse(resp); err != nil {
+		return err
+	}
 	if resp.StatusCode != http.StatusOK {
 		return responseError(action+" task", resp)
 	}

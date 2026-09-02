@@ -62,7 +62,7 @@ func runApprovalsCommand(ctx context.Context, args []string, out, errOut io.Writ
 	if !*all {
 		query.Set("status", string(taskstore.ApprovalPending))
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, controlURL+"/control/v1/approvals?"+query.Encode(), nil)
+	req, err := newControlRequest(ctx, http.MethodGet, controlURL+"/control/v1/approvals?"+query.Encode(), nil)
 	if err != nil {
 		return err
 	}
@@ -71,6 +71,9 @@ func runApprovalsCommand(ctx context.Context, args []string, out, errOut io.Writ
 		return fmt.Errorf("list approvals: %w", err)
 	}
 	defer resp.Body.Close()
+	if err := verifyControlResponse(resp); err != nil {
+		return err
+	}
 	if resp.StatusCode != http.StatusOK {
 		return responseError("list approvals", resp)
 	}
@@ -105,7 +108,7 @@ func runApprovalDecisionCommand(ctx context.Context, args []string, decision str
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+	req, err := newControlRequest(ctx, http.MethodPost,
 		controlURL+"/control/v1/approvals/"+approvalID+"/decision", bytes.NewReader(body))
 	if err != nil {
 		return err
@@ -116,6 +119,9 @@ func runApprovalDecisionCommand(ctx context.Context, args []string, decision str
 		return fmt.Errorf("decide approval: %w", err)
 	}
 	defer resp.Body.Close()
+	if err := verifyControlResponse(resp); err != nil {
+		return err
+	}
 	if resp.StatusCode != http.StatusOK {
 		return responseError("decide approval", resp)
 	}

@@ -43,7 +43,8 @@ The operating rule is simple: **the agent is temporary; the task is not.**
 | Configured recipes plus automatic Go, Node, Python, and Rust verification | Shipped foundation |
 | Task-scoped security audit findings with severity and evidence | Shipped foundation |
 | Claude Code as an orchestrated task backend and explicit handoff | Planned |
-| TUI, authenticated control API, and release installer | Planned |
+| Daemon-scoped authentication on every control endpoint and SSE stream | Shipped foundation |
+| TUI and release installer | Planned |
 
 The existing Claude/OpenAI-compatible local proxy remains available as an
 optional data plane. The durable task control plane is the primary product.
@@ -104,6 +105,25 @@ Stop the daemon when finished:
 By default, state lives under `~/.indexqube`. Set `INDEXQUBE_HOME` to isolate
 task history, logs, cache data, sessions, setup backups, and the local anonymous
 machine identifier.
+
+### Control API authentication
+
+The control API remains bound to numeric loopback and requires a daemon-scoped
+bearer credential on every request, including `/control/healthz` and task event
+streams. The daemon generates a new 256-bit credential on every start and
+atomically stores it in `$INDEXQUBE_HOME/control-auth.json` with mode `0600`;
+the state directory is enforced as `0700`. The CLI reads the credential from
+that file and injects it as an HTTP header. It will only send the credential to
+an `http://` origin using a numeric loopback address.
+
+The credential is intentionally absent from `daemon.json`, logs, task evidence,
+environment variables, and process arguments. Do not copy it into shell command
+arguments or environment variables for manual API calls.
+
+After upgrading from a build with an unauthenticated control API, stop the old
+daemon and start it again with the new `iq` binary. The new CLI rejects a legacy
+daemon that does not advertise the authenticated API contract, and old clients
+receive `401 Unauthorized` from a new daemon.
 
 ## Permissions and approvals
 
@@ -344,10 +364,9 @@ PLAN.md                            product gates and implementation order
 
 Work is currently focused on:
 
-1. control API authentication;
-2. Claude Code task execution and deterministic handoff;
-3. an attachable local TUI;
-4. signed release packaging and real-repository alpha feedback.
+1. Claude Code task execution and deterministic handoff;
+2. an attachable local TUI;
+3. signed release packaging and real-repository alpha feedback.
 
 The acceptance gates and non-negotiable safety invariants live in
 [PLAN.md](./PLAN.md).

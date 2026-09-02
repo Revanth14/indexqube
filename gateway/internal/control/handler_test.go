@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -21,6 +22,14 @@ import (
 	"github.com/Revanth14/indexqube/gateway/internal/workspace"
 )
 
+const controlTestToken = "test-control-token"
+
+func authorizedControlRequest(method, target string, body io.Reader) *http.Request {
+	req := httptest.NewRequest(method, target, body)
+	req.Header.Set("Authorization", "Bearer "+controlTestToken)
+	return req
+}
+
 func TestControlFakeAgentProcess(t *testing.T) {
 	if os.Getenv("INDEXQUBE_CONTROL_FAKE_HELPER") != "1" {
 		return
@@ -28,12 +37,69 @@ func TestControlFakeAgentProcess(t *testing.T) {
 	os.Exit(fake.RunHelper(os.Stdin, os.Stdout, os.Stderr))
 }
 
+func TestControlAPIRequiresAuthenticationOnEveryRoute(t *testing.T) {
+	handler, _ := newControlTestHandler(t)
+	routes := []struct {
+		method string
+		path   string
+	}{
+		{http.MethodGet, "/control/healthz"},
+		{http.MethodGet, "/control/v1/backends"},
+		{http.MethodGet, "/control/v1/approvals"},
+		{http.MethodPost, "/control/v1/approvals/approval/decision"},
+		{http.MethodGet, "/control/v1/tasks"},
+		{http.MethodPost, "/control/v1/tasks"},
+		{http.MethodGet, "/control/v1/tasks/task"},
+		{http.MethodGet, "/control/v1/tasks/task/state"},
+		{http.MethodGet, "/control/v1/tasks/task/evidence"},
+		{http.MethodPost, "/control/v1/tasks/task/turns"},
+		{http.MethodPost, "/control/v1/tasks/task/cancel"},
+		{http.MethodPost, "/control/v1/tasks/task/close"},
+		{http.MethodPost, "/control/v1/tasks/task/reopen"},
+		{http.MethodGet, "/control/v1/tasks/task/events"},
+	}
+	for _, route := range routes {
+		t.Run(route.method+" "+route.path, func(t *testing.T) {
+			for _, authorization := range []string{"", "Bearer wrong-token", "Basic " + controlTestToken} {
+				req := httptest.NewRequest(route.method, route.path, nil)
+				if authorization != "" {
+					req.Header.Set("Authorization", authorization)
+				}
+				rec := httptest.NewRecorder()
+				handler.ServeHTTP(rec, req)
+				if rec.Code != http.StatusUnauthorized || !strings.Contains(rec.Body.String(), `"code":"unauthorized"`) {
+					t.Fatalf("authorization=%q status=%d body=%s", authorization, rec.Code, rec.Body.String())
+				}
+				if got := rec.Header().Get("WWW-Authenticate"); got == "" {
+					t.Fatal("missing WWW-Authenticate header")
+				}
+				if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+					t.Fatalf("Cache-Control=%q", got)
+				}
+				if got := rec.Header().Get(AuthContractHeader); got != AuthContractValue {
+					t.Fatalf("authentication contract header=%q", got)
+				}
+			}
+		})
+	}
+
+	req := authorizedControlRequest(http.MethodGet, "/control/healthz", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"status":"ok"`) {
+		t.Fatalf("authenticated health status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get(AuthContractHeader); got != AuthContractValue {
+		t.Fatalf("authenticated health contract header=%q", got)
+	}
+}
+
 func TestCreateTaskAndReplaySSE(t *testing.T) {
 	handler, root := newControlTestHandler(t)
 	body, _ := json.Marshal(createTaskRequest{
 		Workspace: root, Prompt: "hello", Provider: agent.BackendFake, Permission: agent.PermissionReadOnly,
 	})
-	req := httptest.NewRequest(http.MethodPost, "/control/v1/tasks", bytes.NewReader(body))
+	req := authorizedControlRequest(http.MethodPost, "/control/v1/tasks", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusAccepted {
@@ -45,7 +111,7 @@ func TestCreateTaskAndReplaySSE(t *testing.T) {
 	}
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		get := httptest.NewRequest(http.MethodGet, "/control/v1/tasks/"+task.ID+"/events", nil)
+		get := authorizedControlRequest(http.MethodGet, "/control/v1/tasks/"+task.ID+"/events", nil)
 		get.SetPathValue("taskID", task.ID)
 		stream := httptest.NewRecorder()
 		handler.ServeHTTP(stream, get)
@@ -60,13 +126,13 @@ func TestCreateTaskAndReplaySSE(t *testing.T) {
 			if dataLines < 3 {
 				t.Fatalf("SSE data lines=%d body=%s", dataLines, stream.Body.String())
 			}
-			list := httptest.NewRequest(http.MethodGet, "/control/v1/tasks?limit=10", nil)
+			list := authorizedControlRequest(http.MethodGet, "/control/v1/tasks?limit=10", nil)
 			listed := httptest.NewRecorder()
 			handler.ServeHTTP(listed, list)
 			if listed.Code != http.StatusOK || !strings.Contains(listed.Body.String(), task.ID) {
 				t.Fatalf("list status=%d body=%s", listed.Code, listed.Body.String())
 			}
-			evidenceReq := httptest.NewRequest(http.MethodGet, "/control/v1/tasks/"+task.ID+"/evidence", nil)
+			evidenceReq := authorizedControlRequest(http.MethodGet, "/control/v1/tasks/"+task.ID+"/evidence", nil)
 			evidenceReq.SetPathValue("taskID", task.ID)
 			evidenceRec := httptest.NewRecorder()
 			handler.ServeHTTP(evidenceRec, evidenceReq)
@@ -107,7 +173,7 @@ func TestApprovalListAndDecisionAPI(t *testing.T) {
 	body, _ := json.Marshal(createTaskRequest{
 		Workspace: root, Prompt: "guard this", Backend: agent.BackendFake, Permission: agent.PermissionWrite,
 	})
-	create := httptest.NewRequest(http.MethodPost, "/control/v1/tasks", bytes.NewReader(body))
+	create := authorizedControlRequest(http.MethodPost, "/control/v1/tasks", bytes.NewReader(body))
 	created := httptest.NewRecorder()
 	handler.ServeHTTP(created, create)
 	if created.Code != http.StatusAccepted {
@@ -121,7 +187,7 @@ func TestApprovalListAndDecisionAPI(t *testing.T) {
 	var approval taskstore.Approval
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		list := httptest.NewRequest(http.MethodGet, "/control/v1/approvals?status=pending&task_id="+task.ID, nil)
+		list := authorizedControlRequest(http.MethodGet, "/control/v1/approvals?status=pending&task_id="+task.ID, nil)
 		listed := httptest.NewRecorder()
 		handler.ServeHTTP(listed, list)
 		if listed.Code != http.StatusOK {
@@ -143,7 +209,7 @@ func TestApprovalListAndDecisionAPI(t *testing.T) {
 		t.Fatalf("approval=%+v", approval)
 	}
 	decisionBody, _ := json.Marshal(approvalDecisionRequest{Decision: "approve"})
-	decision := httptest.NewRequest(http.MethodPost, "/control/v1/approvals/"+approval.ID+"/decision", bytes.NewReader(decisionBody))
+	decision := authorizedControlRequest(http.MethodPost, "/control/v1/approvals/"+approval.ID+"/decision", bytes.NewReader(decisionBody))
 	decided := httptest.NewRecorder()
 	handler.ServeHTTP(decided, decision)
 	if decided.Code != http.StatusOK || !strings.Contains(decided.Body.String(), `"status":"approved"`) {
@@ -151,7 +217,7 @@ func TestApprovalListAndDecisionAPI(t *testing.T) {
 	}
 
 	for time.Now().Before(deadline) {
-		evidenceReq := httptest.NewRequest(http.MethodGet, "/control/v1/tasks/"+task.ID+"/evidence", nil)
+		evidenceReq := authorizedControlRequest(http.MethodGet, "/control/v1/tasks/"+task.ID+"/evidence", nil)
 		evidenceRec := httptest.NewRecorder()
 		handler.ServeHTTP(evidenceRec, evidenceReq)
 		if evidenceRec.Code == http.StatusOK {
@@ -173,7 +239,7 @@ func TestCancellationAndLifecycleAPIIsIdempotent(t *testing.T) {
 	body, _ := json.Marshal(createTaskRequest{
 		Workspace: root, Prompt: "[fake:sleep]", Backend: agent.BackendFake, Permission: agent.PermissionReadOnly,
 	})
-	create := httptest.NewRequest(http.MethodPost, "/control/v1/tasks", bytes.NewReader(body))
+	create := authorizedControlRequest(http.MethodPost, "/control/v1/tasks", bytes.NewReader(body))
 	created := httptest.NewRecorder()
 	handler.ServeHTTP(created, create)
 	if created.Code != http.StatusAccepted {
@@ -187,7 +253,7 @@ func TestCancellationAndLifecycleAPIIsIdempotent(t *testing.T) {
 	deadline := time.Now().Add(5 * time.Second)
 	requestCancel := func() (int, orchestrator.CancelTaskResult) {
 		t.Helper()
-		req := httptest.NewRequest(http.MethodPost, "/control/v1/tasks/"+task.ID+"/cancel", nil)
+		req := authorizedControlRequest(http.MethodPost, "/control/v1/tasks/"+task.ID+"/cancel", nil)
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
 		var result orchestrator.CancelTaskResult
@@ -209,7 +275,7 @@ func TestCancellationAndLifecycleAPIIsIdempotent(t *testing.T) {
 	}
 
 	for time.Now().Before(deadline) {
-		stateReq := httptest.NewRequest(http.MethodGet, "/control/v1/tasks/"+task.ID+"/state", nil)
+		stateReq := authorizedControlRequest(http.MethodGet, "/control/v1/tasks/"+task.ID+"/state", nil)
 		stateRec := httptest.NewRecorder()
 		handler.ServeHTTP(stateRec, stateReq)
 		var state taskstore.TaskState
@@ -226,7 +292,7 @@ func TestCancellationAndLifecycleAPIIsIdempotent(t *testing.T) {
 
 	transition := func(action string) (int, orchestrator.TaskTransitionResult) {
 		t.Helper()
-		req := httptest.NewRequest(http.MethodPost, "/control/v1/tasks/"+task.ID+"/"+action, nil)
+		req := authorizedControlRequest(http.MethodPost, "/control/v1/tasks/"+task.ID+"/"+action, nil)
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
 		var result orchestrator.TaskTransitionResult
@@ -242,7 +308,7 @@ func TestCancellationAndLifecycleAPIIsIdempotent(t *testing.T) {
 		t.Fatalf("second close status=%d result=%+v", status, result)
 	}
 	continueBody, _ := json.Marshal(continueTaskRequest{Prompt: "should fail"})
-	continueReq := httptest.NewRequest(http.MethodPost, "/control/v1/tasks/"+task.ID+"/turns", bytes.NewReader(continueBody))
+	continueReq := authorizedControlRequest(http.MethodPost, "/control/v1/tasks/"+task.ID+"/turns", bytes.NewReader(continueBody))
 	continueRec := httptest.NewRecorder()
 	handler.ServeHTTP(continueRec, continueReq)
 	if continueRec.Code != http.StatusConflict {
@@ -283,7 +349,7 @@ func newControlTestHandler(t *testing.T) (*Handler, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return NewHandler(service), root
+	return NewHandler(service, controlTestToken), root
 }
 
 func newControlApprovalTestHandler(t *testing.T) (*Handler, string) {
@@ -311,7 +377,7 @@ func newControlApprovalTestHandler(t *testing.T) (*Handler, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return NewHandler(service), root
+	return NewHandler(service, controlTestToken), root
 }
 
 func runControlGit(t *testing.T, root string, args ...string) {

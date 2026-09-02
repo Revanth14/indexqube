@@ -15,11 +15,15 @@ import (
 )
 
 func TestLifecycleCLICommands(t *testing.T) {
+	token := installControlTestCredential(t)
 	now := time.Now().UTC()
 	task := taskstore.Task{ID: "task_cli_lifecycle", Status: taskstore.TaskRunning}
 	seen := make([]string, 0, 3)
 	oldClient := lifecycleHTTPClient
 	lifecycleHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.Header.Get("Authorization") != "Bearer "+token {
+			t.Errorf("missing control API authentication")
+		}
 		seen = append(seen, r.Method+" "+r.URL.Path)
 		status := http.StatusOK
 		var payload any
@@ -42,10 +46,10 @@ func TestLifecycleCLICommands(t *testing.T) {
 			payload = map[string]string{"error": "not found"}
 		}
 		raw, _ := json.Marshal(payload)
-		return &http.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(bytes.NewReader(raw)), Request: r}, nil
+		return &http.Response{StatusCode: status, Header: authenticatedControlHeader(), Body: io.NopCloser(bytes.NewReader(raw)), Request: r}, nil
 	})}
 	t.Cleanup(func() { lifecycleHTTPClient = oldClient })
-	t.Setenv("INDEXQUBE_CONTROL_URL", "http://indexqube.test")
+	t.Setenv("INDEXQUBE_CONTROL_URL", "http://127.0.0.1:17374")
 
 	var cancelled bytes.Buffer
 	if err := runCancelCommand(context.Background(), []string{task.ID}, &cancelled); err != nil {

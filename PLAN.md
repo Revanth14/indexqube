@@ -29,6 +29,7 @@ These are release-blocking properties, not aspirations:
 6. **Credentials stay with official clients or request-scoped provider adapters.** IndexQube does not extract subscription tokens or persist provider credentials.
 7. **Interfaces are clients of one engine.** CLI, TUI, dashboard, editor integrations, and automation all use the same local control API.
 8. **Optimization must be semantics-preserving.** Saving tokens is never more important than retaining instructions, tool results, or provider prompt-cache behavior.
+9. **The control API is local and authenticated.** Every endpoint and stream requires the current daemon credential, which is stored only in owner-protected local state and is never placed in logs, task evidence, environment variables, or process arguments.
 
 ## Current baseline
 
@@ -36,14 +37,14 @@ The original plan described a greenfield project. That is no longer accurate. Th
 
 | Area | Status | Current reality |
 |---|---|---|
-| Local daemon | Shipped foundation | One process runs a loopback model proxy and a separate loopback control API. |
+| Local daemon | Shipped foundation | One process runs a loopback model proxy and a separate loopback control API with a credential rotated on every daemon start. |
 | Canonical task state | Shipped foundation | SQLite stores tasks, turns, route attempts, backend sessions, workspace snapshots, events, and write epochs. |
 | Agent runtime | Shipped foundation | Child-process supervision, cancellation, bounded stderr, normalized events, and process-group termination exist. |
 | Fake backend | Shipped foundation | Deterministic success, failure, mutation, stale epoch, sleep/cancel, and lost-session scenarios are testable. |
 | Workspace safety | Shipped foundation | Git-root identity, per-path dirty-baseline state, authoritative turn deltas, bounded diffs, OS write locks, inherited lock lifetime, fencing checks, and agent-evidence mismatch detection exist. |
 | Recovery | Shipped foundation | Interrupted daemon work is reconciled; lost native sessions can be replaced from canonical history when safe. |
-| Control API | Shipped foundation | Create, list, inspect, continue, durable cancel, close/reopen, backend health, assembled task evidence, and replayable/live SSE task events exist. |
-| Task CLI | Shipped foundation | Task creation/listing/evidence/continuation plus retry-safe `iq cancel` and explicit task close/reopen use the control API. |
+| Control API | Shipped foundation | Create, list, inspect, continue, durable cancel, close/reopen, backend health, assembled task evidence, and replayable/live SSE task events exist; every route is authenticated. |
+| Task CLI | Shipped foundation | Task creation/listing/evidence/continuation plus retry-safe `iq cancel` and explicit task close/reopen use authenticated loopback requests. |
 | Codex task backend | Shipped foundation | Read-only execution plus guarded App Server workspace-write execution, durable command/file approvals, event parsing, evidence, native-session resume, and lost-session detection work. |
 | Claude task backend | Missing | Claude traffic can use the proxy, but Claude Code is not yet an orchestrated task backend. |
 | Routing and handoff | Partial | Backend selection is explicit and a lost session can recover within one backend; there is no policy router or cross-backend handoff. |
@@ -115,6 +116,7 @@ Goal: make the new control-plane branch safe to merge and easy to evaluate.
 - [x] Add task listing to the store, API, and CLI so users can rediscover task IDs after a restart.
 - [x] Expose turns, sessions, route attempts, snapshots, commands, files, and events through `TaskEvidence`.
 - [x] Make `backend` canonical in the task CLI/API while retaining `provider` as a compatibility alias.
+- [x] Require daemon-scoped authentication on every control endpoint and SSE stream, rotate the credential on restart, and fail closed against legacy unauthenticated daemons.
 - [x] Merge the foundation branch to `main`.
 - [ ] Keep authenticated real-Codex write and approval alpha smokes green.
 - Merge only with `make check` and the manual smoke flow green.
@@ -254,7 +256,7 @@ Work in this order:
 5. **Done:** mutation reconciliation based on per-path pre/post snapshots, independent of adapter events.
 6. **Done:** durable idempotent cancellation plus explicit close/reopen task semantics.
 7. **In progress:** durable verification, strict recipes, Go/Node/Python/Rust detection, and post-turn evidence are done; separate audit evidence remains.
-8. Control API authentication before any browser surface is enabled.
+8. **Done:** daemon-scoped control API authentication, owner-only credential storage, restart rotation, CLI injection, and legacy-daemon rejection.
 9. Claude Code backend and protocol fixtures.
 10. Explicit handoff, task pinning, and conservative failure classification.
 11. TUI.
