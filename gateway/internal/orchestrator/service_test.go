@@ -129,6 +129,75 @@ type handoffCaptureBackend struct {
 	resumeLost bool
 }
 
+type classifiedFailureBackend struct {
+	id       agent.BackendID
+	failure  error
+	mutation bool
+}
+
+func (b *classifiedFailureBackend) ID() agent.BackendID { return b.id }
+func (b *classifiedFailureBackend) Probe(context.Context) agent.BackendHealth {
+	return agent.BackendHealth{Backend: b.id, Status: agent.HealthAvailable, CheckedAt: time.Now().UTC()}
+}
+func (b *classifiedFailureBackend) Execute(_ context.Context, request agent.Request, _ agent.EventSink) (agent.Result, error) {
+	if b.mutation {
+		if err := os.WriteFile(filepath.Join(request.Workspace, "classified-failure.txt"), []byte("changed\n"), 0o600); err != nil {
+			return agent.Result{}, err
+		}
+	}
+	return agent.Result{MutationSeen: b.mutation, ExitCode: 1}, b.failure
+}
+
+func TestBackendFailureClassificationRequiresSafeUnpinnedWorkspace(t *testing.T) {
+	tests := []struct {
+		name       string
+		failure    error
+		permission agent.PermissionMode
+		mutation   bool
+		pin        bool
+		wantClass  agent.FailureClass
+		eligible   bool
+		wantStatus taskstore.TaskStatus
+	}{
+		{name: "allowlisted pre mutation", failure: errors.New("request failed: rate_limit_exceeded"), permission: agent.PermissionReadOnly,
+			wantClass: agent.FailureRateLimited, eligible: true, wantStatus: taskstore.TaskOpen},
+		{name: "pinned route", failure: errors.New("request failed: rate_limit_exceeded"), permission: agent.PermissionReadOnly, pin: true,
+			wantClass: agent.FailureRateLimited, wantStatus: taskstore.TaskOpen},
+		{name: "unknown failure", failure: errors.New("opaque backend failure"), permission: agent.PermissionReadOnly,
+			wantClass: agent.FailureUnknown, wantStatus: taskstore.TaskOpen},
+		{name: "mutation boundary", failure: errors.New("request failed: rate_limit_exceeded"), permission: agent.PermissionWrite, mutation: true,
+			wantClass: agent.FailureRateLimited, wantStatus: taskstore.TaskNeedsAttention},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			service, store, root := newTestService(t)
+			backend := &classifiedFailureBackend{id: agent.BackendFake, failure: test.failure, mutation: test.mutation}
+			service.registry = NewRegistry(backend)
+			task, err := service.StartTask(context.Background(), StartTaskInput{
+				Workspace: root, Prompt: "classify this", Backend: agent.BackendFake, Permission: test.permission, PinBackend: test.pin,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			events := waitForTerminal(t, service, task.ID)
+			terminal := events[len(events)-1]
+			if terminal.Type != agent.EventError || terminal.Metadata["failure_class"] != string(test.wantClass) ||
+				(terminal.Metadata["fallback_eligible"] == "true") != test.eligible {
+				t.Fatalf("terminal=%+v", terminal)
+			}
+			evidence, found, err := store.TaskEvidence(context.Background(), task.ID)
+			if err != nil || !found || len(evidence.Routes) != 1 {
+				t.Fatalf("evidence=%+v found=%v err=%v", evidence, found, err)
+			}
+			route := evidence.Routes[0]
+			if route.FailureClass != test.wantClass || route.FallbackEligible != test.eligible || route.MutationObserved != test.mutation ||
+				evidence.Task.Status != test.wantStatus {
+				t.Fatalf("route=%+v task=%+v", route, evidence.Task)
+			}
+		})
+	}
+}
+
 func (b *handoffCaptureBackend) ID() agent.BackendID { return b.id }
 
 func (b *handoffCaptureBackend) Probe(context.Context) agent.BackendHealth {
@@ -1035,6 +1104,11 @@ func TestLostNativeSessionStartsNewSessionFromCanonicalState(t *testing.T) {
 	}
 	if latest.CreationReason != "native_session_recovery" || latest.PredecessorID == "" {
 		t.Fatalf("latest session=%+v", latest)
+	}
+	evidence, found, err := store.TaskEvidence(context.Background(), task.ID)
+	if err != nil || !found || len(evidence.Routes) != 3 || evidence.Routes[1].FailureClass != agent.FailureNativeSessionLost ||
+		!evidence.Routes[1].FallbackEligible {
+		t.Fatalf("recovery routes=%+v found=%v err=%v", evidence.Routes, found, err)
 	}
 }
 

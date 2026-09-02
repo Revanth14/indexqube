@@ -91,19 +91,25 @@ type BackendSession struct {
 }
 
 type RouteAttempt struct {
-	ID               string          `json:"route_attempt_id"`
-	TurnID           string          `json:"turn_id"`
-	Ordinal          int             `json:"ordinal"`
-	Backend          agent.BackendID `json:"backend"`
-	BackendSessionID string          `json:"backend_session_id,omitempty"`
-	DecisionReason   string          `json:"decision_reason"`
-	Status           string          `json:"status"`
-	FailureClass     string          `json:"failure_class,omitempty"`
-	MutationObserved bool            `json:"mutation_observed"`
-	PreFingerprint   string          `json:"pre_fingerprint,omitempty"`
-	PostFingerprint  string          `json:"post_fingerprint,omitempty"`
-	StartedAt        time.Time       `json:"started_at"`
-	CompletedAt      *time.Time      `json:"completed_at,omitempty"`
+	ID               string             `json:"route_attempt_id"`
+	TurnID           string             `json:"turn_id"`
+	Ordinal          int                `json:"ordinal"`
+	Backend          agent.BackendID    `json:"backend"`
+	BackendSessionID string             `json:"backend_session_id,omitempty"`
+	DecisionReason   string             `json:"decision_reason"`
+	Status           string             `json:"status"`
+	FailureClass     agent.FailureClass `json:"failure_class,omitempty"`
+	MutationObserved bool               `json:"mutation_observed"`
+	FallbackEligible bool               `json:"automatic_fallback_eligible"`
+	PreFingerprint   string             `json:"pre_fingerprint,omitempty"`
+	PostFingerprint  string             `json:"post_fingerprint,omitempty"`
+	StartedAt        time.Time          `json:"started_at"`
+	CompletedAt      *time.Time         `json:"completed_at,omitempty"`
+}
+
+func (r RouteAttempt) CanAutomaticallyFallback() bool {
+	return agent.AutomaticFallbackEligible(r.FailureClass) && !r.MutationObserved &&
+		r.PreFingerprint != "" && r.PostFingerprint == r.PreFingerprint
 }
 
 type WorkspaceSnapshot struct {

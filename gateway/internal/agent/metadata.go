@@ -19,6 +19,8 @@ var allowedMetadata = map[string]bool{
 	"handoff_id":          true,
 	"from_backend":        true,
 	"to_backend":          true,
+	"failure_class":       true,
+	"fallback_eligible":   true,
 }
 
 func NormalizeMetadata(input map[string]string) map[string]string {

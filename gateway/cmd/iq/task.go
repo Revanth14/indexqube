@@ -305,7 +305,14 @@ func renderTaskEvidence(out io.Writer, evidence taskstore.TaskEvidence) {
 	if len(evidence.Routes) > 0 {
 		fmt.Fprintln(out, "\nRoute attempts:")
 		for _, route := range evidence.Routes {
-			fmt.Fprintf(out, "  %s #%d — %s (%s)\n", route.Backend, route.Ordinal, route.Status, route.DecisionReason)
+			failure := ""
+			if route.FailureClass != "" {
+				failure = " failure=" + string(route.FailureClass)
+			}
+			if route.FallbackEligible {
+				failure += " fallback-eligible"
+			}
+			fmt.Fprintf(out, "  %s #%d — %s (%s)%s\n", route.Backend, route.Ordinal, route.Status, route.DecisionReason, failure)
 		}
 	}
 	if len(evidence.Handoffs) > 0 {

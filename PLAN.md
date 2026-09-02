@@ -47,7 +47,7 @@ The original plan described a greenfield project. That is no longer accurate. Th
 | Task CLI | Shipped foundation | Task creation/listing/evidence/continuation plus retry-safe `iq cancel`, explicit close/reopen, and durable backend pin/unpin use authenticated loopback requests. |
 | Codex task backend | Shipped foundation | Read-only execution plus guarded App Server workspace-write execution, durable command/file approvals, event parsing, evidence, native-session resume, and lost-session detection work. |
 | Claude task backend | Partial | Read-only and guarded workspace-write execution, private MCP permission routing, durable command/file approvals, normalized evidence, native-session continuation, lost-session recovery signals, handoff, and protocol fixtures exist; broader compatibility coverage remains. |
-| Routing and handoff | Partial | Backend selection, durable task pins, canonical cross-backend handoff, fresh destination lineage, and lost-session recovery exist; failure classification and automatic policy routing remain. |
+| Routing and handoff | Partial | Backend selection, durable task pins, canonical cross-backend handoff, fresh destination lineage, lost-session recovery, and conservative failure classification exist; automatic policy routing remains. |
 | Verification | Advanced foundation | Successful write turns persist verification runs/checks; strict configured recipes plus conservative Go, Node, Python, and Rust detection run with bounded output, timeouts, offline dependency controls, workspace-stability checks, and task-scoped security findings with explicit severity policy. |
 | User experience | Partial | Durable task listing, evidence inspection, and approval commands work; there is no TUI or active dashboard, and bare `iq` still opens the legacy Claude wrapper. |
 | Data plane | Advanced | Claude Messages and OpenAI Responses ingress, provider adapters, streaming, optimization, prompt-cache preservation, LSM/SQLite caches, telemetry, setup, audit, and benchmarking exist. |
@@ -176,7 +176,8 @@ Goal: make “one task, multiple workers” real without pretending routing is i
   - latest verification result;
   - bounded failure reason.
 - [x] Add explicit backend selection, durable task pin/unpin policy, and `iq handoff TASK --to claude`.
-- Add deterministic ordered fallback only for classified pre-mutation failures such as unavailable binary, rate limit, provider unavailability, or lost native session.
+- [x] Classify unavailable binary, rate limit, provider unavailability, lost native session, protocol, cancellation, platform-state, and unknown failures; mark eligibility only with an unpinned task and exact pre/post workspace equality.
+- Add deterministic ordered fallback only for the allowlisted eligible pre-mutation classes.
 - [x] Record every route decision and handoff as canonical state.
 
 Exit criteria:
@@ -259,7 +260,7 @@ Work in this order:
 7. **In progress:** durable verification, strict recipes, Go/Node/Python/Rust detection, and post-turn evidence are done; separate audit evidence remains.
 8. **Done:** daemon-scoped control API authentication, owner-only credential storage, restart rotation, CLI injection, and legacy-daemon rejection.
 9. **In progress:** Claude read-only/write execution, private permission MCP routing, durable approvals, and protocol fixtures are implemented; broader CLI-version compatibility fixtures remain.
-10. **In progress:** explicit handoff and durable task pinning are implemented; conservative failure classification remains.
+10. **In progress:** explicit handoff, durable task pinning, and conservative failure classification are implemented; deterministic ordered fallback remains.
 11. TUI.
 12. V1 hardening, packaging, and alpha feedback.
 

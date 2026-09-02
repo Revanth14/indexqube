@@ -46,6 +46,7 @@ The operating rule is simple: **the agent is temporary; the task is not.**
 | Claude durable write approvals | Shipped foundation |
 | Explicit Codex/Claude handoff with durable canonical packets | Shipped foundation |
 | Durable per-task backend pin/unpin policy | Shipped foundation |
+| Conservative pre-mutation backend failure classification | Shipped foundation |
 | Daemon-scoped authentication on every control endpoint and SSE stream | Shipped foundation |
 | TUI and release installer | Planned |
 
@@ -141,6 +142,12 @@ Pinning never changes backends or starts a turn. Use `iq handoff` for a backend
 change so the destination always receives canonical context. Handoffs pin their
 destination atomically; pin/unpin requests are idempotent and rejected while a
 task is running or awaiting approval.
+
+Failed route attempts record a bounded backend-neutral failure class. A route
+is marked fallback-eligible only for an allowlisted unavailable/rate-limit/lost-
+session class, an unpinned task, and an exact unchanged pre/post workspace
+fingerprint. This release reports that decision in task evidence; automatic
+cross-backend fallback is still disabled until the ordered policy step ships.
 
 IndexQube streams the run and prints the task ID. The durable record remains
 available after the command exits:
@@ -423,7 +430,7 @@ PLAN.md                            product gates and implementation order
 
 Work is currently focused on:
 
-1. conservative pre-mutation failure classification and fallback;
+1. deterministic ordered fallback for eligible pre-mutation failures;
 2. an attachable local TUI;
 3. signed release packaging and real-repository alpha feedback.
 

@@ -301,7 +301,7 @@ func (s *Service) execute(ctx context.Context, task taskstore.Task, turn tasksto
 		}
 		mutationBeforeRecovery = tracker.mutationSeen || result.MutationSeen || (checkErr == nil && pre.Fingerprint != check.Fingerprint)
 		if checkErr == nil && !mutationBeforeRecovery {
-			_ = s.store.FailRouteAttempt(context.Background(), currentAttempt.ID, "resume_lost", check.Fingerprint, false, time.Now().UTC())
+			_ = s.store.FailRouteAttempt(context.Background(), currentAttempt.ID, agent.FailureNativeSessionLost, check.Fingerprint, false, time.Now().UTC())
 			_ = s.store.SetBackendSessionStatus(context.Background(), options.priorSession.ID, "resume_lost", time.Now().UTC())
 			recoveryAttempt := taskstore.RouteAttempt{
 				ID: taskstore.NewID("route"), TurnID: turn.ID, Ordinal: currentAttempt.Ordinal + 1, Backend: backend.ID(),
@@ -455,16 +455,22 @@ func (s *Service) execute(ctx context.Context, task taskstore.Task, turn tasksto
 			code = "cancelled"
 		}
 		cancelled := code == "cancelled"
+		mutationObserved := mutation || evidenceMismatch
+		failureClass := classifyRouteFailure(code, failure, result)
+		eligible := s.fallbackEligible(context.Background(), task.ID, failureClass, mutationObserved, pre.Fingerprint, postFingerprint)
 		var finishErr error
 		if cancelled {
-			finishErr = s.store.CancelTurn(context.Background(), task.ID, turn.ID, currentAttempt.ID, safeError(failure), postFingerprint, mutation || evidenceMismatch, time.Now().UTC())
+			finishErr = s.store.CancelTurn(context.Background(), task.ID, turn.ID, currentAttempt.ID, safeError(failure), postFingerprint, mutationObserved, time.Now().UTC())
 		} else {
-			finishErr = s.store.FailTurn(context.Background(), task.ID, turn.ID, currentAttempt.ID, code, safeError(failure), postFingerprint, mutation || evidenceMismatch, time.Now().UTC())
+			finishErr = s.store.FailTurnClassified(context.Background(), task.ID, turn.ID, currentAttempt.ID, code, failureClass, safeError(failure), postFingerprint, mutationObserved, time.Now().UTC())
 		}
 		if errors.Is(finishErr, taskstore.ErrCancellationRequested) {
 			cancelled = true
 			failure = context.Canceled
-			finishErr = s.store.CancelTurn(context.Background(), task.ID, turn.ID, currentAttempt.ID, "cancellation requested", postFingerprint, mutation || evidenceMismatch, time.Now().UTC())
+			code = "cancelled"
+			failureClass = agent.FailureCancelled
+			eligible = false
+			finishErr = s.store.CancelTurn(context.Background(), task.ID, turn.ID, currentAttempt.ID, "cancellation requested", postFingerprint, mutationObserved, time.Now().UTC())
 		}
 		if finishErr != nil {
 			return
@@ -477,7 +483,8 @@ func (s *Service) execute(ctx context.Context, task taskstore.Task, turn tasksto
 		}
 		_ = s.emit(context.Background(), agent.Event{
 			Type: typ, TaskID: task.ID, TurnID: turn.ID, Backend: backend.ID(),
-			Result: &agent.ResultEvent{ExitCode: result.ExitCode, Status: string(resultStatus), Error: safeError(failure)},
+			Result:   &agent.ResultEvent{ExitCode: result.ExitCode, Status: string(resultStatus), Error: safeError(failure)},
+			Metadata: failureMetadata(code, failureClass, eligible),
 		})
 		return
 	}
@@ -491,9 +498,10 @@ func (s *Service) execute(ctx context.Context, task taskstore.Task, turn tasksto
 		})
 		return
 	} else if err != nil {
-		if failErr := s.store.FailTurn(context.Background(), task.ID, turn.ID, currentAttempt.ID, "state_failed", safeError(err), postFingerprint, mutation || evidenceMismatch, time.Now().UTC()); failErr == nil {
+		if failErr := s.store.FailTurnClassified(context.Background(), task.ID, turn.ID, currentAttempt.ID, "state_failed", agent.FailurePlatformState, safeError(err), postFingerprint, mutation || evidenceMismatch, time.Now().UTC()); failErr == nil {
 			_ = s.emit(context.Background(), agent.Event{Type: agent.EventError, TaskID: task.ID, TurnID: turn.ID, Backend: backend.ID(),
-				Result: &agent.ResultEvent{Status: string(taskstore.TurnFailed), Error: safeError(err)}})
+				Result:   &agent.ResultEvent{Status: string(taskstore.TurnFailed), Error: safeError(err)},
+				Metadata: failureMetadata("state_failed", agent.FailurePlatformState, false)})
 		}
 		return
 	}
@@ -578,7 +586,8 @@ func persistedVerification(taskID, turnID string, result verification.Result) ta
 }
 
 func (s *Service) failBeforeRun(ctx context.Context, task taskstore.Task, turn taskstore.Turn, attempt taskstore.RouteAttempt, code string, err error) {
-	finishErr := s.store.FailTurn(context.Background(), task.ID, turn.ID, attempt.ID, code, safeError(err), "", false, time.Now().UTC())
+	failureClass := classifyRouteFailure(code, err, agent.Result{})
+	finishErr := s.store.FailTurnClassified(context.Background(), task.ID, turn.ID, attempt.ID, code, failureClass, safeError(err), "", false, time.Now().UTC())
 	if errors.Is(finishErr, taskstore.ErrCancellationRequested) {
 		if cancelErr := s.store.CancelTurn(context.Background(), task.ID, turn.ID, attempt.ID, "cancellation requested", "", false, time.Now().UTC()); cancelErr != nil {
 			return
@@ -594,7 +603,8 @@ func (s *Service) failBeforeRun(ctx context.Context, task taskstore.Task, turn t
 	}
 	_ = s.emit(context.Background(), agent.Event{
 		Type: agent.EventError, TaskID: task.ID, TurnID: turn.ID, Backend: attempt.Backend,
-		Result: &agent.ResultEvent{Status: string(taskstore.TurnFailed), Error: safeError(err)},
+		Result:   &agent.ResultEvent{Status: string(taskstore.TurnFailed), Error: safeError(err)},
+		Metadata: failureMetadata(code, failureClass, false),
 	})
 }
 
@@ -814,7 +824,7 @@ func (s *Service) ReconcileInterrupted(ctx context.Context) (ReconciliationRepor
 		if err := s.emit(ctx, agent.Event{
 			Type: eventType, TaskID: run.TaskID, TurnID: run.TurnID,
 			Result:   &agent.ResultEvent{Status: string(turnStatus), Error: message},
-			Metadata: map[string]string{"error_code": code},
+			Metadata: failureMetadata(code, agent.FailureDaemonInterrupted, false),
 		}); err != nil {
 			return report, err
 		}
