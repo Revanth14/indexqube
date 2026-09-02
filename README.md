@@ -7,9 +7,9 @@ the task alive across terminal exits, daemon restarts, and lost native sessions;
 guards workspace writes; records approvals; reconciles what changed; and stores
 verification evidence alongside the result.
 
-[Website](https://indexqube.com) · [Download v0.2.0](https://github.com/Revanth14/indexqube/releases/tag/v0.2.0) · [Product plan](./PLAN.md)
+[Website](https://indexqube.com) · [Download latest](https://github.com/Revanth14/indexqube/releases/latest) · [Product plan](./PLAN.md)
 
-> **Alpha:** `v0.2.0` is the first signed public control-plane release. The core
+> **Alpha:** `v0.2.x` is the first signed public control-plane release line. The core
 > task loop is implemented and release-gated, but interfaces may still change as
 > real-repository feedback expands.
 
@@ -544,7 +544,7 @@ PLAN.md                            product gates and implementation order
 
 Work is currently focused on:
 
-1. collecting real-repository feedback from the signed `v0.2.0` alpha;
+1. collecting real-repository feedback from the signed `v0.2.x` alpha;
 2. Apple Developer ID notarization as distribution credentials become available;
 3. broader CLI compatibility fixtures driven by alpha evidence.
 

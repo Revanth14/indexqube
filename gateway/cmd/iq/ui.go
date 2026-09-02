@@ -25,7 +25,11 @@ import (
 	"github.com/Revanth14/indexqube/gateway/internal/taskstore"
 )
 
-const uiRefreshInterval = time.Second
+const (
+	uiRefreshInterval = time.Second
+	uiEnterTerminal   = "\x1b[?1049h\x1b[2J\x1b[H\x1b[?25l"
+	uiExitTerminal    = "\x1b[?25h\x1b[0m\x1b[?1049l"
+)
 
 type uiView string
 
@@ -68,6 +72,9 @@ type uiApp struct {
 	inputUTF8      []byte
 	escapeState    int
 	status         string
+	lastFrame      string
+	lastWidth      int
+	lastHeight     int
 }
 
 func runUI(args []string) {
@@ -120,8 +127,8 @@ func runUICommand(ctx context.Context, args []string, stdin, stdout *os.File, st
 		return fmt.Errorf("enter terminal raw mode: %w", err)
 	}
 	defer term.Restore(int(stdin.Fd()), oldState) //nolint:errcheck
-	fmt.Fprint(stdout, "\x1b[?25l")
-	defer fmt.Fprint(stdout, "\x1b[?25h\x1b[0m\r\nDetached. Running tasks continue in the daemon.\r\n")
+	fmt.Fprint(stdout, uiEnterTerminal)
+	defer fmt.Fprint(stdout, uiExitTerminal+"\r\nDetached. Running tasks continue in the daemon.\r\n")
 
 	inputBytes := make(chan byte, 32)
 	inputErrors := make(chan error, 1)
@@ -232,11 +239,47 @@ func (a *uiApp) draw(out *os.File) {
 	if err != nil || width <= 0 || height <= 0 {
 		width, height = 120, 36
 	}
+	resized := width != a.lastWidth || height != a.lastHeight
+	a.lastWidth, a.lastHeight = width, height
+	if _, changed := a.nextFrame(width, height); !changed && !resized {
+		return
+	}
+	fmt.Fprint(out, paintUIFrame(a.lastFrame, resized))
+}
+
+// paintUIFrame repaints in place. Frame lines are not padded to the full
+// terminal width, so each one erases to end of line and the tail of the screen
+// is cleared; otherwise a shorter line leaves the previous frame's characters
+// behind. A full clear runs only after a resize, which keeps a steady screen
+// free of flicker.
+func paintUIFrame(frame string, clearAll bool) string {
+	var painted strings.Builder
+	if clearAll {
+		painted.WriteString("\x1b[2J")
+	}
+	painted.WriteString("\x1b[H")
+	for index, line := range strings.Split(frame, "\r\n") {
+		if index > 0 {
+			painted.WriteString("\r\n")
+		}
+		painted.WriteString(line)
+		painted.WriteString("\x1b[K")
+	}
+	painted.WriteString("\x1b[J")
+	return painted.String()
+}
+
+func (a *uiApp) nextFrame(width, height int) (string, bool) {
 	snapshot := uiSnapshot{
 		workspace: a.workspace, tasks: a.tasks, selectedID: a.selectedID, evidence: a.evidence,
 		approvals: a.approvals, backends: a.backends, view: a.view, input: string(a.input), status: a.status,
 	}
-	fmt.Fprint(out, "\x1b[H\x1b[2J", renderUIScreen(snapshot, width, height))
+	frame := renderUIScreen(snapshot, width, height)
+	if frame == a.lastFrame {
+		return "", false
+	}
+	a.lastFrame = frame
+	return frame, true
 }
 
 func (a *uiApp) refresh(ctx context.Context) error {
@@ -303,7 +346,11 @@ func (a *uiApp) moveSelection(delta int) {
 }
 
 func (a *uiApp) executeCommand(ctx context.Context, line string) bool {
+	line = strings.TrimSpace(line)
 	if !strings.HasPrefix(line, "/") {
+		if strings.EqualFold(line, "exit") || strings.EqualFold(line, "quit") {
+			return true
+		}
 		a.submitPrompt(ctx, line, false, "", false)
 		return false
 	}

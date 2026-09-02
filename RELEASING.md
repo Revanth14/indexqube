@@ -11,9 +11,9 @@ alpha, ordinary `0.x` versions communicate that the public interface may still
 change and keep GitHub's `/releases/latest` installer URL working. Do not move or
 rename an existing tag.
 
-The Git tag for this release is `v0.2.0`, and the GitHub release title is
-`IndexQube v0.2.0`. Future releases follow the same `IndexQube vX.Y.Z` title
-format.
+For example, Git tag `v0.2.1` produces GitHub release title
+`IndexQube v0.2.1`. Future releases follow the same `IndexQube vX.Y.Z` title
+format without hard-coding a version in the workflow.
 
 ## Release contract
 
@@ -22,8 +22,9 @@ format.
 3. Create and push an annotated `v*` tag. For example:
 
    ```bash
-   git tag -a v0.2.0 -m "IndexQube v0.2.0"
-   git push origin v0.2.0
+   version=v0.2.1
+   git tag -a "$version" -m "IndexQube $version"
+   git push origin "$version"
    ```
 
    The release workflow runs the race-enabled suite,

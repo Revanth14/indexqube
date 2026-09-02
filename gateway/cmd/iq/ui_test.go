@@ -72,9 +72,60 @@ func TestUIInputDetachesWithoutCancellingAndSupportsSelection(t *testing.T) {
 	if !app.executeCommand(context.Background(), "/quit") {
 		t.Fatal("/quit did not detach")
 	}
+	if !app.executeCommand(context.Background(), "exit") {
+		t.Fatal("plain exit did not detach")
+	}
+	if !app.executeCommand(context.Background(), "QUIT") {
+		t.Fatal("plain quit did not detach case-insensitively")
+	}
 	app.executeCommand(context.Background(), "/view evidence")
 	if app.view != uiViewEvidence {
 		t.Fatalf("view=%q", app.view)
+	}
+}
+
+func TestUIUsesAlternateScreenAndSkipsIdenticalFrames(t *testing.T) {
+	if !strings.Contains(uiEnterTerminal, "\x1b[?1049h") {
+		t.Fatalf("enter sequence does not enable the alternate screen: %q", uiEnterTerminal)
+	}
+	if !strings.Contains(uiExitTerminal, "\x1b[?1049l") {
+		t.Fatalf("exit sequence does not restore the primary screen: %q", uiExitTerminal)
+	}
+
+	app := &uiApp{workspace: "/repo", view: uiViewOverview, status: "ready"}
+	first, changed := app.nextFrame(80, 24)
+	if !changed || first == "" {
+		t.Fatal("initial frame was suppressed")
+	}
+	if frame, changed := app.nextFrame(80, 24); changed || frame != "" {
+		t.Fatalf("identical frame was emitted: changed=%v frame=%q", changed, frame)
+	}
+	app.input = []rune("x")
+	if frame, changed := app.nextFrame(80, 24); !changed || frame == "" {
+		t.Fatal("changed input did not produce a new frame")
+	}
+}
+
+func TestUIPaintErasesStaleCharactersAndClearsOnlyOnResize(t *testing.T) {
+	painted := paintUIFrame("header\r\nlong status line\r\n> ", false)
+	if strings.Contains(painted, "\x1b[2J") {
+		t.Fatalf("steady repaint cleared the whole screen: %q", painted)
+	}
+	if !strings.HasPrefix(painted, "\x1b[H") {
+		t.Fatalf("repaint did not home the cursor: %q", painted)
+	}
+	// Frame lines are shorter than the terminal is wide, so every line must
+	// erase to end of line or the previous frame's tail stays visible.
+	for _, line := range strings.Split(painted, "\r\n") {
+		if !strings.HasSuffix(strings.TrimSuffix(line, "\x1b[J"), "\x1b[K") {
+			t.Fatalf("line %q does not erase to end of line", line)
+		}
+	}
+	if !strings.HasSuffix(painted, "\x1b[J") {
+		t.Fatalf("repaint did not clear below the frame: %q", painted)
+	}
+	if resized := paintUIFrame("header", true); !strings.HasPrefix(resized, "\x1b[2J") {
+		t.Fatalf("resize repaint did not clear the screen: %q", resized)
 	}
 }
 
