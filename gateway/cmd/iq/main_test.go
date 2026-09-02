@@ -4,12 +4,39 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
 	_ "modernc.org/sqlite"
 )
+
+func TestRunBareLaunchesClaudeThroughLocalProxy(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("IndexQube supports macOS and Linux")
+	}
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "claude-env")
+	helper := filepath.Join(dir, "claude")
+	script := "#!/bin/sh\nprintf '%s' \"$ANTHROPIC_BASE_URL\" > \"$IQ_BARE_TEST_MARKER\"\n"
+	if err := os.WriteFile(helper, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake Claude helper: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("INDEXQUBE_HOME", filepath.Join(dir, "state"))
+	t.Setenv("IQ_BARE_TEST_MARKER", marker)
+	t.Setenv("IQ_NO_SUMMARY", "1")
+
+	runBare()
+	raw, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatalf("read fake Claude marker: %v", err)
+	}
+	if value := string(raw); !strings.HasPrefix(value, "http://127.0.0.1:") {
+		t.Fatalf("ANTHROPIC_BASE_URL=%q, want loopback IndexQube proxy", value)
+	}
+}
 
 // TestReadSessionMetrics covers the reusable DB read that both the session
 // summary and the `iq bench` A/B comparison depend on: a row is located by the

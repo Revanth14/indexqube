@@ -53,12 +53,12 @@ The operating rule is simple: **the agent is temporary; the task is not.**
 | Authenticated workspace dashboard | Shipped foundation |
 | Versioned task storage, retention, backups, and crash cleanup | Shipped foundation |
 | Local aggregate reliability metrics and opt-in reporting | Shipped foundation |
-| Atomic installer rollback and signed macOS/Linux release pipeline | Ready for first signed tag |
+| Atomic installer rollback and signed macOS/Linux release pipeline | Shipped in `v0.2.x` |
 
 The existing Claude/OpenAI-compatible local proxy remains available as an
 optional data plane. The durable task control plane is the primary product.
 
-## Try the control plane from source
+## Try IndexQube from source
 
 Requirements:
 
@@ -74,7 +74,7 @@ them until their event protocol is covered by a checked-in fixture. This is a
 deliberately fail-closed compatibility policy, not a claim that every other CLI
 release is broken.
 
-Build and start the loopback daemon:
+Build and start the normal interactive Claude Code experience through IndexQube:
 
 ```bash
 git clone https://github.com/Revanth14/indexqube.git
@@ -96,19 +96,19 @@ replacement, keeps `iq.previous`, and can require GitHub/Sigstore provenance
 verification with `INDEXQUBE_REQUIRE_ATTESTATION=1`. See
 [RELEASING.md](./RELEASING.md) for verification and rollback commands.
 
-Bare `iq` starts the daemon when needed and opens the terminal UI. Its model proxy listens on
-`127.0.0.1:17373`; its task control API listens separately on
-`127.0.0.1:17374`.
+Bare `iq` launches Claude Code through an ephemeral loopback IndexQube proxy,
+keeping the familiar command-line experience. `iq claude` is an explicit alias
+for the same path.
 
-Start typing requests. IndexQube picks the first compatible backend in a stable
-Codex-then-Claude order; it never silently selects the fake test backend. Use
-`/new write` when a task should be allowed to change the workspace:
+The durable workspace UI remains available explicitly:
 
 ```bash
-/new write fix the failing retry test and verify it
+./bin/iq ui
 ```
 
-The UI shows the current workspace's tasks and selected conversation alongside
+It starts the persistent daemon when needed. The model proxy listens on
+`127.0.0.1:17373`; the authenticated task control API listens on
+`127.0.0.1:17374`. The UI shows the current workspace's tasks and selected conversation alongside
 backend health, pending approvals, changed files, commands, verification,
 routes, and handoffs. Ctrl-N/Ctrl-P or the arrow keys change tasks. Plain text
 starts a task when none is selected and continues an idle selected task.
@@ -123,9 +123,8 @@ backend selection without opening the UI:
 ./bin/iq explain the retry and cancellation path
 ```
 
-The former implicit Claude wrapper is now explicit as `iq claude`; existing
-scripts should use that spelling when they intend to launch Claude Code through
-the optional optimization proxy.
+Scripts can use the explicit `iq claude` spelling when they intend to launch
+Claude Code through the optional optimization proxy.
 
 For a browser view of the same canonical workspace state:
 
@@ -441,7 +440,7 @@ workspace-stability comparison.
 
 ```mermaid
 flowchart LR
-    UI[CLI / future TUI] --> API[Loopback control API]
+    UI[Task CLI / optional TUI] --> API[Loopback control API]
     API --> ORCH[Orchestrator]
     ORCH --> STORE[(SQLite task store)]
     ORCH --> GUARD[Workspace guard]

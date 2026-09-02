@@ -1,5 +1,5 @@
-// Command iq is the local IndexQube task interface. Bare iq opens the durable
-// workspace TUI; iq claude retains the explicit optimized Claude wrapper.
+// Command iq provides the normal interactive Claude Code experience through
+// IndexQube by default; durable task controls and richer views stay explicit.
 package main
 
 import (
@@ -40,7 +40,7 @@ func generateToken() string {
 
 func main() {
 	if len(os.Args) < 2 {
-		runUI(nil)
+		runBare()
 		return
 	}
 	if len(os.Args) == 2 && (os.Args[1] == "--version" || os.Args[1] == "-v") {
@@ -113,6 +113,10 @@ func main() {
 		// invocation remains available explicitly as `iq claude ...`.
 		runTask(os.Args[1:])
 	}
+}
+
+func runBare() {
+	runClaude(nil, false, false)
 }
 
 func parseClaudeFlags(args []string) (bool, bool, []string) {
@@ -571,7 +575,7 @@ func printHelp() {
   iq — IndexQube CLI
 
   USAGE
-    iq                   Start the daemon if needed and open the workspace UI
+    iq                   Start interactive Claude Code through IndexQube
     iq TEXT              Run a durable read-only task on the first compatible backend
     iq ui                Open the attachable terminal UI
     iq dashboard         Open the authenticated local dashboard
@@ -590,7 +594,7 @@ func printHelp() {
     iq continue TASK TEXT Continue a task; recover if its native session is lost
     iq handoff TASK --to BACKEND [TEXT]
                          Continue an open task on another backend using canonical context
-    iq claude            Start Claude Code via IndexQube
+    iq claude            Explicit alias for the bare interactive experience
     iq claude --dev      Start Claude Code, dev mode (relaxed guards)
     iq claude --dump-payloads
                          Dump Anthropic payloads to .indexqube/dumps/iq-session-*.jsonl
