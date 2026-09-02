@@ -2,6 +2,7 @@
 package taskstore
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/Revanth14/indexqube/gateway/internal/agent"
@@ -165,6 +166,34 @@ type CreateTurnInput struct {
 	Backend        agent.BackendID
 	IdempotencyKey string
 	Now            time.Time
+}
+
+type CreateHandoffInput struct {
+	HandoffID            string
+	TaskID               string
+	TurnID               string
+	RouteAttemptID       string
+	FromBackend          agent.BackendID
+	ToBackend            agent.BackendID
+	Message              string
+	Permission           agent.PermissionMode
+	WorkspaceFingerprint string
+	Packet               json.RawMessage
+	IdempotencyKey       string
+	Now                  time.Time
+}
+
+// Handoff is the durable boundary between two backend-native conversations.
+// Packet is the exact bounded canonical context delivered to the destination.
+type Handoff struct {
+	ID                   string          `json:"handoff_id"`
+	TaskID               string          `json:"task_id"`
+	TurnID               string          `json:"turn_id"`
+	FromBackend          agent.BackendID `json:"from_backend"`
+	ToBackend            agent.BackendID `json:"to_backend"`
+	WorkspaceFingerprint string          `json:"workspace_fingerprint"`
+	Packet               json.RawMessage `json:"packet"`
+	CreatedAt            time.Time       `json:"created_at"`
 }
 
 // InterruptedRun is the minimal canonical state needed to reconcile a turn
@@ -344,6 +373,7 @@ type TaskEvidence struct {
 	Turns            []Turn              `json:"turns"`
 	Sessions         []BackendSession    `json:"backend_sessions"`
 	Routes           []RouteAttempt      `json:"route_attempts"`
+	Handoffs         []Handoff           `json:"handoffs"`
 	Snapshots        []WorkspaceSnapshot `json:"workspace_snapshots"`
 	Commands         []CommandEvidence   `json:"commands"`
 	Files            []FileEvidence      `json:"files_changed"`

@@ -66,6 +66,8 @@ func main() {
 		runCancel(os.Args[2:])
 	case "continue":
 		runContinue(os.Args[2:])
+	case "handoff":
+		runHandoff(os.Args[2:])
 	case "claude":
 		devMode, dumpPayloads, claudeArgs := parseClaudeFlags(os.Args[2:])
 		runClaude(claudeArgs, devMode, dumpPayloads)
@@ -570,6 +572,8 @@ func printHelp() {
     iq task close TASK     Close an idle task
     iq task reopen TASK    Reopen a closed task or acknowledge needs_attention
     iq continue TASK TEXT Continue a task; recover if its native session is lost
+    iq handoff TASK --to BACKEND [TEXT]
+                         Continue an open task on another backend using canonical context
     iq claude            Start Claude Code via IndexQube
     iq claude --dev      Start Claude Code, dev mode (relaxed guards)
     iq claude --dump-payloads

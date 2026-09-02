@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -53,6 +54,7 @@ func TestControlAPIRequiresAuthenticationOnEveryRoute(t *testing.T) {
 		{http.MethodGet, "/control/v1/tasks/task/state"},
 		{http.MethodGet, "/control/v1/tasks/task/evidence"},
 		{http.MethodPost, "/control/v1/tasks/task/turns"},
+		{http.MethodPost, "/control/v1/tasks/task/handoffs"},
 		{http.MethodPost, "/control/v1/tasks/task/cancel"},
 		{http.MethodPost, "/control/v1/tasks/task/close"},
 		{http.MethodPost, "/control/v1/tasks/task/reopen"},
@@ -92,6 +94,79 @@ func TestControlAPIRequiresAuthenticationOnEveryRoute(t *testing.T) {
 	if got := rec.Header().Get(AuthContractHeader); got != AuthContractValue {
 		t.Fatalf("authenticated health contract header=%q", got)
 	}
+}
+
+type controlHandoffBackend struct{}
+
+func (controlHandoffBackend) ID() agent.BackendID { return agent.BackendClaude }
+func (controlHandoffBackend) Probe(context.Context) agent.BackendHealth {
+	return agent.BackendHealth{Backend: agent.BackendClaude, Status: agent.HealthAvailable, CheckedAt: time.Now().UTC()}
+}
+func (controlHandoffBackend) Execute(_ context.Context, req agent.Request, _ agent.EventSink) (agent.Result, error) {
+	if !strings.Contains(req.Prompt, "INDEXQUBE CANONICAL HANDOFF") {
+		return agent.Result{}, errors.New("missing canonical handoff packet")
+	}
+	return agent.Result{NativeSessionID: "control-handoff-session", FinalMessage: "handoff complete"}, nil
+}
+
+func TestHandoffAPIStartsDestinationAndReturnsDurablePacket(t *testing.T) {
+	handler, root := newControlHandoffTestHandler(t)
+	body, _ := json.Marshal(createTaskRequest{
+		Workspace: root, Prompt: "initial task", Backend: agent.BackendFake, Permission: agent.PermissionReadOnly,
+	})
+	create := authorizedControlRequest(http.MethodPost, "/control/v1/tasks", bytes.NewReader(body))
+	created := httptest.NewRecorder()
+	handler.ServeHTTP(created, create)
+	if created.Code != http.StatusAccepted {
+		t.Fatalf("create status=%d body=%s", created.Code, created.Body.String())
+	}
+	var task taskstore.Task
+	if err := json.Unmarshal(created.Body.Bytes(), &task); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	open := false
+	for time.Now().Before(deadline) {
+		stored, ok, err := handler.service.Task(context.Background(), task.ID)
+		if err == nil && ok && stored.Status == taskstore.TaskOpen {
+			open = true
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !open {
+		t.Fatal("timed out waiting for source task completion")
+	}
+	handoffBody, _ := json.Marshal(handoffTaskRequest{ToBackend: agent.BackendClaude, Prompt: "finish on Claude"})
+	request := authorizedControlRequest(http.MethodPost, "/control/v1/tasks/"+task.ID+"/handoffs", bytes.NewReader(handoffBody))
+	request.SetPathValue("taskID", task.ID)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("handoff status=%d body=%s", response.Code, response.Body.String())
+	}
+	var result struct {
+		Task    taskstore.Task    `json:"task"`
+		Handoff taskstore.Handoff `json:"handoff"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Task.PreferredBackend != agent.BackendClaude || result.Handoff.ID == "" || !json.Valid(result.Handoff.Packet) {
+		t.Fatalf("result=%+v", result)
+	}
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		evidence, ok, err := handler.service.TaskEvidence(context.Background(), task.ID)
+		if err == nil && ok && evidence.Task.Status == taskstore.TaskOpen {
+			if len(evidence.Handoffs) != 1 || evidence.Routes[len(evidence.Routes)-1].DecisionReason != "explicit_handoff" {
+				t.Fatalf("evidence=%+v", evidence)
+			}
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("timed out waiting for handoff completion")
 }
 
 func TestCreateTaskAndReplaySSE(t *testing.T) {
@@ -374,6 +449,36 @@ func newControlApprovalTestHandler(t *testing.T) (*Handler, string) {
 		t.Fatal(err)
 	}
 	service, err := orchestrator.NewService(context.Background(), store, locks, orchestrator.NewRegistry(controlApprovalBackend{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return NewHandler(service, controlTestToken), root
+}
+
+func newControlHandoffTestHandler(t *testing.T) (*Handler, string) {
+	t.Helper()
+	root := t.TempDir()
+	runControlGit(t, root, "init", "-q")
+	runControlGit(t, root, "config", "user.email", "test@indexqube.local")
+	runControlGit(t, root, "config", "user.name", "IndexQube Test")
+	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("test\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runControlGit(t, root, "add", "README.md")
+	runControlGit(t, root, "commit", "-q", "-m", "initial")
+	state := t.TempDir()
+	store, err := taskstore.Open(filepath.Join(state, "tasks.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	locks, err := workspace.NewLockManager(filepath.Join(state, "locks"), store, "control-handoff-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	binary, _ := os.Executable()
+	source := fake.NewCommand(agent.NewRunner(), binary, []string{"-test.run=TestControlFakeAgentProcess"}, []string{"INDEXQUBE_CONTROL_FAKE_HELPER=1"})
+	service, err := orchestrator.NewService(context.Background(), store, locks, orchestrator.NewRegistry(source, controlHandoffBackend{}))
 	if err != nil {
 		t.Fatal(err)
 	}

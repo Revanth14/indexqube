@@ -2,6 +2,7 @@ package taskstore
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -19,6 +20,53 @@ func openTestStore(t *testing.T) *Store {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	return store
+}
+
+func TestCreateHandoffTurnAtomicallyPinsBackendAndPersistsPacket(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	task, firstTurn, firstRoute, err := store.CreateTask(ctx, CreateTaskInput{
+		TaskID: "task_handoff", TurnID: "turn_initial", RouteAttemptID: "route_initial",
+		WorkspaceID: "ws", WorkspacePath: "/repo", Goal: "ship it", Permission: agent.PermissionReadOnly,
+		PreferredBackend: agent.BackendCodex, Now: now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CompleteTurn(ctx, task.ID, firstTurn.ID, firstRoute.ID, "initial answer", "fp-1", false, false, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	packet := json.RawMessage(`{"version":1,"current_request":"continue"}`)
+	turn, route, handoff, err := store.CreateHandoffTurn(ctx, CreateHandoffInput{
+		HandoffID: "handoff_1", TaskID: task.ID, TurnID: "turn_handoff", RouteAttemptID: "route_handoff",
+		FromBackend: agent.BackendCodex, ToBackend: agent.BackendClaude, Message: "continue",
+		Permission: agent.PermissionReadOnly, WorkspaceFingerprint: "fp-1", Packet: packet, Now: now.Add(2 * time.Second),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if turn.Sequence != 2 || route.DecisionReason != "explicit_handoff" || handoff.WorkspaceFingerprint != "fp-1" {
+		t.Fatalf("turn=%+v route=%+v handoff=%+v", turn, route, handoff)
+	}
+	stored, ok, err := store.TaskByID(ctx, task.ID)
+	if err != nil || !ok || stored.Status != TaskRunning || stored.PreferredBackend != agent.BackendClaude {
+		t.Fatalf("task=%+v ok=%v err=%v", stored, ok, err)
+	}
+	evidence, ok, err := store.TaskEvidence(ctx, task.ID)
+	if err != nil || !ok || len(evidence.Handoffs) != 1 || string(evidence.Handoffs[0].Packet) != string(packet) {
+		t.Fatalf("evidence=%+v ok=%v err=%v", evidence, ok, err)
+	}
+	if _, _, _, err := store.CreateHandoffTurn(ctx, CreateHandoffInput{
+		HandoffID: "handoff_2", TaskID: task.ID, TurnID: "turn_handoff_2", RouteAttemptID: "route_handoff_2",
+		FromBackend: agent.BackendCodex, ToBackend: agent.BackendClaude, Message: "race",
+		Permission: agent.PermissionReadOnly, Packet: packet, Now: now.Add(3 * time.Second),
+	}); err == nil {
+		t.Fatal("second handoff reservation succeeded")
+	}
+	if count, err := store.CountRows(ctx, "task_handoffs"); err != nil || count != 1 {
+		t.Fatalf("handoff count=%d err=%v", count, err)
+	}
 }
 
 func TestCreateTaskPersistsCanonicalBundleAndLineage(t *testing.T) {

@@ -47,7 +47,7 @@ The original plan described a greenfield project. That is no longer accurate. Th
 | Task CLI | Shipped foundation | Task creation/listing/evidence/continuation plus retry-safe `iq cancel` and explicit task close/reopen use authenticated loopback requests. |
 | Codex task backend | Shipped foundation | Read-only execution plus guarded App Server workspace-write execution, durable command/file approvals, event parsing, evidence, native-session resume, and lost-session detection work. |
 | Claude task backend | Partial | Read-only and guarded workspace-write execution, private MCP permission routing, durable command/file approvals, normalized evidence, native-session continuation, lost-session recovery signals, and protocol fixtures exist; handoff and broader compatibility coverage remain. |
-| Routing and handoff | Partial | Backend selection is explicit and a lost session can recover within one backend; there is no policy router or cross-backend handoff. |
+| Routing and handoff | Partial | Backend selection, durable canonical cross-backend handoff, fresh destination lineage, and lost-session recovery exist; task pinning, failure classification, and automatic policy routing remain. |
 | Verification | Advanced foundation | Successful write turns persist verification runs/checks; strict configured recipes plus conservative Go, Node, Python, and Rust detection run with bounded output, timeouts, offline dependency controls, workspace-stability checks, and task-scoped security findings with explicit severity policy. |
 | User experience | Partial | Durable task listing, evidence inspection, and approval commands work; there is no TUI or active dashboard, and bare `iq` still opens the legacy Claude wrapper. |
 | Data plane | Advanced | Claude Messages and OpenAI Responses ingress, provider adapters, streaming, optimization, prompt-cache preservation, LSM/SQLite caches, telemetry, setup, audit, and benchmarking exist. |
@@ -166,8 +166,8 @@ Goal: make “one task, multiple workers” real without pretending routing is i
 - [x] Establish a read-only Claude Code backend using the shared process supervisor, restricted tool set, normalized batched events, native session IDs, and deterministic stream-JSON fixtures.
 - [x] Complete the Claude Code backend with guarded workspace-write execution and durable permission handling using the same normalized event contract.
 - Keep Claude task execution separate from Anthropic API proxying; the backend may opt into the data plane without depending on it for correctness.
-- Support native Claude session creation, continuation, version probing, cancellation, and lost-session recovery.
-- Build a canonical handoff packet from:
+- [x] Support native Claude session creation, continuation, version probing, cancellation, and lost-session recovery.
+- [x] Build a canonical handoff packet from:
   - original goal;
   - completed user/assistant turns;
   - current request;
@@ -175,9 +175,9 @@ Goal: make “one task, multiple workers” real without pretending routing is i
   - changed files and command summaries;
   - latest verification result;
   - bounded failure reason.
-- Add explicit commands first: `--backend codex`, `--backend claude`, `iq handoff TASK --to claude`, and task pinning.
+- [x] Add explicit backend selection and `iq handoff TASK --to claude`; task pinning remains.
 - Add deterministic ordered fallback only for classified pre-mutation failures such as unavailable binary, rate limit, provider unavailability, or lost native session.
-- Record every route decision and handoff as canonical state.
+- [x] Record every route decision and handoff as canonical state.
 
 Exit criteria:
 
@@ -195,7 +195,7 @@ Goal: IndexQube reports evidence, not merely an agent's claim of completion.
 - [x] Distinguish `agent_succeeded`, `verified`, `verification_failed`, and `verification_skipped`.
 - [x] Integrate the existing audit engine as a separate security check with severity and evidence.
 - [x] Include verification output in `TaskEvidence`, task events, and CLI task summaries.
-- [ ] Include verification output in future handoff packets.
+- [x] Include verification output in handoff packets.
 
 Exit criteria:
 
@@ -259,7 +259,7 @@ Work in this order:
 7. **In progress:** durable verification, strict recipes, Go/Node/Python/Rust detection, and post-turn evidence are done; separate audit evidence remains.
 8. **Done:** daemon-scoped control API authentication, owner-only credential storage, restart rotation, CLI injection, and legacy-daemon rejection.
 9. **In progress:** Claude read-only/write execution, private permission MCP routing, durable approvals, and protocol fixtures are implemented; broader CLI-version compatibility fixtures remain.
-10. Explicit handoff, task pinning, and conservative failure classification.
+10. **In progress:** explicit handoff is implemented; task pinning and conservative failure classification remain.
 11. TUI.
 12. V1 hardening, packaging, and alpha feedback.
 

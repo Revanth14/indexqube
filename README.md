@@ -44,7 +44,7 @@ The operating rule is simple: **the agent is temporary; the task is not.**
 | Task-scoped security audit findings with severity and evidence | Shipped foundation |
 | Claude Code read-only/write task execution and native-session continuation | In progress |
 | Claude durable write approvals | Shipped foundation |
-| Explicit Codex/Claude handoff | Planned |
+| Explicit Codex/Claude handoff with durable canonical packets | Shipped foundation |
 | Daemon-scoped authentication on every control endpoint and SSE stream | Shipped foundation |
 | TUI and release installer | Planned |
 
@@ -112,6 +112,21 @@ has a durable `iq approve` or `iq deny` decision. Reads outside the workspace,
 symlink escapes, unknown tools, and commands too large to review safely are
 denied before execution.
 
+Move an idle open task to another backend without losing canonical history:
+
+```bash
+./bin/iq handoff TASK_ID --to claude
+./bin/iq handoff TASK_ID --to codex "review the remaining edge cases"
+```
+
+The handoff atomically pins the destination, creates a route attempt, and
+stores the exact bounded JSON packet sent to the fresh destination-native
+session. The packet includes the original goal, recent completed conversation,
+current request, current workspace fingerprint/diff, authoritative changed
+files, command summaries, latest verification result, and latest failure.
+Handoffs are rejected while a task is active, awaiting approval, closed, or
+`needs_attention`; inspect and explicitly reopen uncertain tasks first.
+
 IndexQube streams the run and prints the task ID. The durable record remains
 available after the command exits:
 
@@ -120,6 +135,7 @@ available after the command exits:
 ./bin/iq task status TASK_ID
 ./bin/iq task show TASK_ID
 ./bin/iq continue TASK_ID "check the remaining edge cases"
+./bin/iq handoff TASK_ID --to claude
 ```
 
 Stop the daemon when finished:

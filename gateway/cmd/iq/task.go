@@ -292,6 +292,12 @@ func renderTaskEvidence(out io.Writer, evidence taskstore.TaskEvidence) {
 			fmt.Fprintf(out, "  %s #%d — %s (%s)\n", route.Backend, route.Ordinal, route.Status, route.DecisionReason)
 		}
 	}
+	if len(evidence.Handoffs) > 0 {
+		fmt.Fprintln(out, "\nHandoffs:")
+		for _, handoff := range evidence.Handoffs {
+			fmt.Fprintf(out, "  %s — %s -> %s (turn %s)\n", handoff.ID, handoff.FromBackend, handoff.ToBackend, handoff.TurnID)
+		}
+	}
 	fmt.Fprintf(out, "\nEvidence: %d snapshots, %d events, %d native sessions\n",
 		len(evidence.Snapshots), len(evidence.Events), len(evidence.Sessions))
 }

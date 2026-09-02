@@ -37,6 +37,7 @@ func NewHandler(service *orchestrator.Service, token string) *Handler {
 	h.mux.HandleFunc("GET /control/v1/tasks/{taskID}/state", h.getTaskState)
 	h.mux.HandleFunc("GET /control/v1/tasks/{taskID}/evidence", h.getTaskEvidence)
 	h.mux.HandleFunc("POST /control/v1/tasks/{taskID}/turns", h.continueTask)
+	h.mux.HandleFunc("POST /control/v1/tasks/{taskID}/handoffs", h.handoffTask)
 	h.mux.HandleFunc("POST /control/v1/tasks/{taskID}/cancel", h.cancelTask)
 	h.mux.HandleFunc("POST /control/v1/tasks/{taskID}/close", h.closeTask)
 	h.mux.HandleFunc("POST /control/v1/tasks/{taskID}/reopen", h.reopenTask)
@@ -47,6 +48,42 @@ func NewHandler(service *orchestrator.Service, token string) *Handler {
 type continueTaskRequest struct {
 	Prompt         string `json:"prompt"`
 	IdempotencyKey string `json:"idempotency_key,omitempty"`
+}
+
+type handoffTaskRequest struct {
+	ToBackend      agent.BackendID `json:"to_backend"`
+	Prompt         string          `json:"prompt,omitempty"`
+	IdempotencyKey string          `json:"idempotency_key,omitempty"`
+}
+
+func (h *Handler) handoffTask(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	var body handoffTaskRequest
+	if err := dec.Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err)
+		return
+	}
+	after, err := h.service.LatestEventSequence(r.Context(), r.PathValue("taskID"))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "state_error", err)
+		return
+	}
+	result, err := h.service.HandoffTask(r.Context(), orchestrator.HandoffTaskInput{
+		TaskID: r.PathValue("taskID"), ToBackend: body.ToBackend, Prompt: body.Prompt, IdempotencyKey: body.IdempotencyKey,
+	})
+	if errors.Is(err, taskstore.ErrTaskNotFound) {
+		writeError(w, http.StatusNotFound, "task_not_found", err)
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusConflict, "handoff_rejected", err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"task": result.Task, "handoff": result.Handoff, "after_sequence": after,
+	})
 }
 
 func (h *Handler) continueTask(w http.ResponseWriter, r *http.Request) {

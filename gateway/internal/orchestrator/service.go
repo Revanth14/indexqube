@@ -61,6 +61,14 @@ type activeTurn struct {
 	cancel context.CancelFunc
 }
 
+type executeOptions struct {
+	priorSession          *taskstore.BackendSession
+	prompt                string
+	sessionCreationReason string
+	predecessorSessionID  string
+	routeMetadata         map[string]string
+}
+
 type Service struct {
 	ctx      context.Context
 	store    *taskstore.Store
@@ -138,7 +146,7 @@ func (s *Service) StartTask(ctx context.Context, input StartTaskInput) (taskstor
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
-		s.execute(turnCtx, task, turn, attempt, backend, identity, nil)
+		s.execute(turnCtx, task, turn, attempt, backend, identity, executeOptions{})
 	}()
 	return task, nil
 }
@@ -200,12 +208,12 @@ func (s *Service) ContinueTask(ctx context.Context, input ContinueTaskInput) (ta
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
-		s.execute(turnCtx, task, turn, attempt, backend, identity, prior)
+		s.execute(turnCtx, task, turn, attempt, backend, identity, executeOptions{priorSession: prior})
 	}()
 	return task, nil
 }
 
-func (s *Service) execute(ctx context.Context, task taskstore.Task, turn taskstore.Turn, attempt taskstore.RouteAttempt, backend agent.Backend, identity workspace.Identity, priorSession *taskstore.BackendSession) {
+func (s *Service) execute(ctx context.Context, task taskstore.Task, turn taskstore.Turn, attempt taskstore.RouteAttempt, backend agent.Backend, identity workspace.Identity, options executeOptions) {
 	defer func() {
 		s.mu.Lock()
 		if active, ok := s.cancels[task.ID]; ok && active.turnID == turn.ID {
@@ -245,6 +253,7 @@ func (s *Service) execute(ctx context.Context, task taskstore.Task, turn tasksto
 	}
 	_ = s.emit(ctx, agent.Event{
 		Type: agent.EventRouteSelected, TaskID: task.ID, TurnID: turn.ID, Backend: backend.ID(),
+		Metadata: options.routeMetadata,
 	})
 
 	tracker := &turnEventSink{
@@ -256,21 +265,25 @@ func (s *Service) execute(ctx context.Context, task taskstore.Task, turn tasksto
 		processGuard = guard
 	}
 	currentAttempt := attempt
-	if priorSession != nil {
-		_ = s.store.AttachBackendSession(ctx, turn.ID, currentAttempt.ID, priorSession.ID)
+	if options.priorSession != nil {
+		_ = s.store.AttachBackendSession(ctx, turn.ID, currentAttempt.ID, options.priorSession.ID)
 	}
 	nativeSessionID := ""
-	if priorSession != nil {
-		nativeSessionID = priorSession.NativeSessionID
+	if options.priorSession != nil {
+		nativeSessionID = options.priorSession.NativeSessionID
+	}
+	executionPrompt := turn.UserMessage
+	if options.prompt != "" {
+		executionPrompt = options.prompt
 	}
 	result, runErr := backend.Execute(ctx, agent.Request{
-		TaskID: task.ID, TurnID: turn.ID, Workspace: identity.Root, Prompt: turn.UserMessage,
+		TaskID: task.ID, TurnID: turn.ID, Workspace: identity.Root, Prompt: executionPrompt,
 		Permission: task.Permission, NativeSessionID: nativeSessionID, WriteEpoch: epoch, Guard: processGuard,
 		Approvals: &turnApprovalHandler{service: s, taskID: task.ID, turnID: turn.ID, backend: backend.ID()},
 	}, tracker)
 	mutationBeforeRecovery := false
 	recoveredNativeSession := false
-	if result.ResumeLost && priorSession != nil && !errors.Is(runErr, context.Canceled) {
+	if result.ResumeLost && options.priorSession != nil && !errors.Is(runErr, context.Canceled) {
 		check, checkErr := workspace.Capture(context.Background(), identity, task.ID, turn.ID, "resume_recovery_check")
 		if checkErr == nil {
 			checkErr = s.store.AddSnapshot(context.Background(), check)
@@ -282,7 +295,7 @@ func (s *Service) execute(ctx context.Context, task taskstore.Task, turn tasksto
 		mutationBeforeRecovery = tracker.mutationSeen || result.MutationSeen || (checkErr == nil && pre.Fingerprint != check.Fingerprint)
 		if checkErr == nil && !mutationBeforeRecovery {
 			_ = s.store.FailRouteAttempt(context.Background(), currentAttempt.ID, "resume_lost", check.Fingerprint, false, time.Now().UTC())
-			_ = s.store.SetBackendSessionStatus(context.Background(), priorSession.ID, "resume_lost", time.Now().UTC())
+			_ = s.store.SetBackendSessionStatus(context.Background(), options.priorSession.ID, "resume_lost", time.Now().UTC())
 			recoveryAttempt := taskstore.RouteAttempt{
 				ID: taskstore.NewID("route"), TurnID: turn.ID, Ordinal: currentAttempt.Ordinal + 1, Backend: backend.ID(),
 				DecisionReason: "native_session_recovery", Status: "running", PreFingerprint: check.Fingerprint, StartedAt: time.Now().UTC(),
@@ -402,12 +415,15 @@ func (s *Service) execute(ctx context.Context, task taskstore.Task, turn tasksto
 	}
 
 	if result.NativeSessionID != "" {
-		if priorSession == nil || result.NativeSessionID != priorSession.NativeSessionID {
-			reason := "initial"
-			predecessor := ""
+		if options.priorSession == nil || result.NativeSessionID != options.priorSession.NativeSessionID {
+			reason := options.sessionCreationReason
+			if reason == "" {
+				reason = "initial"
+			}
+			predecessor := options.predecessorSessionID
 			if recoveredNativeSession {
 				reason = "native_session_recovery"
-				predecessor = priorSession.ID
+				predecessor = options.priorSession.ID
 			}
 			session := taskstore.BackendSession{
 				ID: taskstore.NewID("bs"), TaskID: task.ID, Backend: backend.ID(), NativeSessionID: result.NativeSessionID,
@@ -417,7 +433,7 @@ func (s *Service) execute(ctx context.Context, task taskstore.Task, turn tasksto
 				_ = s.store.AttachBackendSession(context.Background(), turn.ID, currentAttempt.ID, session.ID)
 			}
 		} else {
-			_ = s.store.AttachBackendSession(context.Background(), turn.ID, currentAttempt.ID, priorSession.ID)
+			_ = s.store.AttachBackendSession(context.Background(), turn.ID, currentAttempt.ID, options.priorSession.ID)
 		}
 	}
 

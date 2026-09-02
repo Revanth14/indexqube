@@ -88,6 +88,19 @@ CREATE TABLE IF NOT EXISTS route_attempts (
     UNIQUE(turn_id, ordinal)
 );
 
+CREATE TABLE IF NOT EXISTS task_handoffs (
+    handoff_id           TEXT PRIMARY KEY,
+    task_id              TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
+    turn_id              TEXT NOT NULL UNIQUE REFERENCES turns(turn_id) ON DELETE CASCADE,
+    from_backend         TEXT NOT NULL,
+    to_backend           TEXT NOT NULL,
+    workspace_fingerprint TEXT NOT NULL,
+    packet_json          TEXT NOT NULL,
+    created_at           INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS task_handoffs_task_idx ON task_handoffs(task_id, created_at);
+
 CREATE TABLE IF NOT EXISTS workspace_snapshots (
     snapshot_id         TEXT PRIMARY KEY,
     task_id             TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
@@ -405,6 +418,77 @@ func (s *Store) CreateTurn(ctx context.Context, in CreateTurnInput) (Turn, Route
 		return Turn{}, RouteAttempt{}, err
 	}
 	return turn, attempt, nil
+}
+
+// CreateHandoffTurn atomically reserves an open task, pins the destination
+// backend, and persists the exact canonical packet dispatched with the turn.
+func (s *Store) CreateHandoffTurn(ctx context.Context, in CreateHandoffInput) (Turn, RouteAttempt, Handoff, error) {
+	if in.Now.IsZero() {
+		in.Now = time.Now().UTC()
+	}
+	if in.FromBackend == "" || in.ToBackend == "" || in.FromBackend == in.ToBackend {
+		return Turn{}, RouteAttempt{}, Handoff{}, fmt.Errorf("taskstore: handoff requires distinct source and destination backends")
+	}
+	if len(in.Packet) == 0 || !json.Valid(in.Packet) {
+		return Turn{}, RouteAttempt{}, Handoff{}, fmt.Errorf("taskstore: handoff packet must be valid JSON")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Turn{}, RouteAttempt{}, Handoff{}, err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `UPDATE tasks SET status=?,preferred_backend=?,revision=revision+1,updated_at=?,retention_deadline=?
+		WHERE task_id=? AND status=? AND preferred_backend=?`, TaskRunning, in.ToBackend, in.Now.UnixMilli(),
+		in.Now.Add(30*24*time.Hour).UnixMilli(), in.TaskID, TaskOpen, in.FromBackend)
+	if err != nil {
+		return Turn{}, RouteAttempt{}, Handoff{}, err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return Turn{}, RouteAttempt{}, Handoff{}, err
+	}
+	if rows != 1 {
+		return Turn{}, RouteAttempt{}, Handoff{}, fmt.Errorf("taskstore: task %s is not open on backend %s", in.TaskID, in.FromBackend)
+	}
+	var sequence int64
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(sequence),0)+1 FROM turns WHERE task_id=?`, in.TaskID).Scan(&sequence); err != nil {
+		return Turn{}, RouteAttempt{}, Handoff{}, err
+	}
+	turn := Turn{
+		ID: in.TurnID, TaskID: in.TaskID, Sequence: sequence, IdempotencyKey: in.IdempotencyKey,
+		UserMessage: in.Message, Permission: in.Permission, Status: TurnQueued, CreatedAt: in.Now,
+	}
+	attempt := RouteAttempt{
+		ID: in.RouteAttemptID, TurnID: in.TurnID, Ordinal: 1, Backend: in.ToBackend,
+		DecisionReason: "explicit_handoff", Status: "queued", StartedAt: in.Now,
+	}
+	handoff := Handoff{
+		ID: in.HandoffID, TaskID: in.TaskID, TurnID: in.TurnID, FromBackend: in.FromBackend,
+		ToBackend: in.ToBackend, WorkspaceFingerprint: in.WorkspaceFingerprint,
+		Packet: append(json.RawMessage(nil), in.Packet...), CreatedAt: in.Now,
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO turns
+		(turn_id,task_id,sequence,idempotency_key,user_message,permission_mode,status,created_at)
+		VALUES(?,?,?,?,?,?,?,?)`, turn.ID, turn.TaskID, turn.Sequence, nullableString(turn.IdempotencyKey),
+		turn.UserMessage, turn.Permission, turn.Status, in.Now.UnixMilli()); err != nil {
+		return Turn{}, RouteAttempt{}, Handoff{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO route_attempts
+		(route_attempt_id,turn_id,ordinal,backend,decision_reason,status,started_at)
+		VALUES(?,?,?,?,?,?,?)`, attempt.ID, attempt.TurnID, attempt.Ordinal, attempt.Backend,
+		attempt.DecisionReason, attempt.Status, in.Now.UnixMilli()); err != nil {
+		return Turn{}, RouteAttempt{}, Handoff{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO task_handoffs
+		(handoff_id,task_id,turn_id,from_backend,to_backend,workspace_fingerprint,packet_json,created_at)
+		VALUES(?,?,?,?,?,?,?,?)`, handoff.ID, handoff.TaskID, handoff.TurnID, handoff.FromBackend,
+		handoff.ToBackend, handoff.WorkspaceFingerprint, string(handoff.Packet), handoff.CreatedAt.UnixMilli()); err != nil {
+		return Turn{}, RouteAttempt{}, Handoff{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Turn{}, RouteAttempt{}, Handoff{}, err
+	}
+	return turn, attempt, handoff, nil
 }
 
 func (s *Store) StartTurn(ctx context.Context, taskID, turnID, attemptID string, epoch uint64, now time.Time) error {
@@ -1201,6 +1285,9 @@ func (s *Store) TaskEvidence(ctx context.Context, taskID string) (TaskEvidence, 
 	if evidence.Routes, err = s.routeAttempts(ctx, taskID); err != nil {
 		return TaskEvidence{}, false, err
 	}
+	if evidence.Handoffs, err = s.handoffs(ctx, taskID); err != nil {
+		return TaskEvidence{}, false, err
+	}
 	if evidence.Snapshots, err = s.workspaceSnapshots(ctx, taskID); err != nil {
 		return TaskEvidence{}, false, err
 	}
@@ -1408,6 +1495,29 @@ func (s *Store) routeAttempts(ctx context.Context, taskID string) ([]RouteAttemp
 		routes = append(routes, route)
 	}
 	return routes, rows.Err()
+}
+
+func (s *Store) handoffs(ctx context.Context, taskID string) ([]Handoff, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT handoff_id,task_id,turn_id,from_backend,to_backend,
+		workspace_fingerprint,packet_json,created_at FROM task_handoffs WHERE task_id=? ORDER BY created_at,rowid`, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	handoffs := make([]Handoff, 0)
+	for rows.Next() {
+		var handoff Handoff
+		var packet string
+		var created int64
+		if err := rows.Scan(&handoff.ID, &handoff.TaskID, &handoff.TurnID, &handoff.FromBackend,
+			&handoff.ToBackend, &handoff.WorkspaceFingerprint, &packet, &created); err != nil {
+			return nil, err
+		}
+		handoff.Packet = json.RawMessage(packet)
+		handoff.CreatedAt = time.UnixMilli(created).UTC()
+		handoffs = append(handoffs, handoff)
+	}
+	return handoffs, rows.Err()
 }
 
 func (s *Store) workspaceSnapshots(ctx context.Context, taskID string) ([]WorkspaceSnapshot, error) {
@@ -1704,6 +1814,7 @@ func (s *Store) ReleaseWriteEpoch(ctx context.Context, workspaceID string, epoch
 func (s *Store) CountRows(ctx context.Context, table string) (int, error) {
 	allowed := map[string]bool{
 		"tasks": true, "turns": true, "backend_sessions": true, "route_attempts": true,
+		"task_handoffs":       true,
 		"workspace_snapshots": true, "workspace_file_states": true, "workspace_file_deltas": true,
 		"approvals": true, "task_cancellations": true, "events": true, "outbox": true, "workspace_write_epochs": true,
 	}

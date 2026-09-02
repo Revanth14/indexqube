@@ -15,6 +15,10 @@ var allowedMetadata = map[string]bool{
 	"error_code":          true,
 	"verification_run_id": true,
 	"verification_status": true,
+	"decision_reason":     true,
+	"handoff_id":          true,
+	"from_backend":        true,
+	"to_backend":          true,
 }
 
 func NormalizeMetadata(input map[string]string) map[string]string {

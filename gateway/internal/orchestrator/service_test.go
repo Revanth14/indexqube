@@ -122,6 +122,266 @@ func TestFakeTaskPersistsCanonicalMilestone(t *testing.T) {
 	}
 }
 
+type handoffCaptureBackend struct {
+	id         agent.BackendID
+	requests   chan agent.Request
+	health     agent.HealthStatus
+	resumeLost bool
+}
+
+func (b *handoffCaptureBackend) ID() agent.BackendID { return b.id }
+
+func (b *handoffCaptureBackend) Probe(context.Context) agent.BackendHealth {
+	status := b.health
+	if status == "" {
+		status = agent.HealthAvailable
+	}
+	return agent.BackendHealth{Backend: b.id, Status: status, Reason: "fixture unavailable", CheckedAt: time.Now().UTC()}
+}
+
+func (b *handoffCaptureBackend) ValidatePermission(permission agent.PermissionMode) error {
+	if permission != agent.PermissionReadOnly && permission != agent.PermissionWrite {
+		return errors.New("unsupported permission")
+	}
+	return nil
+}
+
+func (b *handoffCaptureBackend) Execute(_ context.Context, request agent.Request, sink agent.EventSink) (agent.Result, error) {
+	b.requests <- request
+	if b.resumeLost && request.NativeSessionID != "" {
+		return agent.Result{ResumeLost: true}, errors.New("session not found")
+	}
+	_ = sink.Publish(context.Background(), agent.Event{
+		Type: agent.EventAssistantMessage, Message: &agent.MessageEvent{Text: "handoff destination answer"},
+	})
+	sessionID := "handoff-destination-session"
+	if strings.Contains(request.Prompt, "INDEXQUBE CANONICAL SESSION RECOVERY") {
+		sessionID = "handoff-recovered-session"
+	}
+	return agent.Result{NativeSessionID: sessionID, FinalMessage: "handoff destination answer"}, nil
+}
+
+func TestExplicitHandoffPersistsCanonicalPacketAndDestinationLineage(t *testing.T) {
+	service, store, root := newTestService(t)
+	source, err := service.registry.Get(agent.BackendFake)
+	if err != nil {
+		t.Fatal(err)
+	}
+	destination := &handoffCaptureBackend{id: agent.BackendClaude, requests: make(chan agent.Request, 1)}
+	service.registry = NewRegistry(source, destination)
+	task, err := service.StartTask(context.Background(), StartTaskInput{
+		Workspace: root, Prompt: "explain the repository", Backend: agent.BackendFake, Permission: agent.PermissionReadOnly,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForTerminal(t, service, task.ID)
+	sourceSession, ok, err := store.LatestBackendSession(context.Background(), task.ID, agent.BackendFake)
+	if err != nil || !ok {
+		t.Fatalf("source session=%+v ok=%v err=%v", sourceSession, ok, err)
+	}
+	after, err := service.LatestEventSequence(context.Background(), task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.HandoffTask(context.Background(), HandoffTaskInput{
+		TaskID: task.ID, ToBackend: agent.BackendClaude, Prompt: "review the remaining edge cases",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Task.PreferredBackend != agent.BackendClaude || result.Handoff.FromBackend != agent.BackendFake || result.Handoff.ToBackend != agent.BackendClaude {
+		t.Fatalf("result=%+v", result)
+	}
+	var request agent.Request
+	select {
+	case request = <-destination.requests:
+	case <-time.After(3 * time.Second):
+		t.Fatal("destination backend did not start")
+	}
+	if request.NativeSessionID != "" || !strings.Contains(request.Prompt, "INDEXQUBE CANONICAL HANDOFF") ||
+		!strings.Contains(request.Prompt, "explain the repository") || !strings.Contains(request.Prompt, "review the remaining edge cases") ||
+		!strings.HasSuffix(request.Prompt, string(result.Handoff.Packet)) {
+		t.Fatalf("destination request=%+v", request)
+	}
+	events := waitForTerminalAfter(t, service, task.ID, after)
+	if events[len(events)-1].Type != agent.EventCompleted {
+		t.Fatalf("events=%+v", events)
+	}
+	if events[0].Type != agent.EventRouteSelected || events[0].Metadata["handoff_id"] != result.Handoff.ID ||
+		events[0].Metadata["decision_reason"] != "explicit_handoff" {
+		t.Fatalf("handoff route event=%+v", events[0])
+	}
+	evidence, ok, err := store.TaskEvidence(context.Background(), task.ID)
+	if err != nil || !ok {
+		t.Fatalf("evidence ok=%v err=%v", ok, err)
+	}
+	if len(evidence.Handoffs) != 1 || len(evidence.Routes) != 2 || evidence.Routes[1].DecisionReason != "explicit_handoff" ||
+		evidence.Task.PreferredBackend != agent.BackendClaude || evidence.Task.Status != taskstore.TaskOpen {
+		t.Fatalf("evidence=%+v", evidence)
+	}
+	var packet CanonicalHandoffPacket
+	if err := json.Unmarshal(evidence.Handoffs[0].Packet, &packet); err != nil {
+		t.Fatal(err)
+	}
+	if packet.Version != 1 || packet.Workspace.Fingerprint == "" || packet.CurrentRequest != "review the remaining edge cases" || len(packet.Conversation) != 1 {
+		t.Fatalf("packet=%+v", packet)
+	}
+	destinationSession, ok, err := store.LatestBackendSession(context.Background(), task.ID, agent.BackendClaude)
+	if err != nil || !ok || destinationSession.CreationReason != "explicit_handoff" || destinationSession.PredecessorID != sourceSession.ID {
+		t.Fatalf("destination session=%+v ok=%v err=%v", destinationSession, ok, err)
+	}
+}
+
+func TestWriteTaskHandoffRetainsPermissionAndWorkspaceGuard(t *testing.T) {
+	service, _, root := newTestService(t)
+	source, err := service.registry.Get(agent.BackendFake)
+	if err != nil {
+		t.Fatal(err)
+	}
+	destination := &handoffCaptureBackend{id: agent.BackendClaude, requests: make(chan agent.Request, 1)}
+	service.registry = NewRegistry(source, destination)
+	task, err := service.StartTask(context.Background(), StartTaskInput{
+		Workspace: root, Prompt: "[fake:mutate]", Backend: agent.BackendFake, Permission: agent.PermissionWrite,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForTerminal(t, service, task.ID)
+	after, _ := service.LatestEventSequence(context.Background(), task.ID)
+	handoff, err := service.HandoffTask(context.Background(), HandoffTaskInput{TaskID: task.ID, ToBackend: agent.BackendClaude})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var packet CanonicalHandoffPacket
+	if err := json.Unmarshal(handoff.Handoff.Packet, &packet); err != nil || len(packet.Files) != 1 || packet.Verification == nil {
+		t.Fatalf("packet=%+v err=%v", packet, err)
+	}
+	select {
+	case request := <-destination.requests:
+		if request.Permission != agent.PermissionWrite || request.Guard == nil || request.WriteEpoch == 0 {
+			t.Fatalf("write handoff request=%+v", request)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("write destination did not start")
+	}
+	waitForTerminalAfter(t, service, task.ID, after)
+}
+
+func TestDestinationLostSessionRecoversFromCanonicalHistoryAfterHandoff(t *testing.T) {
+	service, store, root := newTestService(t)
+	source, err := service.registry.Get(agent.BackendFake)
+	if err != nil {
+		t.Fatal(err)
+	}
+	destination := &handoffCaptureBackend{id: agent.BackendClaude, requests: make(chan agent.Request, 4)}
+	service.registry = NewRegistry(source, destination)
+	task, err := service.StartTask(context.Background(), StartTaskInput{
+		Workspace: root, Prompt: "initial", Backend: agent.BackendFake, Permission: agent.PermissionReadOnly,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForTerminal(t, service, task.ID)
+	after, _ := service.LatestEventSequence(context.Background(), task.ID)
+	if _, err := service.HandoffTask(context.Background(), HandoffTaskInput{TaskID: task.ID, ToBackend: agent.BackendClaude}); err != nil {
+		t.Fatal(err)
+	}
+	waitForTerminalAfter(t, service, task.ID, after)
+	<-destination.requests
+	prior, ok, err := store.LatestBackendSession(context.Background(), task.ID, agent.BackendClaude)
+	if err != nil || !ok {
+		t.Fatalf("prior=%+v ok=%v err=%v", prior, ok, err)
+	}
+	destination.resumeLost = true
+	after, _ = service.LatestEventSequence(context.Background(), task.ID)
+	if _, err := service.ContinueTask(context.Background(), ContinueTaskInput{TaskID: task.ID, Prompt: "continue after handoff"}); err != nil {
+		t.Fatal(err)
+	}
+	events := waitForTerminalAfter(t, service, task.ID, after)
+	if events[len(events)-1].Type != agent.EventCompleted {
+		t.Fatalf("events=%+v", events)
+	}
+	resumed := <-destination.requests
+	recovered := <-destination.requests
+	if resumed.NativeSessionID != prior.NativeSessionID || recovered.NativeSessionID != "" ||
+		!strings.Contains(recovered.Prompt, "INDEXQUBE CANONICAL SESSION RECOVERY") {
+		t.Fatalf("resumed=%+v recovered=%+v", resumed, recovered)
+	}
+	latest, ok, err := store.LatestBackendSession(context.Background(), task.ID, agent.BackendClaude)
+	if err != nil || !ok || latest.NativeSessionID != "handoff-recovered-session" || latest.PredecessorID != prior.ID {
+		t.Fatalf("latest=%+v ok=%v err=%v", latest, ok, err)
+	}
+}
+
+func TestHandoffRejectsActiveNeedsAttentionSameAndUnavailableDestinations(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		prompt      string
+		permission  agent.PermissionMode
+		destination agent.BackendID
+		health      agent.HealthStatus
+		whileActive bool
+	}{
+		{name: "active", prompt: "[fake:sleep]", permission: agent.PermissionReadOnly, destination: agent.BackendClaude, whileActive: true},
+		{name: "needs attention", prompt: "[fake:mutate][fake:fail]", permission: agent.PermissionWrite, destination: agent.BackendClaude},
+		{name: "same backend", prompt: "done", permission: agent.PermissionReadOnly, destination: agent.BackendFake},
+		{name: "unavailable", prompt: "done", permission: agent.PermissionReadOnly, destination: agent.BackendClaude, health: agent.HealthUnavailable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			service, _, root := newTestService(t)
+			source, err := service.registry.Get(agent.BackendFake)
+			if err != nil {
+				t.Fatal(err)
+			}
+			destination := &handoffCaptureBackend{id: agent.BackendClaude, requests: make(chan agent.Request, 1), health: tc.health}
+			service.registry = NewRegistry(source, destination)
+			task, err := service.StartTask(context.Background(), StartTaskInput{
+				Workspace: root, Prompt: tc.prompt, Backend: agent.BackendFake, Permission: tc.permission,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !tc.whileActive {
+				waitForTerminal(t, service, task.ID)
+			}
+			if _, err := service.HandoffTask(context.Background(), HandoffTaskInput{TaskID: task.ID, ToBackend: tc.destination}); err == nil {
+				t.Fatal("unsafe handoff was accepted")
+			}
+			if tc.whileActive {
+				_, _ = service.Cancel(context.Background(), task.ID)
+				waitForTerminal(t, service, task.ID)
+			}
+		})
+	}
+}
+
+func TestCanonicalHandoffPacketIsValidAndBounded(t *testing.T) {
+	evidence := taskstore.TaskEvidence{Task: taskstore.Task{
+		ID: "task_large", OriginalGoal: strings.Repeat("goal", 20_000), PreferredBackend: agent.BackendCodex,
+		Permission: agent.PermissionReadOnly,
+	}}
+	for sequence := 1; sequence <= 80; sequence++ {
+		evidence.Turns = append(evidence.Turns, taskstore.Turn{
+			Sequence: int64(sequence), Status: taskstore.TurnSucceeded,
+			UserMessage: strings.Repeat("user", 4_000), AssistantMessage: strings.Repeat("assistant", 4_000),
+		})
+	}
+	for index := 0; index < 500; index++ {
+		evidence.Files = append(evidence.Files, taskstore.FileEvidence{Path: strings.Repeat("path", 300), Operation: "modified"})
+	}
+	packet := buildHandoffPacket(evidence, taskstore.WorkspaceSnapshot{
+		Fingerprint: "fingerprint", BoundedDiff: strings.Repeat("diff", 100_000),
+	}, agent.BackendClaude, strings.Repeat("request", 10_000))
+	raw, err := fitHandoffPacket(&packet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) > maxHandoffPacket || !json.Valid(raw) || !packet.Truncated {
+		t.Fatalf("packet bytes=%d valid=%v truncated=%v", len(raw), json.Valid(raw), packet.Truncated)
+	}
+}
+
 func TestCodexReadOnlyTaskUsesCanonicalStateAndRecoversLostSession(t *testing.T) {
 	service, store, root := newTestService(t)
 	binary, err := os.Executable()
