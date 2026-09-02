@@ -8,6 +8,7 @@ workspace="$smoke_root/workspace"
 state_dir="$smoke_root/state"
 daemon_pid=""
 approval_task_pid=""
+approval_root=""
 cancel_task_pid=""
 
 cleanup() {
@@ -22,6 +23,9 @@ cleanup() {
   if [[ -n "$daemon_pid" ]] && kill -0 "$daemon_pid" 2>/dev/null; then
     kill -TERM "$daemon_pid" 2>/dev/null || true
     wait "$daemon_pid" 2>/dev/null || true
+  fi
+  if [[ -n "$approval_root" ]]; then
+    rm -rf -- "$approval_root"
   fi
   rm -rf -- "$smoke_root"
 }
@@ -288,10 +292,12 @@ fi
 
 if [[ "${IQ_SMOKE_REAL_APPROVAL:-0}" == "1" ]]; then
   approval_log="$smoke_root/real-approval.log"
-  approved_file="$smoke_root/approved-outside-workspace.txt"
+  mkdir -p "$repo_root/.cache"
+  approval_root="$(mktemp -d "$repo_root/.cache/indexqube-approval-smoke.XXXXXX")"
+  approved_file="$approval_root/approved-outside-workspace.txt"
   INDEXQUBE_HOME="$state_dir" INDEXQUBE_CONTROL_URL="$control_url" \
     "$iq_bin" task --backend codex --workspace "$workspace" --write \
-    "Create $approved_file outside the Git workspace. Its entire content must be the words 'IndexQube durable approval smoke passed' with no punctuation; a trailing newline is allowed. Request approval when the sandbox requires it." \
+    "Create $approved_file outside the task Git workspace. Its entire content must be the words 'IndexQube durable approval smoke passed' with no punctuation; a trailing newline is allowed. Request approval when the sandbox requires it." \
     >"$approval_log" 2>&1 &
   approval_task_pid=$!
   approval_task_id=""
@@ -342,9 +348,13 @@ if [[ "${IQ_SMOKE_REAL_APPROVAL:-0}" == "1" ]]; then
   fi
   approval_show="$(INDEXQUBE_HOME="$state_dir" INDEXQUBE_CONTROL_URL="$control_url" \
     "$iq_bin" task show "$approval_task_id")"
-  grep -q 'Status: open' <<<"$approval_show"
-  grep -q 'Approvals:' <<<"$approval_show"
-  grep -q 'approved' <<<"$approval_show"
+  if ! grep -q 'Status: open' <<<"$approval_show" || \
+      ! grep -q 'Approvals:' <<<"$approval_show" || \
+      ! grep -q 'approved' <<<"$approval_show"; then
+    printf 'approved Codex task did not retain the expected durable evidence\n%s\n' \
+      "$approval_show" >&2
+    exit 1
+  fi
 fi
 
 backup_path="$state_dir/smoke-backup.db"

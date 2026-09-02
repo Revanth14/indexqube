@@ -4,11 +4,29 @@ IndexQube releases are four self-contained bundles: Linux and macOS on amd64
 and arm64. Each contains `iq`, the standalone `indexqube-gateway`, the installer,
 and the README.
 
+## Version and release names
+
+Release tags are immutable SemVer tags such as `v0.2.0`. While IndexQube is in
+alpha, ordinary `0.x` versions communicate that the public interface may still
+change and keep GitHub's `/releases/latest` installer URL working. Do not move or
+rename an existing tag.
+
+The Git tag for this release is `v0.2.0`, and the GitHub release title is
+`IndexQube v0.2.0`. Future releases follow the same `IndexQube vX.Y.Z` title
+format.
+
 ## Release contract
 
 1. Update the tested Codex/Claude version fixtures and run `make check`.
 2. Run the opt-in real-repository alpha lane documented in `scripts/real_repo_alpha.sh`.
-3. Push an annotated `v*` tag. The release workflow runs the race-enabled suite,
+3. Create and push an annotated `v*` tag. For example:
+
+   ```bash
+   git tag -a v0.2.0 -m "IndexQube v0.2.0"
+   git push origin v0.2.0
+   ```
+
+   The release workflow runs the race-enabled suite,
    tests installer update/rollback, cross-compiles all four bundles, writes
    SHA-256 checksums, creates a Sigstore-signed SLSA provenance attestation, and
    publishes immutable GitHub release assets.

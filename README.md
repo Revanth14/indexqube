@@ -544,7 +544,7 @@ PLAN.md                            product gates and implementation order
 
 Work is currently focused on:
 
-1. publishing the first signed alpha tag and collecting real-repository feedback;
+1. publishing the signed `v0.2.0` alpha and collecting real-repository feedback;
 2. Apple Developer ID notarization as distribution credentials become available;
 3. broader CLI compatibility fixtures driven by alpha evidence.
 

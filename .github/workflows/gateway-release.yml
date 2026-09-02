@@ -68,4 +68,4 @@ jobs:
           --repo "$GITHUB_REPOSITORY"
           --verify-tag
           --generate-notes
-          --title "$GITHUB_REF_NAME"
+          --title "IndexQube $GITHUB_REF_NAME"
