@@ -354,5 +354,7 @@ doctor_output="$(INDEXQUBE_HOME="$state_dir" "$iq_bin" doctor)"
 grep -q 'task database: ok' <<<"$doctor_output"
 grep -q 'control API: ok' <<<"$doctor_output"
 grep -q 'telemetry: disabled (default)' <<<"$doctor_output"
+metrics_json="$(INDEXQUBE_HOME="$state_dir" INDEXQUBE_CONTROL_URL="$control_url" "$iq_bin" metrics --json)"
+python3 -c 'import json,sys; m=json.loads(sys.argv[1]); assert m["tasks_total"] >= 1; assert m["turns_total"] >= 1; assert "successful_latency" in m; assert "verification_outcomes" in m' "$metrics_json"
 
 printf 'control-plane smoke passed: %s\n' "$task_id"

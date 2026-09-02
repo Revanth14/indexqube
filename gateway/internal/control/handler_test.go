@@ -49,6 +49,7 @@ func TestControlAPIRequiresAuthenticationOnEveryRoute(t *testing.T) {
 		{http.MethodGet, "/control/v1/dashboard-context"},
 		{http.MethodGet, "/control/ui/"},
 		{http.MethodGet, "/control/v1/backends"},
+		{http.MethodGet, "/control/v1/metrics"},
 		{http.MethodGet, "/control/v1/approvals"},
 		{http.MethodPost, "/control/v1/approvals/approval/decision"},
 		{http.MethodGet, "/control/v1/tasks"},
@@ -98,6 +99,23 @@ func TestControlAPIRequiresAuthenticationOnEveryRoute(t *testing.T) {
 	}
 	if got := rec.Header().Get(AuthContractHeader); got != AuthContractValue {
 		t.Fatalf("authenticated health contract header=%q", got)
+	}
+}
+
+func TestControlReliabilityMetricsAreCanonicalAggregateView(t *testing.T) {
+	handler, _ := newControlTestHandler(t)
+	req := authorizedControlRequest(http.MethodGet, "/control/v1/metrics", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var metrics taskstore.ReliabilityMetrics
+	if err := json.NewDecoder(rec.Body).Decode(&metrics); err != nil {
+		t.Fatal(err)
+	}
+	if metrics.TasksTotal != 0 || metrics.TurnsTotal != 0 || metrics.VerificationOutcomes == nil {
+		t.Fatalf("metrics=%+v", metrics)
 	}
 }
 

@@ -9,9 +9,9 @@ verification evidence alongside the result.
 
 [Website](https://indexqube.com) · [Product plan](./PLAN.md)
 
-> **Alpha:** the control plane is usable from source, but release packaging and
-> public installation are not ready. Treat the commands below as a contributor
-> preview, not a stable installation contract.
+> **Alpha:** the control plane and signed release pipeline are implemented, but
+> the first public V1 artifact has not been published. Treat source builds as a
+> contributor preview until a signed `v*` release is available.
 
 ## Why IndexQube
 
@@ -52,7 +52,8 @@ The operating rule is simple: **the agent is temporary; the task is not.**
 | Attachable `iq ui` terminal experience | Shipped foundation |
 | Authenticated workspace dashboard | Shipped foundation |
 | Versioned task storage, retention, backups, and crash cleanup | Shipped foundation |
-| Release installer | Planned |
+| Local aggregate reliability metrics and opt-in reporting | Shipped foundation |
+| Atomic installer rollback and signed macOS/Linux release pipeline | Ready for first signed tag |
 
 The existing Claude/OpenAI-compatible local proxy remains available as an
 optional data plane. The durable task control plane is the primary product.
@@ -82,6 +83,18 @@ make build
 ./bin/iq doctor
 ./bin/iq
 ```
+
+After the first signed release is published, the zero-configuration install is:
+
+```bash
+curl -fsSL https://github.com/Revanth14/indexqube/releases/latest/download/install.sh | sh
+iq
+```
+
+The installer checks SHA-256, validates the candidate version before an atomic
+replacement, keeps `iq.previous`, and can require GitHub/Sigstore provenance
+verification with `INDEXQUBE_REQUIRE_ATTESTATION=1`. See
+[RELEASING.md](./RELEASING.md) for verification and rollback commands.
 
 Bare `iq` starts the daemon when needed and opens the terminal UI. Its model proxy listens on
 `127.0.0.1:17373`; its task control API listens separately on
@@ -240,6 +253,18 @@ and oversized inactive logs retain only their most recent 8 MiB.
 and integrity, backups, lock/log/credential permissions, the installed Codex
 and Claude protocol versions, optional proxy setup, and the opt-in telemetry
 state.
+
+`iq metrics` derives local aggregate outcomes from canonical task state:
+successful and terminal latency, handoffs, automatic fallbacks, verification
+outcomes, crash recovery, and verified completion without manual switching.
+`iq metrics --json` provides the same bounded schema for analysis.
+
+Reliability telemetry is off unless `IQ_TELEMETRY` is affirmatively set to
+`on`, `true`, `yes`, `enabled`, or `1`. When enabled, the daemon durably limits
+network attempts to at most one aggregate snapshot per day. Its closed schema contains only an anonymous
+machine identifier, binary/OS version, counters, and latency aggregates; it has
+no fields for prompts, task/workspace IDs, paths, commands, output, file
+content, or credentials. Unknown telemetry settings remain off.
 
 ### Control API authentication
 
@@ -478,6 +503,8 @@ make check       # formatting, vet, unit tests, and both binaries
 make test-race   # race-enabled test suite
 make build       # bin/iq and bin/indexqube-gateway
 make control-smoke
+make installer-test
+make release-snapshot
 ```
 
 Optional real-agent smoke lanes require the corresponding installed,
@@ -490,6 +517,7 @@ IQ_SMOKE_REAL_CODEX=1 make control-smoke
 IQ_SMOKE_REAL_APPROVAL=1 make control-smoke
 IQ_SMOKE_REAL_CLAUDE=1 make control-smoke
 IQ_SMOKE_REAL_HANDOFF=1 make control-smoke
+INDEXQUBE_ALPHA_CONFIRM=1 bash scripts/real_repo_alpha.sh /path/to/repository
 ```
 
 The deterministic suite always replays checked-in Codex CLI 0.149.1 and Claude
@@ -516,9 +544,9 @@ PLAN.md                            product gates and implementation order
 
 Work is currently focused on:
 
-1. signed macOS/Linux release packaging and installer rollback;
-2. local reliability metrics and opt-in anonymous reliability telemetry;
-3. real-repository alpha feedback and broader CLI compatibility fixtures.
+1. publishing the first signed alpha tag and collecting real-repository feedback;
+2. Apple Developer ID notarization as distribution credentials become available;
+3. broader CLI compatibility fixtures driven by alpha evidence.
 
 The acceptance gates and non-negotiable safety invariants live in
 [PLAN.md](./PLAN.md).

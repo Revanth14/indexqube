@@ -15,7 +15,7 @@ import (
 const (
 	// CurrentSchemaVersion is deliberately exported for diagnostics and release
 	// tooling. A newer on-disk schema is never opened by an older binary.
-	CurrentSchemaVersion = 1
+	CurrentSchemaVersion = 2
 	databasePragmas      = `
 PRAGMA journal_mode = WAL;
 PRAGMA synchronous = NORMAL;

@@ -79,6 +79,34 @@ CREATE TABLE route_attempts (
 	}
 }
 
+func TestOpenMigratesVersionOneMaintenanceStateWithBackup(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tasks.db")
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`DROP TABLE maintenance_state; PRAGMA user_version = 1`); err != nil {
+		t.Fatal(err)
+	}
+	store.Close()
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	version, err := reopened.SchemaVersion(context.Background())
+	if err != nil || version != CurrentSchemaVersion {
+		t.Fatalf("version=%d err=%v", version, err)
+	}
+	if exists, err := tableExists(reopened.db, "maintenance_state"); err != nil || !exists {
+		t.Fatalf("maintenance_state exists=%v err=%v", exists, err)
+	}
+	backups, err := filepath.Glob(path + ".backup-v1-*")
+	if err != nil || len(backups) != 1 {
+		t.Fatalf("backups=%v err=%v", backups, err)
+	}
+}
+
 func TestOpenFailsClosedOnNewerSchemaAndCorruption(t *testing.T) {
 	t.Run("newer schema", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "tasks.db")

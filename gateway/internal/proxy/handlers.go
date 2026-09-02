@@ -735,3 +735,24 @@ func (p *Proxy) handleTelemetry(w http.ResponseWriter, r *http.Request) {
 	p.usageTracker.Track(event)
 	w.WriteHeader(http.StatusNoContent)
 }
+
+func (p *Proxy) handleReliabilityTelemetry(w http.ResponseWriter, r *http.Request) {
+	sink, ok := p.usageTracker.(telemetry.ReliabilitySink)
+	if !ok || sink == nil {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<14)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	var event telemetry.ReliabilityEvent
+	if err := decoder.Decode(&event); err != nil {
+		p.writeError(w, r, errorPayload{
+			HTTPStatus: http.StatusBadRequest, Type: "invalid_request_error", Code: "invalid_body",
+			Message: "could not decode aggregate reliability event",
+		})
+		return
+	}
+	sink.TrackReliability(event)
+	w.WriteHeader(http.StatusNoContent)
+}

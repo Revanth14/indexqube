@@ -290,6 +290,12 @@ CREATE TABLE IF NOT EXISTS backend_processes (
     executable          TEXT NOT NULL,
     started_at          INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS maintenance_state (
+    key                 TEXT PRIMARY KEY,
+    value               TEXT NOT NULL DEFAULT '',
+    updated_at          INTEGER NOT NULL
+);
 `
 
 type Store struct {

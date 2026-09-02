@@ -102,6 +102,42 @@ func validBody(t *testing.T) []byte {
 	return b
 }
 
+type reliabilityCaptureSink struct {
+	events chan telemetry.ReliabilityEvent
+}
+
+func (s *reliabilityCaptureSink) Track(telemetry.UsageEvent) {}
+func (s *reliabilityCaptureSink) TrackReliability(event telemetry.ReliabilityEvent) {
+	s.events <- event
+}
+
+func TestReliabilityTelemetryAcceptsOnlyAggregateSchema(t *testing.T) {
+	sink := &reliabilityCaptureSink{events: make(chan telemetry.ReliabilityEvent, 1)}
+	p := New(&fakeGovernor{}, WithUsageTracker(sink))
+	body := `{"machine_id":"anonymous","iq_version":"v1","os_arch":"darwin/arm64","generated_at":"2026-09-02T00:00:00Z","tasks_total":4}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/reliability", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	p.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	select {
+	case event := <-sink.events:
+		if event.TasksTotal != 4 || event.MachineID != "anonymous" {
+			t.Fatalf("event=%+v", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("reliability event was not forwarded")
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/v1/reliability", strings.NewReader(`{"tasks_total":4,"prompt":"private"}`))
+	rec = httptest.NewRecorder()
+	p.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("unknown private field status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestExtractCredential(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

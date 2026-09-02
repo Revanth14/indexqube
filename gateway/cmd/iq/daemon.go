@@ -262,6 +262,7 @@ func runDaemonForegroundWithControl(addr, controlAddr string) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	go runRetentionLoop(runCtx, store, os.Stderr)
+	go runReliabilityTelemetryLoop(runCtx, store)
 	runner := agent.NewRunner()
 	runner.Observer = store
 	claudePath, _ := exec.LookPath("claude")

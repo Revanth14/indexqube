@@ -1059,6 +1059,10 @@ func (s *Service) Backends(ctx context.Context) []agent.BackendHealth {
 	return s.registry.Health(ctx)
 }
 
+func (s *Service) ReliabilityMetrics(ctx context.Context) (taskstore.ReliabilityMetrics, error) {
+	return s.store.ReliabilityMetrics(ctx, time.Now().UTC())
+}
+
 func (s *Service) Cancel(ctx context.Context, taskID string) (CancelTaskResult, error) {
 	task, cancellation, err := s.store.RequestCancellation(ctx, taskID, time.Now().UTC())
 	if err != nil {

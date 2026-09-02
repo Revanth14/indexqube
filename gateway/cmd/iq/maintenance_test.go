@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -97,9 +98,31 @@ func TestDoctorReportsDatabaseIntegrityAndTelemetryDefault(t *testing.T) {
 	var out bytes.Buffer
 	writeDoctor(&out)
 	got := out.String()
-	for _, want := range []string{"task database: ok", "schema 1", "telemetry: disabled (default)"} {
+	for _, want := range []string{"task database: ok", "schema 2", "telemetry: disabled (default)"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("doctor missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestReliabilityEventContainsOnlyAggregateMetrics(t *testing.T) {
+	t.Setenv("INDEXQUBE_HOME", t.TempDir())
+	metrics := taskstore.ReliabilityMetrics{
+		GeneratedAt: time.Now().UTC(), TasksTotal: 10, TurnsTotal: 12, TurnsSucceeded: 8,
+		SuccessfulLatency: taskstore.DurationStats{P50MS: 100, P95MS: 900}, Handoffs: 2,
+		VerificationOutcomes: map[string]int64{string(taskstore.VerificationPassed): 7},
+	}
+	event := reliabilityEvent(metrics)
+	if event.TasksTotal != 10 || event.SuccessfulLatencyP95MS != 900 || event.VerificationsPassed != 7 || event.OSArch == "" {
+		t.Fatalf("event=%+v", event)
+	}
+	raw, err := json.Marshal(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"task_id", "workspace", "prompt", "command", "output"} {
+		if strings.Contains(string(raw), forbidden) {
+			t.Fatalf("event exposed forbidden field %q: %s", forbidden, raw)
 		}
 	}
 }

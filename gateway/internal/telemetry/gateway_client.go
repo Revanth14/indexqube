@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 )
@@ -31,7 +30,7 @@ func (g *GatewayClient) Track(event UsageEvent) {
 	if g == nil || g.endpoint == "" {
 		return
 	}
-	if os.Getenv("IQ_TELEMETRY") == "off" {
+	if !Enabled() {
 		return
 	}
 	go func() {
@@ -45,6 +44,29 @@ func (g *GatewayClient) Track(event UsageEvent) {
 			g.endpoint+"/v1/telemetry",
 			bytes.NewReader(body),
 		)
+		if err != nil {
+			return
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := g.httpClient.Do(req)
+		if err != nil {
+			return
+		}
+		resp.Body.Close()
+	}()
+}
+
+func (g *GatewayClient) TrackReliability(event ReliabilityEvent) {
+	if g == nil || g.endpoint == "" || !Enabled() {
+		return
+	}
+	go func() {
+		body, err := json.Marshal(event)
+		if err != nil {
+			return
+		}
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
+			g.endpoint+"/v1/reliability", bytes.NewReader(body))
 		if err != nil {
 			return
 		}

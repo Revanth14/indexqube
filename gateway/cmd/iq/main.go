@@ -43,6 +43,10 @@ func main() {
 		runUI(nil)
 		return
 	}
+	if len(os.Args) == 2 && (os.Args[1] == "--version" || os.Args[1] == "-v") {
+		fmt.Println("iq " + version)
+		return
+	}
 
 	switch os.Args[1] {
 	case "__fake-agent":
@@ -86,6 +90,8 @@ func main() {
 		runDoctor(os.Args[2:])
 	case "backup":
 		runBackup(os.Args[2:])
+	case "metrics":
+		runMetrics(os.Args[2:])
 	case "setup":
 		runSetup(os.Args[2:])
 	case "unsetup":
@@ -100,6 +106,8 @@ func main() {
 		fmt.Println("  iq codex  — use `iq start` and `iq setup codex`")
 	case "help", "--help", "-h":
 		printHelp()
+	case "version":
+		fmt.Println("iq " + version)
 	default:
 		// Positional text is a zero-configuration durable task. Legacy Claude
 		// invocation remains available explicitly as `iq claude ...`.
@@ -592,6 +600,7 @@ func printHelp() {
     iq logs              Print recent daemon logs
     iq doctor            Check daemon and supported agent setup
     iq backup            Write a consistent owner-only task database backup
+    iq metrics           Show aggregate local task reliability outcomes
     iq setup [agent...]  Configure supported agents (claude, codex)
     iq unsetup [agent...] Restore IndexQube setup backups
     iq audit [latest]     Write a local agent security report from the latest dump

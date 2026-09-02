@@ -18,6 +18,7 @@ import (
 	codexbackend "github.com/Revanth14/indexqube/gateway/internal/agent/codex"
 	"github.com/Revanth14/indexqube/gateway/internal/localstate"
 	"github.com/Revanth14/indexqube/gateway/internal/taskstore"
+	"github.com/Revanth14/indexqube/gateway/internal/telemetry"
 )
 
 func runBackup(args []string) {
@@ -75,6 +76,61 @@ func runRetentionLoop(ctx context.Context, store *taskstore.Store, errOut io.Wri
 			}
 		}
 	}
+}
+
+func runReliabilityTelemetryLoop(ctx context.Context, store *taskstore.Store) {
+	if !telemetry.Enabled() {
+		return
+	}
+	endpoint := strings.TrimSpace(os.Getenv("IQ_TELEMETRY_ENDPOINT"))
+	if endpoint == "" {
+		endpoint = telemetryEndpoint
+	}
+	client := telemetry.NewGatewayClient(endpoint)
+	publish := func(now time.Time) {
+		claimed, err := store.ClaimReliabilityTelemetry(ctx, now.UTC(), 24*time.Hour)
+		if err != nil || !claimed {
+			return
+		}
+		metrics, err := store.ReliabilityMetrics(ctx, now.UTC())
+		if err != nil {
+			return
+		}
+		client.TrackReliability(reliabilityEvent(metrics))
+	}
+	publish(time.Now())
+	ticker := time.NewTicker(24 * time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-ticker.C:
+			publish(now)
+		}
+	}
+}
+
+func reliabilityEvent(metrics taskstore.ReliabilityMetrics) telemetry.ReliabilityEvent {
+	event := telemetry.NewReliabilityEvent(version)
+	event.GeneratedAt = metrics.GeneratedAt
+	event.TasksTotal = metrics.TasksTotal
+	event.TurnsTotal = metrics.TurnsTotal
+	event.TurnsSucceeded = metrics.TurnsSucceeded
+	event.TurnsFailed = metrics.TurnsFailed
+	event.TurnsCancelled = metrics.TurnsCancelled
+	event.SuccessfulLatencyP50MS = metrics.SuccessfulLatency.P50MS
+	event.SuccessfulLatencyP95MS = metrics.SuccessfulLatency.P95MS
+	event.Handoffs = metrics.Handoffs
+	event.AutomaticFallbacks = metrics.AutomaticFallbacks
+	event.VerificationsPassed = metrics.VerificationOutcomes[string(taskstore.VerificationPassed)]
+	event.VerificationsWarnings = metrics.VerificationOutcomes[string(taskstore.VerificationWarnings)]
+	event.VerificationsFailed = metrics.VerificationOutcomes[string(taskstore.VerificationFailed)]
+	event.VerificationsSkipped = metrics.VerificationOutcomes[string(taskstore.VerificationSkipped)]
+	event.CrashRecoveries = metrics.CrashRecoveries
+	event.CrashRecoveriesAttention = metrics.CrashRecoveriesAttention
+	event.VerifiedWithoutSwitch = metrics.VerifiedWithoutManualSwitch
+	return event
 }
 
 func cleanupRecordedProcesses(ctx context.Context, store *taskstore.Store, errOut io.Writer) (int, error) {
@@ -172,11 +228,11 @@ func writeDoctor(w io.Writer) {
 	} else {
 		fmt.Fprintln(w, "claude setup: not configured (optional for task UI)")
 	}
-	telemetry := strings.ToLower(strings.TrimSpace(os.Getenv("IQ_TELEMETRY")))
-	if telemetry == "" || telemetry == "off" || telemetry == "0" || telemetry == "false" {
+	telemetrySetting := strings.ToLower(strings.TrimSpace(os.Getenv("IQ_TELEMETRY")))
+	if !telemetry.Enabled() {
 		fmt.Fprintln(w, "telemetry: disabled (default)")
 	} else {
-		fmt.Fprintf(w, "telemetry: explicitly enabled (%s)\n", telemetry)
+		fmt.Fprintf(w, "telemetry: explicitly enabled (%s)\n", telemetrySetting)
 	}
 }
 

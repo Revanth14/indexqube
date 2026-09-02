@@ -33,6 +33,7 @@ func NewHandler(service *orchestrator.Service, token string) *Handler {
 	h.mux.HandleFunc("POST /control/v1/dashboard-sessions", h.createDashboardSession)
 	h.mux.HandleFunc("GET /control/v1/dashboard-context", h.dashboardContext)
 	h.mux.HandleFunc("GET /control/v1/backends", h.backends)
+	h.mux.HandleFunc("GET /control/v1/metrics", h.metrics)
 	h.mux.HandleFunc("GET /control/v1/approvals", h.listApprovals)
 	h.mux.HandleFunc("POST /control/v1/approvals/{approvalID}/decision", h.decideApproval)
 	h.mux.HandleFunc("GET /control/v1/tasks", h.listTasks)
@@ -49,6 +50,15 @@ func NewHandler(service *orchestrator.Service, token string) *Handler {
 	h.mux.HandleFunc("POST /control/v1/tasks/{taskID}/unpin", h.unpinTask)
 	h.mux.HandleFunc("GET /control/v1/tasks/{taskID}/events", h.taskEvents)
 	return h
+}
+
+func (h *Handler) metrics(w http.ResponseWriter, r *http.Request) {
+	metrics, err := h.service.ReliabilityMetrics(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "state_error", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, metrics)
 }
 
 type continueTaskRequest struct {

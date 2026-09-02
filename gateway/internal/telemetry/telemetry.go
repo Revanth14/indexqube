@@ -18,6 +18,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"runtime"
 	"strings"
 	"time"
 
@@ -31,6 +32,50 @@ import (
 // Implementations must be non-blocking and must never panic on the request path.
 type Sink interface {
 	Track(event UsageEvent)
+}
+
+type ReliabilitySink interface {
+	TrackReliability(event ReliabilityEvent)
+}
+
+// ReliabilityEvent is an aggregate-only control-plane snapshot. It must never
+// contain prompts, task/workspace identifiers, paths, commands, model output,
+// file content, or provider credentials.
+type ReliabilityEvent struct {
+	MachineID                string    `json:"machine_id"`
+	IQVersion                string    `json:"iq_version"`
+	OSArch                   string    `json:"os_arch"`
+	GeneratedAt              time.Time `json:"generated_at"`
+	TasksTotal               int64     `json:"tasks_total"`
+	TurnsTotal               int64     `json:"turns_total"`
+	TurnsSucceeded           int64     `json:"turns_succeeded"`
+	TurnsFailed              int64     `json:"turns_failed"`
+	TurnsCancelled           int64     `json:"turns_cancelled"`
+	SuccessfulLatencyP50MS   int64     `json:"successful_latency_p50_ms"`
+	SuccessfulLatencyP95MS   int64     `json:"successful_latency_p95_ms"`
+	Handoffs                 int64     `json:"handoffs"`
+	AutomaticFallbacks       int64     `json:"automatic_fallbacks"`
+	VerificationsPassed      int64     `json:"verifications_passed"`
+	VerificationsWarnings    int64     `json:"verifications_warnings"`
+	VerificationsFailed      int64     `json:"verifications_failed"`
+	VerificationsSkipped     int64     `json:"verifications_skipped"`
+	CrashRecoveries          int64     `json:"crash_recoveries"`
+	CrashRecoveriesAttention int64     `json:"crash_recoveries_needing_attention"`
+	VerifiedWithoutSwitch    int64     `json:"verified_without_manual_switch"`
+}
+
+func NewReliabilityEvent(version string) ReliabilityEvent {
+	return ReliabilityEvent{MachineID: GetMachineID(), IQVersion: version, OSArch: runtime.GOOS + "/" + runtime.GOARCH, GeneratedAt: time.Now().UTC()}
+}
+
+// Enabled is deliberately affirmative: unset and every unknown value are off.
+func Enabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("IQ_TELEMETRY"))) {
+	case "1", "on", "true", "yes", "enabled":
+		return true
+	default:
+		return false
+	}
 }
 
 // UsageEvent is the privacy-safe event shape persisted for product telemetry.
@@ -84,7 +129,7 @@ func (s *SupabaseClient) Track(event UsageEvent) {
 	}
 
 	// Enterprise/privacy escape hatch.
-	if os.Getenv("IQ_TELEMETRY") == "off" {
+	if !Enabled() {
 		return
 	}
 
@@ -116,6 +161,35 @@ func (s *SupabaseClient) Track(event UsageEvent) {
 		defer resp.Body.Close()
 		_, _ = io.Copy(io.Discard, resp.Body)
 	}()
+}
+
+func (s *SupabaseClient) TrackReliability(event ReliabilityEvent) {
+	if s == nil || s.url == "" || s.serviceKey == "" || !Enabled() {
+		return
+	}
+	go s.post("reliability_events", event)
+}
+
+func (s *SupabaseClient) post(table string, event any) {
+	body, err := json.Marshal(event)
+	if err != nil {
+		return
+	}
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
+		fmt.Sprintf("%s/rest/v1/%s", s.url, table), bytes.NewReader(body))
+	if err != nil {
+		return
+	}
+	req.Header.Set("apikey", s.serviceKey)
+	req.Header.Set("Authorization", "Bearer "+s.serviceKey)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Prefer", "return=minimal")
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
 }
 
 // Provider holds the wired observability primitives. Construct via Init,
