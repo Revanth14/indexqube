@@ -42,7 +42,9 @@ The operating rule is simple: **the agent is temporary; the task is not.**
 | Changed-file, command, route, snapshot, and session evidence | Shipped foundation |
 | Configured recipes plus automatic Go, Node, Python, and Rust verification | Shipped foundation |
 | Task-scoped security audit findings with severity and evidence | Shipped foundation |
-| Claude Code as an orchestrated task backend and explicit handoff | Planned |
+| Claude Code read-only/write task execution and native-session continuation | In progress |
+| Claude durable write approvals | Shipped foundation |
+| Explicit Codex/Claude handoff | Planned |
 | Daemon-scoped authentication on every control endpoint and SSE stream | Shipped foundation |
 | TUI and release installer | Planned |
 
@@ -56,7 +58,8 @@ Requirements:
 - macOS or Linux;
 - Go 1.25 or newer;
 - Git;
-- the Codex CLI installed and authenticated for real Codex tasks.
+- the Codex CLI installed and authenticated for real Codex tasks;
+- the Claude Code CLI installed and authenticated for real Claude tasks.
 
 Build and start the loopback daemon:
 
@@ -85,6 +88,29 @@ Grant one task permission to modify the workspace:
 ./bin/iq task --backend codex --write \
   "harden cancellation, add regression coverage, and verify the result"
 ```
+
+The Claude backend supports read-only repository work with a deliberately
+restricted tool set:
+
+```bash
+./bin/iq task --backend claude "explain the workspace safety invariants"
+```
+
+Claude workspace-write tasks use the same explicit task grant, OS workspace
+guard, durable approval state, and post-run reconciliation as Codex:
+
+```bash
+./bin/iq task --backend claude --write \
+  "make the bounded change, run the relevant checks, and report the evidence"
+```
+
+IndexQube starts Claude in restricted mode, ignores user/project/local Claude
+settings, loads only a private per-turn permission MCP server, and never uses a
+permission-bypass flag. Claude can request shell and file-write tools, but each
+operation blocks until its exact command or canonical in-workspace file target
+has a durable `iq approve` or `iq deny` decision. Reads outside the workspace,
+symlink escapes, unknown tools, and commands too large to review safely are
+denied before execution.
 
 IndexQube streams the run and prints the task ID. The durable record remains
 available after the command exits:
@@ -128,8 +154,10 @@ receive `401 Unauthorized` from a new daemon.
 ## Permissions and approvals
 
 `--write` is an explicit, up-front grant for that IndexQube task. The Codex
-child still runs inside its workspace-write sandbox and under IndexQube's OS
-workspace lock and fencing epoch.
+child still runs inside its workspace-write sandbox. Claude runs in restricted
+mode with its file tools confined to the working directory and all shell/file
+mutations routed through the durable permission bridge. Both run under
+IndexQube's OS workspace lock and fencing epoch.
 
 If the backend requests a command or file-change escalation, IndexQube first
 commits the request to SQLite and moves the task to `awaiting_approval`. A user
@@ -277,7 +305,7 @@ flowchart LR
     API --> ORCH[Orchestrator]
     ORCH --> STORE[(SQLite task store)]
     ORCH --> GUARD[Workspace guard]
-    ORCH --> AGENT[Codex backend]
+    ORCH --> AGENT[Agent backends: Codex / Claude]
     ORCH --> VERIFY[Verification runner]
     AGENT --> SESSION[Native agent session]
     GUARD --> REPO[Git workspace]

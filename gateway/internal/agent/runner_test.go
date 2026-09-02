@@ -17,6 +17,10 @@ func TestRunnerProcessHelper(t *testing.T) {
 		_ = json.NewEncoder(os.Stdout).Encode(map[string]string{"type": "completed"})
 		os.Exit(0)
 	}
+	if mode == "batch" {
+		_ = json.NewEncoder(os.Stdout).Encode(map[string]string{"type": "batch"})
+		os.Exit(0)
+	}
 	if mode == "sleep" {
 		time.Sleep(30 * time.Second)
 		os.Exit(0)
@@ -24,6 +28,28 @@ func TestRunnerProcessHelper(t *testing.T) {
 	if mode == "interactive-exit" {
 		_, _ = os.Stdout.WriteString("{\"method\":\"approval\"}\n")
 		os.Exit(0)
+	}
+}
+
+func TestRunnerStreamsBatchDecodedEvents(t *testing.T) {
+	binary, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []EventType
+	_, err = NewRunner().Run(context.Background(), ProcessSpec{
+		Path: binary, Args: []string{"-test.run=TestRunnerProcessHelper"}, Env: []string{"INDEXQUBE_RUNNER_HELPER=batch"},
+	}, nil, EventBatchDecoderFunc(func([]byte) ([]Event, error) {
+		return []Event{{Type: EventToolStarted}, {Type: EventToolFinished}}, nil
+	}), EventSinkFunc(func(_ context.Context, event Event) error {
+		got = append(got, event.Type)
+		return nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0] != EventToolStarted || got[1] != EventToolFinished {
+		t.Fatalf("events=%v", got)
 	}
 }
 

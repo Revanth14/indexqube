@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/Revanth14/indexqube/gateway/internal/agent"
+	claudebackend "github.com/Revanth14/indexqube/gateway/internal/agent/claude"
 	codexbackend "github.com/Revanth14/indexqube/gateway/internal/agent/codex"
 	"github.com/Revanth14/indexqube/gateway/internal/agent/fake"
 	"github.com/Revanth14/indexqube/gateway/internal/control"
@@ -241,9 +242,10 @@ func runDaemonForegroundWithControl(addr, controlAddr string) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	runner := agent.NewRunner()
+	claudePath, _ := exec.LookPath("claude")
 	codexPath, _ := exec.LookPath("codex")
 	service, err := orchestrator.NewService(runCtx, store, locks, orchestrator.NewRegistry(
-		fake.New(runner, exe), codexbackend.New(runner, codexPath),
+		fake.New(runner, exe), claudebackend.New(runner, claudePath), codexbackend.New(runner, codexPath),
 	))
 	if err != nil {
 		return err

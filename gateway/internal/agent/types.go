@@ -12,8 +12,9 @@ import (
 type BackendID string
 
 const (
-	BackendFake  BackendID = "fake"
-	BackendCodex BackendID = "codex"
+	BackendFake   BackendID = "fake"
+	BackendCodex  BackendID = "codex"
+	BackendClaude BackendID = "claude"
 )
 
 type PermissionMode string

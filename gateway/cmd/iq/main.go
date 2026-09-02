@@ -24,6 +24,7 @@ import (
 
 	_ "modernc.org/sqlite" // pure-Go SQLite driver
 
+	claudebackend "github.com/Revanth14/indexqube/gateway/internal/agent/claude"
 	"github.com/Revanth14/indexqube/gateway/internal/agent/fake"
 	"github.com/Revanth14/indexqube/gateway/internal/localstate"
 	"github.com/Revanth14/indexqube/gateway/internal/server"
@@ -49,6 +50,8 @@ func main() {
 	switch os.Args[1] {
 	case "__fake-agent":
 		os.Exit(fake.RunHelper(os.Stdin, os.Stdout, os.Stderr))
+	case "__claude-permission-mcp":
+		os.Exit(claudebackend.RunPermissionMCP(os.Args[2:], os.Stdin, os.Stdout, os.Stderr))
 	case "task":
 		runTask(os.Args[2:])
 	case "tasks":
@@ -556,7 +559,7 @@ func printHelp() {
 
   USAGE
     iq                   Start Claude Code (default)
-    iq task [flags] TEXT Create a durable agent task (--backend fake|codex, --write)
+    iq task [flags] TEXT Create a durable agent task (--backend fake|codex|claude, --write)
     iq tasks             List durable tasks
     iq task status TASK  Inspect canonical task and latest-turn state
     iq task show TASK    Show durable turns, commands, files, routes, and snapshots

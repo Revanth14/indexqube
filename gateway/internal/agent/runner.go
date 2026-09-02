@@ -32,6 +32,24 @@ type EventDecoderFunc func([]byte) (Event, bool, error)
 
 func (f EventDecoderFunc) Decode(line []byte) (Event, bool, error) { return f(line) }
 
+// EventBatchDecoder is implemented by protocols that can carry several
+// normalized events in one JSONL envelope, such as a Claude assistant message
+// containing both text and tool-use content blocks.
+type EventBatchDecoder interface {
+	DecodeEvents([]byte) ([]Event, error)
+}
+
+type EventBatchDecoderFunc func([]byte) ([]Event, error)
+
+func (f EventBatchDecoderFunc) DecodeEvents(line []byte) ([]Event, error) { return f(line) }
+func (f EventBatchDecoderFunc) Decode(line []byte) (Event, bool, error) {
+	events, err := f(line)
+	if err != nil || len(events) == 0 {
+		return Event{}, false, err
+	}
+	return events[0], true, nil
+}
+
 // InteractiveLineHandler processes one JSONL message from a long-lived child.
 // send is safe to call while handling the message. Returning done stops the
 // supervised process after the protocol has emitted its terminal notification.
@@ -103,12 +121,12 @@ func (r *Runner) Run(ctx context.Context, spec ProcessSpec, guard ProcessGuard, 
 		scanner := bufio.NewScanner(stdout)
 		scanner.Buffer(make([]byte, 64<<10), maxAgentEventBytes)
 		for scanner.Scan() {
-			event, ok, err := decoder.Decode(append([]byte(nil), scanner.Bytes()...))
+			events, err := decodeProcessEvents(decoder, append([]byte(nil), scanner.Bytes()...))
 			if err != nil {
 				decodeErr <- err
 				return
 			}
-			if ok {
+			for _, event := range events {
 				if err := sink.Publish(ctx, event); err != nil {
 					decodeErr <- err
 					return
@@ -151,6 +169,17 @@ func (r *Runner) Run(ctx context.Context, spec ProcessSpec, guard ProcessGuard, 
 		return result, processErr
 	}
 	return result, nil
+}
+
+func decodeProcessEvents(decoder EventDecoder, line []byte) ([]Event, error) {
+	if batch, ok := decoder.(EventBatchDecoder); ok {
+		return batch.DecodeEvents(line)
+	}
+	event, publish, err := decoder.Decode(line)
+	if err != nil || !publish {
+		return nil, err
+	}
+	return []Event{event}, nil
 }
 
 // RunInteractive supervises a bidirectional JSONL child such as Codex App
