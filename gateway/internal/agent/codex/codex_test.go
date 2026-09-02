@@ -211,7 +211,7 @@ func TestAppServerBackendPausesForApprovalDecision(t *testing.T) {
 			}
 			backend := NewAppServerCommand(agent.NewRunner(), binary,
 				[]string{"-test.run=TestCodexAppServerHelper", "--"},
-				[]string{"INDEXQUBE_CODEX_APP_SERVER_HELPER=1"}, "codex-cli test")
+				[]string{"INDEXQUBE_CODEX_APP_SERVER_HELPER=1"}, "codex-cli 0.149.1")
 			handler := &testApprovalHandler{requests: make(chan agent.ApprovalRequest, 1), decisions: make(chan agent.ApprovalDecision, 1)}
 			workspace := t.TempDir()
 			type outcome struct {
@@ -259,20 +259,16 @@ func TestAppServerBackendPausesForApprovalDecision(t *testing.T) {
 }
 
 func TestDecodeDocumentedJSONLShape(t *testing.T) {
-	lines := []string{
-		`{"type":"thread.started","thread_id":"0199a213"}`,
-		`{"type":"turn.started"}`,
-		`{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"bash -lc ls","status":"in_progress"}}`,
-		`{"type":"item.completed","item":{"id":"item_2","type":"command_execution","command":"bash -lc ls","status":"completed","exit_code":0}}`,
-		`{"type":"item.started","item":{"id":"item_file","type":"file_change","changes":[{"path":"a.go","kind":"update"}]}}`,
-		`{"type":"item.completed","item":{"id":"item_file","type":"file_change","changes":[{"path":"a.go","kind":"update"},{"path":"b.go","kind":"add"}]}}`,
-		`{"type":"item.completed","item":{"id":"item_3","type":"agent_message","text":"Repo contains docs."}}`,
-		`{"type":"turn.completed","usage":{"input_tokens":10}}`,
+	raw, err := os.Open("testdata/codex-cli-0.149.1-exec.jsonl")
+	if err != nil {
+		t.Fatal(err)
 	}
+	defer raw.Close()
 	var types []agent.EventType
 	var final, session string
-	for _, line := range lines {
-		event, ok, gotFinal, gotSession, failure, err := decodeEvent([]byte(line))
+	scanner := bufio.NewScanner(raw)
+	for scanner.Scan() {
+		event, ok, gotFinal, gotSession, failure, err := decodeEvent(scanner.Bytes())
 		if err != nil || failure != "" {
 			t.Fatalf("decode err=%v failure=%q", err, failure)
 		}
@@ -285,6 +281,9 @@ func TestDecodeDocumentedJSONLShape(t *testing.T) {
 		if gotSession != "" {
 			session = gotSession
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatal(err)
 	}
 	want := []agent.EventType{agent.EventSessionStarted, agent.EventToolStarted, agent.EventCommandFinished, agent.EventFileChanged, agent.EventAssistantMessage, agent.EventCompleted}
 	if !slices.Equal(types, want) {
@@ -316,7 +315,7 @@ func TestBackendExecutesInitialAndResumeReadOnly(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			backend := NewCommand(agent.NewRunner(), binary,
 				[]string{"-test.run=TestCodexProcessHelper", "--"},
-				[]string{"INDEXQUBE_CODEX_HELPER=" + tc.mode}, "codex-cli test")
+				[]string{"INDEXQUBE_CODEX_HELPER=" + tc.mode}, "codex-cli 0.149.1")
 			var events []agent.Event
 			request := agent.Request{
 				TaskID: "task", TurnID: "turn", Workspace: t.TempDir(), Prompt: "fixture prompt",
@@ -373,6 +372,38 @@ func TestDetectedVersionIgnoresCLIWarnings(t *testing.T) {
 	got := detectedVersion("WARNING: could not create aliases\ncodex-cli 0.149.1\n")
 	if got != "codex-cli 0.149.1" {
 		t.Fatalf("version=%q", got)
+	}
+}
+
+func TestVersionCompatibilityFailsClosed(t *testing.T) {
+	for _, test := range []struct {
+		version string
+		status  agent.HealthStatus
+	}{
+		{version: "codex-cli 0.149.0", status: agent.HealthAvailable},
+		{version: "codex-cli 0.149.99", status: agent.HealthAvailable},
+		{version: "codex-cli 0.148.9", status: agent.HealthIncompatible},
+		{version: "codex-cli 0.150.0", status: agent.HealthIncompatible},
+		{version: "development", status: agent.HealthIncompatible},
+	} {
+		t.Run(test.version, func(t *testing.T) {
+			backend := NewCommand(agent.NewRunner(), "fixture", nil, nil, test.version)
+			if health := backend.Probe(context.Background()); health.Status != test.status {
+				t.Fatalf("health=%+v want status=%s", health, test.status)
+			}
+		})
+	}
+
+	binary, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := NewCommand(agent.NewRunner(), binary, nil, nil, "codex-cli 1.0.0")
+	_, err = backend.Execute(context.Background(), agent.Request{
+		Workspace: ".", Prompt: "fixture prompt", Permission: agent.PermissionReadOnly,
+	}, agent.EventSinkFunc(func(context.Context, agent.Event) error { return nil }))
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "unsupported cli version") {
+		t.Fatalf("error=%v", err)
 	}
 }
 

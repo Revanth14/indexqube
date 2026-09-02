@@ -19,6 +19,12 @@ import (
 
 const readOnlyTools = "Read,Glob,Grep"
 
+var supportedCLIVersions = agent.CLIVersionPolicy{
+	Product:      "Claude Code",
+	MinInclusive: agent.SemanticVersion{Major: 2, Minor: 1, Patch: 0},
+	MaxExclusive: agent.SemanticVersion{Major: 2, Minor: 2, Patch: 0},
+}
+
 type Backend struct {
 	runner     *agent.Runner
 	binary     string
@@ -60,8 +66,13 @@ func (b *Backend) Probe(ctx context.Context) agent.BackendHealth {
 		return health
 	}
 	if b.version != "" {
-		health.Status = agent.HealthAvailable
 		health.Version = b.version
+		if _, err := supportedCLIVersions.Check(b.version); err != nil {
+			health.Status = agent.HealthIncompatible
+			health.Reason = err.Error()
+			return health
+		}
+		health.Status = agent.HealthAvailable
 		return health
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
@@ -78,8 +89,13 @@ func (b *Backend) Probe(ctx context.Context) agent.BackendHealth {
 		return health
 	}
 	b.version = detectedVersion(string(out))
-	health.Status = agent.HealthAvailable
 	health.Version = b.version
+	if _, err := supportedCLIVersions.Check(b.version); err != nil {
+		health.Status = agent.HealthIncompatible
+		health.Reason = err.Error()
+		return health
+	}
+	health.Status = agent.HealthAvailable
 	return health
 }
 
@@ -89,6 +105,9 @@ func (b *Backend) Execute(ctx context.Context, req agent.Request, sink agent.Eve
 	}
 	if b.runner == nil || strings.TrimSpace(b.binary) == "" {
 		return agent.Result{}, errors.New("claude backend: executable is not configured")
+	}
+	if health := b.Probe(ctx); health.Status != agent.HealthAvailable {
+		return agent.Result{}, fmt.Errorf("claude backend: %s", health.Reason)
 	}
 	var bridge *permissionBridge
 	if req.Permission == agent.PermissionWrite {

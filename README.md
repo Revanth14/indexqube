@@ -61,8 +61,14 @@ Requirements:
 - macOS or Linux;
 - Go 1.25 or newer;
 - Git;
-- the Codex CLI installed and authenticated for real Codex tasks;
-- the Claude Code CLI installed and authenticated for real Claude tasks.
+- Codex CLI 0.149.x, installed and authenticated for real Codex tasks;
+- Claude Code 2.1.x, installed and authenticated for real Claude tasks.
+
+Those minor-version lines are the currently fixture-tested protocol contract.
+IndexQube reports newer or older CLI lines as `incompatible` and will not run
+them until their event protocol is covered by a checked-in fixture. This is a
+deliberately fail-closed compatibility policy, not a claim that every other CLI
+release is broken.
 
 Build and start the loopback daemon:
 
@@ -405,12 +411,21 @@ make build       # bin/iq and bin/indexqube-gateway
 make control-smoke
 ```
 
-Optional real-agent smoke lanes require an installed, authenticated Codex CLI:
+Optional real-agent smoke lanes require the corresponding installed,
+authenticated CLI. They are opt-in because they invoke the user's real agent
+account:
 
 ```bash
+IQ_SMOKE_REAL_CODEX_READ=1 make control-smoke
 IQ_SMOKE_REAL_CODEX=1 make control-smoke
 IQ_SMOKE_REAL_APPROVAL=1 make control-smoke
+IQ_SMOKE_REAL_CLAUDE=1 make control-smoke
+IQ_SMOKE_REAL_HANDOFF=1 make control-smoke
 ```
+
+The deterministic suite always replays checked-in Codex CLI 0.149.1 and Claude
+Code 2.1.252 protocol fixtures. The handoff lane performs a real read-only
+Codex-to-Claude transition and checks the durable route and handoff evidence.
 
 Repository map:
 

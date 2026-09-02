@@ -1,0 +1,8 @@
+{"type":"thread.started","thread_id":"0199a213"}
+{"type":"turn.started"}
+{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"bash -lc ls","status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_2","type":"command_execution","command":"bash -lc ls","status":"completed","exit_code":0}}
+{"type":"item.started","item":{"id":"item_file","type":"file_change","changes":[{"path":"a.go","kind":"update"}]}}
+{"type":"item.completed","item":{"id":"item_file","type":"file_change","changes":[{"path":"a.go","kind":"update"},{"path":"b.go","kind":"add"}]}}
+{"type":"item.completed","item":{"id":"item_3","type":"agent_message","text":"Repo contains docs."}}
+{"type":"turn.completed","usage":{"input_tokens":10}}

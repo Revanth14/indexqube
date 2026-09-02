@@ -638,7 +638,7 @@ func TestCodexReadOnlyTaskUsesCanonicalStateAndRecoversLostSession(t *testing.T)
 	}
 	service.registry = NewRegistry(codexbackend.NewCommand(agent.NewRunner(), binary,
 		[]string{"-test.run=TestOrchestratorCodexProcess", "--"},
-		[]string{"INDEXQUBE_ORCHESTRATOR_CODEX_HELPER=1"}, "codex-cli test"))
+		[]string{"INDEXQUBE_ORCHESTRATOR_CODEX_HELPER=1"}, "codex-cli 0.149.1"))
 	task, err := service.StartTask(context.Background(), StartTaskInput{
 		Workspace: root, Prompt: "analyze", Provider: agent.BackendCodex, Permission: agent.PermissionReadOnly,
 	})
@@ -659,7 +659,7 @@ func TestCodexReadOnlyTaskUsesCanonicalStateAndRecoversLostSession(t *testing.T)
 	}
 	service.registry = NewRegistry(codexbackend.NewCommand(agent.NewRunner(), binary,
 		[]string{"-test.run=TestOrchestratorCodexProcess", "--"},
-		[]string{"INDEXQUBE_ORCHESTRATOR_CODEX_HELPER=resume-lost"}, "codex-cli test"))
+		[]string{"INDEXQUBE_ORCHESTRATOR_CODEX_HELPER=resume-lost"}, "codex-cli 0.149.1"))
 	if _, err := service.ContinueTask(context.Background(), ContinueTaskInput{TaskID: task.ID, Prompt: "continue analysis"}); err != nil {
 		t.Fatal(err)
 	}
@@ -681,7 +681,7 @@ func TestCodexWriteTaskPersistsEvidenceAndContinues(t *testing.T) {
 	}
 	service.registry = NewRegistry(codexbackend.NewCommand(agent.NewRunner(), binary,
 		[]string{"-test.run=TestOrchestratorCodexProcess", "--"},
-		[]string{"INDEXQUBE_ORCHESTRATOR_CODEX_HELPER=write"}, "codex-cli test"))
+		[]string{"INDEXQUBE_ORCHESTRATOR_CODEX_HELPER=write"}, "codex-cli 0.149.1"))
 	task, err := service.StartTask(context.Background(), StartTaskInput{
 		Workspace: root, Prompt: "make a durable change", Backend: agent.BackendCodex, Permission: agent.PermissionWrite,
 	})
@@ -736,7 +736,7 @@ func TestFailedPostTurnVerificationNeedsAttentionAndPersistsEvidence(t *testing.
 	}
 	service.registry = NewRegistry(codexbackend.NewCommand(agent.NewRunner(), binary,
 		[]string{"-test.run=TestOrchestratorCodexProcess", "--"},
-		[]string{"INDEXQUBE_ORCHESTRATOR_CODEX_HELPER=write"}, "codex-cli test"))
+		[]string{"INDEXQUBE_ORCHESTRATOR_CODEX_HELPER=write"}, "codex-cli 0.149.1"))
 	exit := 1
 	now := time.Now().UTC()
 	service.verifier = fixedVerifier{result: verification.Result{
@@ -795,7 +795,7 @@ func TestSuccessfulGoChangeRunsAutomaticPostTurnVerification(t *testing.T) {
 	}
 	service.registry = NewRegistry(codexbackend.NewCommand(agent.NewRunner(), binary,
 		[]string{"-test.run=TestOrchestratorCodexProcess", "--"},
-		[]string{"INDEXQUBE_ORCHESTRATOR_CODEX_HELPER=write-go"}, "codex-cli test"))
+		[]string{"INDEXQUBE_ORCHESTRATOR_CODEX_HELPER=write-go"}, "codex-cli 0.149.1"))
 	task, err := service.StartTask(context.Background(), StartTaskInput{
 		Workspace: root, Prompt: "make a verified Go change", Backend: agent.BackendCodex, Permission: agent.PermissionWrite,
 	})
@@ -838,7 +838,7 @@ func TestAutomaticSecurityAuditPersistsSeverityAndAppliesPolicy(t *testing.T) {
 			}
 			service.registry = NewRegistry(codexbackend.NewCommand(agent.NewRunner(), binary,
 				[]string{"-test.run=TestOrchestratorCodexProcess", "--"},
-				[]string{"INDEXQUBE_ORCHESTRATOR_CODEX_HELPER=" + tc.mode}, "codex-cli test"))
+				[]string{"INDEXQUBE_ORCHESTRATOR_CODEX_HELPER=" + tc.mode}, "codex-cli 0.149.1"))
 			task, err := service.StartTask(context.Background(), StartTaskInput{
 				Workspace: root, Prompt: "make a security-audited change", Backend: agent.BackendCodex, Permission: agent.PermissionWrite,
 			})
@@ -870,7 +870,7 @@ func TestAgentCreatedVerificationRecipeIsNotExecuted(t *testing.T) {
 	}
 	service.registry = NewRegistry(codexbackend.NewCommand(agent.NewRunner(), binary,
 		[]string{"-test.run=TestOrchestratorCodexProcess", "--"},
-		[]string{"INDEXQUBE_ORCHESTRATOR_CODEX_HELPER=write-recipe"}, "codex-cli test"))
+		[]string{"INDEXQUBE_ORCHESTRATOR_CODEX_HELPER=write-recipe"}, "codex-cli 0.149.1"))
 	task, err := service.StartTask(context.Background(), StartTaskInput{
 		Workspace: root, Prompt: "add a verification recipe", Backend: agent.BackendCodex, Permission: agent.PermissionWrite,
 	})
@@ -901,7 +901,7 @@ func TestVerificationWorkspaceMutationFailsClosed(t *testing.T) {
 	}
 	service.registry = NewRegistry(codexbackend.NewCommand(agent.NewRunner(), binary,
 		[]string{"-test.run=TestOrchestratorCodexProcess", "--"},
-		[]string{"INDEXQUBE_ORCHESTRATOR_CODEX_HELPER=write"}, "codex-cli test"))
+		[]string{"INDEXQUBE_ORCHESTRATOR_CODEX_HELPER=write"}, "codex-cli 0.149.1"))
 	service.verifier = mutatingVerifier{}
 	task, err := service.StartTask(context.Background(), StartTaskInput{
 		Workspace: root, Prompt: "make a change then verify", Backend: agent.BackendCodex, Permission: agent.PermissionWrite,
@@ -939,7 +939,7 @@ func TestAuthoritativeWorkspaceDeltaFlagsUnreportedAndFailedWrites(t *testing.T)
 			}
 			service.registry = NewRegistry(codexbackend.NewCommand(agent.NewRunner(), binary,
 				[]string{"-test.run=TestOrchestratorCodexProcess", "--"},
-				[]string{"INDEXQUBE_ORCHESTRATOR_CODEX_HELPER=" + tc.mode}, "codex-cli test"))
+				[]string{"INDEXQUBE_ORCHESTRATOR_CODEX_HELPER=" + tc.mode}, "codex-cli 0.149.1"))
 			task, err := service.StartTask(context.Background(), StartTaskInput{
 				Workspace: root, Prompt: "write without reporting it", Backend: agent.BackendCodex, Permission: agent.PermissionWrite,
 			})

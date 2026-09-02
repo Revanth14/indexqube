@@ -227,7 +227,7 @@ Goal: a dependable local product for Codex and Claude Code.
 
 - Add schema migrations with downgrade-safe backups and corruption diagnostics.
 - Add retention, redaction, bounded event payloads, orphan process cleanup, and log rotation.
-- Add compatibility fixtures for supported Codex and Claude CLI versions and fail closed on unknown breaking protocols.
+- [x] Add compatibility fixtures for Codex CLI 0.149.x and Claude Code 2.1.x, fail closed outside those tested protocol lines, and provide opt-in real read/write, approval, and handoff smokes.
 - Add installer/update rollback, signed release artifacts, macOS/Linux builds, and `iq doctor` coverage for both task backends.
 - Measure end-to-end task latency, handoff count, verification outcome, crash recovery, and opt-in anonymous reliability telemetry.
 - Run an alpha on real repositories before calling routing automatic or intelligent.
@@ -259,7 +259,7 @@ Work in this order:
 6. **Done:** durable idempotent cancellation plus explicit close/reopen task semantics.
 7. **In progress:** durable verification, strict recipes, Go/Node/Python/Rust detection, and post-turn evidence are done; separate audit evidence remains.
 8. **Done:** daemon-scoped control API authentication, owner-only credential storage, restart rotation, CLI injection, and legacy-daemon rejection.
-9. **In progress:** Claude read-only/write execution, private permission MCP routing, durable approvals, and protocol fixtures are implemented; broader CLI-version compatibility fixtures remain.
+9. **Done:** Claude read-only/write execution, private permission MCP routing, durable approvals, supported-version protocol fixtures, fail-closed CLI probing, and opt-in real-agent smokes.
 10. **Done:** explicit handoff, durable task pinning, conservative failure classification, and deterministic restart-safe ordered fallback.
 11. TUI.
 12. V1 hardening, packaging, and alpha feedback.

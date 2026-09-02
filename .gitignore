@@ -37,7 +37,7 @@ coverage.out
 !.indexqube/verification.json
 *.log
 *.jsonl
-!gateway/internal/agent/claude/testdata/*.jsonl
+!gateway/internal/agent/*/testdata/*.jsonl
 logs/
 gateway/logs/
 gateway/docs/

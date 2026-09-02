@@ -183,6 +183,61 @@ cancel_show="$(INDEXQUBE_HOME="$state_dir" INDEXQUBE_CONTROL_URL="$control_url" 
 grep -q 'Cancellations:' <<<"$cancel_show"
 grep -q 'cancelled' <<<"$cancel_show"
 
+run_real_read_smoke() {
+  local backend="$1"
+  local log="$smoke_root/real-${backend}-read.log"
+  if ! INDEXQUBE_HOME="$state_dir" INDEXQUBE_CONTROL_URL="$control_url" \
+    "$iq_bin" task --backend "$backend" --workspace "$workspace" \
+    'Read README.md and report its first line without changing any files.' >"$log" 2>&1; then
+    printf 'real %s read-only task failed\n' "$backend" >&2
+    sed -n '1,240p' "$log" >&2
+    sed -n '1,240p' "$smoke_root/daemon.log" >&2
+    exit 1
+  fi
+  real_read_task_id="$(sed -n 's/.*\[iq\] task \([^ ]*\) via.*/\1/p' "$log" | head -n 1)"
+  if [[ -z "$real_read_task_id" ]]; then
+    printf 'failed to read real %s task id\n' "$backend" >&2
+    sed -n '1,200p' "$log" >&2
+    exit 1
+  fi
+  real_read_show="$(INDEXQUBE_HOME="$state_dir" INDEXQUBE_CONTROL_URL="$control_url" \
+    "$iq_bin" task show "$real_read_task_id")"
+  grep -q 'Status: open' <<<"$real_read_show"
+  grep -q "Backend: $backend" <<<"$real_read_show"
+  if grep -q '^Attention:' <<<"$real_read_show"; then
+    printf 'real %s read-only task produced an evidence mismatch\n%s\n' "$backend" "$real_read_show" >&2
+    exit 1
+  fi
+}
+
+if [[ "${IQ_SMOKE_REAL_CODEX_READ:-0}" == "1" ]]; then
+  run_real_read_smoke codex
+fi
+
+if [[ "${IQ_SMOKE_REAL_CLAUDE:-0}" == "1" ]]; then
+  run_real_read_smoke claude
+fi
+
+if [[ "${IQ_SMOKE_REAL_HANDOFF:-0}" == "1" ]]; then
+  run_real_read_smoke codex
+  handoff_source_task_id="$real_read_task_id"
+  handoff_log="$smoke_root/real-handoff.log"
+  if ! INDEXQUBE_HOME="$state_dir" INDEXQUBE_CONTROL_URL="$control_url" \
+    "$iq_bin" handoff "$handoff_source_task_id" --to claude \
+    'Read README.md and confirm the canonical handoff context arrived. Do not change files.' >"$handoff_log" 2>&1; then
+    printf 'real Codex-to-Claude handoff failed\n' >&2
+    sed -n '1,240p' "$handoff_log" >&2
+    sed -n '1,240p' "$smoke_root/daemon.log" >&2
+    exit 1
+  fi
+  handoff_show="$(INDEXQUBE_HOME="$state_dir" INDEXQUBE_CONTROL_URL="$control_url" \
+    "$iq_bin" task show "$handoff_source_task_id")"
+  grep -q 'Status: open' <<<"$handoff_show"
+  grep -q 'Handoffs:' <<<"$handoff_show"
+  grep -q 'codex -> claude' <<<"$handoff_show"
+  grep -q 'explicit_handoff' <<<"$handoff_show"
+fi
+
 if [[ "${IQ_SMOKE_REAL_CODEX:-0}" == "1" ]]; then
   real_log="$smoke_root/real-codex.log"
   if ! INDEXQUBE_HOME="$state_dir" INDEXQUBE_CONTROL_URL="$control_url" \

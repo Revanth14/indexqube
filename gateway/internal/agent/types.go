@@ -156,8 +156,9 @@ type Event struct {
 type HealthStatus string
 
 const (
-	HealthAvailable   HealthStatus = "available"
-	HealthUnavailable HealthStatus = "unavailable"
+	HealthAvailable    HealthStatus = "available"
+	HealthUnavailable  HealthStatus = "unavailable"
+	HealthIncompatible HealthStatus = "incompatible"
 )
 
 type BackendHealth struct {

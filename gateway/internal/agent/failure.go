@@ -72,6 +72,7 @@ func ClassifyExecutionFailure(err error, resumeLost bool) FailureClass {
 	}
 	for _, marker := range []string{
 		"decode events", "decode jsonl", "decode stream", "interactive protocol", "stream ended without a result",
+		"unsupported cli version",
 	} {
 		if strings.Contains(text, marker) {
 			return FailureProtocol

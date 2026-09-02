@@ -91,7 +91,7 @@ func TestClaudeProcessHelper(t *testing.T) {
 	if writeMode {
 		runClaudeWriteFixture(args)
 	}
-	fixture := "testdata/read_only_success.jsonl"
+	fixture := "testdata/claude-code-2.1.252-read-only.jsonl"
 	if mode == "resume-lost" {
 		fixture = "testdata/resume_lost.jsonl"
 	} else if mode == "missing-result" {
@@ -177,7 +177,7 @@ func argumentValue(args []string, flag string) string {
 }
 
 func TestDecodeDocumentedStreamJSONFixture(t *testing.T) {
-	raw, err := os.Open("testdata/read_only_success.jsonl")
+	raw, err := os.Open("testdata/claude-code-2.1.252-read-only.jsonl")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -253,7 +253,7 @@ func TestBackendExecutesInitialAndResumeReadOnly(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			backend := NewCommand(agent.NewRunner(), binary,
 				[]string{"-test.run=TestClaudeProcessHelper", "--"},
-				[]string{"INDEXQUBE_CLAUDE_HELPER=" + tc.mode}, "2.1.test (Claude Code)")
+				[]string{"INDEXQUBE_CLAUDE_HELPER=" + tc.mode}, "2.1.252 (Claude Code)")
 			var events []agent.Event
 			result, err := backend.Execute(context.Background(), agent.Request{
 				TaskID: "task", TurnID: "turn", Workspace: ".", Prompt: "fixture prompt",
@@ -305,7 +305,7 @@ func TestBackendWritePausesForDurableApproval(t *testing.T) {
 			}
 			backend := NewCommand(agent.NewRunner(), binary,
 				[]string{"-test.run=TestClaudeProcessHelper", "--"},
-				[]string{"INDEXQUBE_CLAUDE_HELPER=write"}, "2.1.test (Claude Code)")
+				[]string{"INDEXQUBE_CLAUDE_HELPER=write"}, "2.1.252 (Claude Code)")
 			handler := &claudeApprovalHandler{
 				requests: make(chan agent.ApprovalRequest, 1), decisions: make(chan agent.ApprovalDecision, 1),
 			}
@@ -384,7 +384,7 @@ func TestBackendWriteCancellationStopsPendingApproval(t *testing.T) {
 	}
 	backend := NewCommand(agent.NewRunner(), binary,
 		[]string{"-test.run=TestClaudeProcessHelper", "--"},
-		[]string{"INDEXQUBE_CLAUDE_HELPER=write"}, "2.1.test (Claude Code)")
+		[]string{"INDEXQUBE_CLAUDE_HELPER=write"}, "2.1.252 (Claude Code)")
 	handler := &claudeApprovalHandler{
 		requests: make(chan agent.ApprovalRequest, 1), decisions: make(chan agent.ApprovalDecision),
 	}
@@ -435,7 +435,7 @@ func TestDecoderRejectsMalformedKnownMessagesAndMissingResult(t *testing.T) {
 	}
 	backend := NewCommand(agent.NewRunner(), binary,
 		[]string{"-test.run=TestClaudeProcessHelper", "--"},
-		[]string{"INDEXQUBE_CLAUDE_HELPER=missing-result"}, "2.1.test (Claude Code)")
+		[]string{"INDEXQUBE_CLAUDE_HELPER=missing-result"}, "2.1.252 (Claude Code)")
 	_, err = backend.Execute(context.Background(), agent.Request{
 		Workspace: ".", Prompt: "fixture prompt", Permission: agent.PermissionReadOnly,
 	}, agent.EventSinkFunc(func(context.Context, agent.Event) error { return nil }))
@@ -447,6 +447,38 @@ func TestDecoderRejectsMalformedKnownMessagesAndMissingResult(t *testing.T) {
 func TestDetectedVersion(t *testing.T) {
 	if got := detectedVersion("warning\n2.1.252 (Claude Code)\n"); got != "2.1.252 (Claude Code)" {
 		t.Fatalf("version=%q", got)
+	}
+}
+
+func TestVersionCompatibilityFailsClosed(t *testing.T) {
+	for _, test := range []struct {
+		version string
+		status  agent.HealthStatus
+	}{
+		{version: "2.1.0 (Claude Code)", status: agent.HealthAvailable},
+		{version: "2.1.999 (Claude Code)", status: agent.HealthAvailable},
+		{version: "2.0.99 (Claude Code)", status: agent.HealthIncompatible},
+		{version: "2.2.0 (Claude Code)", status: agent.HealthIncompatible},
+		{version: "development", status: agent.HealthIncompatible},
+	} {
+		t.Run(test.version, func(t *testing.T) {
+			backend := NewCommand(agent.NewRunner(), "fixture", nil, nil, test.version)
+			if health := backend.Probe(context.Background()); health.Status != test.status {
+				t.Fatalf("health=%+v want status=%s", health, test.status)
+			}
+		})
+	}
+
+	binary, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := NewCommand(agent.NewRunner(), binary, nil, nil, "3.0.0 (Claude Code)")
+	_, err = backend.Execute(context.Background(), agent.Request{
+		Workspace: ".", Prompt: "fixture prompt", Permission: agent.PermissionReadOnly,
+	}, agent.EventSinkFunc(func(context.Context, agent.Event) error { return nil }))
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "unsupported cli version") {
+		t.Fatalf("error=%v", err)
 	}
 }
 
