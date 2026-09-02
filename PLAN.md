@@ -46,7 +46,7 @@ The original plan described a greenfield project. That is no longer accurate. Th
 | Control API | Shipped foundation | Create, list, inspect, continue, durable cancel, close/reopen, pin/unpin, backend health, assembled task evidence, and replayable/live SSE task events exist; every route is authenticated. |
 | Task CLI | Shipped foundation | Task creation/listing/evidence/continuation plus retry-safe `iq cancel`, explicit close/reopen, and durable backend pin/unpin use authenticated loopback requests. |
 | Codex task backend | Shipped foundation | Read-only execution plus guarded App Server workspace-write execution, durable command/file approvals, event parsing, evidence, native-session resume, and lost-session detection work. |
-| Claude task backend | Partial | Read-only and guarded workspace-write execution, private MCP permission routing, durable command/file approvals, normalized evidence, native-session continuation, lost-session recovery signals, handoff, and protocol fixtures exist; broader compatibility coverage remains. |
+| Claude task backend | Shipped foundation | Read-only and guarded workspace-write execution, private MCP permission routing, durable command/file approvals, normalized evidence, native-session continuation, lost-session recovery signals, handoff, supported-version protocol fixtures, and fail-closed probing work. |
 | Routing and handoff | Shipped foundation | Backend selection, durable task pins, canonical cross-backend handoff, fresh destination lineage, lost-session recovery, conservative failure classification, and restart-safe ordered fallback exist. |
 | Verification | Advanced foundation | Successful write turns persist verification runs/checks; strict configured recipes plus conservative Go, Node, Python, and Rust detection run with bounded output, timeouts, offline dependency controls, workspace-stability checks, and task-scoped security findings with explicit severity policy. |
 | User experience | Partial | Durable task listing, evidence inspection, and approval commands work; there is no TUI or active dashboard, and bare `iq` still opens the legacy Claude wrapper. |
@@ -198,6 +198,11 @@ Goal: IndexQube reports evidence, not merely an agent's claim of completion.
 - [x] Include verification output in `TaskEvidence`, task events, and CLI task summaries.
 - [x] Include verification output in handoff packets.
 
+Security audit findings use `verification_findings` as their durable record and
+are projected through each security check in `TaskEvidence.verification_runs`.
+This is the separate task-scoped audit evidence promised by this gate; a second
+parallel audit read model would duplicate the canonical records.
+
 Exit criteria:
 
 - Every completed write task clearly says what was changed, which checks ran, what passed or failed, and whether human attention is required.
@@ -257,7 +262,7 @@ Work in this order:
 4. **Done:** durable App Server approval request/response state and CLI commands.
 5. **Done:** mutation reconciliation based on per-path pre/post snapshots, independent of adapter events.
 6. **Done:** durable idempotent cancellation plus explicit close/reopen task semantics.
-7. **In progress:** durable verification, strict recipes, Go/Node/Python/Rust detection, and post-turn evidence are done; separate audit evidence remains.
+7. **Done:** durable verification, strict recipes, Go/Node/Python/Rust detection, post-turn evidence, and separate structured security findings projected through canonical task evidence.
 8. **Done:** daemon-scoped control API authentication, owner-only credential storage, restart rotation, CLI injection, and legacy-daemon rejection.
 9. **Done:** Claude read-only/write execution, private permission MCP routing, durable approvals, supported-version protocol fixtures, fail-closed CLI probing, and opt-in real-agent smokes.
 10. **Done:** explicit handoff, durable task pinning, conservative failure classification, and deterministic restart-safe ordered fallback.

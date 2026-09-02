@@ -42,7 +42,7 @@ The operating rule is simple: **the agent is temporary; the task is not.**
 | Changed-file, command, route, snapshot, and session evidence | Shipped foundation |
 | Configured recipes plus automatic Go, Node, Python, and Rust verification | Shipped foundation |
 | Task-scoped security audit findings with severity and evidence | Shipped foundation |
-| Claude Code read-only/write task execution and native-session continuation | In progress |
+| Claude Code read-only/write task execution and native-session continuation | Shipped foundation |
 | Claude durable write approvals | Shipped foundation |
 | Explicit Codex/Claude handoff with durable canonical packets | Shipped foundation |
 | Durable per-task backend pin/unpin policy | Shipped foundation |
