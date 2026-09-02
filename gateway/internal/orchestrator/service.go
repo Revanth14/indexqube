@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Revanth14/indexqube/gateway/internal/agent"
+	"github.com/Revanth14/indexqube/gateway/internal/redact"
 	"github.com/Revanth14/indexqube/gateway/internal/taskstore"
 	"github.com/Revanth14/indexqube/gateway/internal/verification"
 	"github.com/Revanth14/indexqube/gateway/internal/workspace"
@@ -873,11 +874,7 @@ func (h *turnApprovalHandler) RequestApproval(ctx context.Context, request agent
 }
 
 func boundedApprovalText(value string, limit int) string {
-	value = strings.TrimSpace(value)
-	if limit > 0 && len(value) > limit {
-		return value[:limit]
-	}
-	return value
+	return redact.Truncate(redact.String(strings.TrimSpace(value)), limit)
 }
 
 // ReconcileInterrupted converts stale queued/running turns into durable failed

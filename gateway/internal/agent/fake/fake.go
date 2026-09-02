@@ -122,6 +122,7 @@ func (b *Backend) Execute(ctx context.Context, req agent.Request, sink agent.Eve
 	})
 	processResult, runErr := b.runner.Run(ctx, agent.ProcessSpec{
 		Path: b.binary, Args: b.args, Dir: req.Workspace, Env: b.env, Stdin: append(raw, '\n'),
+		TaskID: req.TaskID, TurnID: req.TurnID,
 	}, req.Guard, decoder, sink)
 	result.ExitCode = processResult.ExitCode
 	return result, runErr

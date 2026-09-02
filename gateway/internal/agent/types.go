@@ -175,6 +175,23 @@ type ProcessGuard interface {
 	PrepareCommand(*exec.Cmd) error
 }
 
+// ProcessInfo is the durable identity of a supervised backend process group.
+// Token is injected into the child environment so restart cleanup can verify
+// ownership even if the operating system has reused the numeric PID.
+type ProcessInfo struct {
+	PID        int
+	Token      string
+	TaskID     string
+	TurnID     string
+	Executable string
+	StartedAt  time.Time
+}
+
+type ProcessObserver interface {
+	ProcessStarted(context.Context, ProcessInfo) error
+	ProcessExited(context.Context, int) error
+}
+
 type Request struct {
 	TaskID          string
 	TurnID          string

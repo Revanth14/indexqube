@@ -84,6 +84,8 @@ func main() {
 		runLogs(os.Args[2:])
 	case "doctor":
 		runDoctor(os.Args[2:])
+	case "backup":
+		runBackup(os.Args[2:])
 	case "setup":
 		runSetup(os.Args[2:])
 	case "unsetup":
@@ -589,6 +591,7 @@ func printHelp() {
     iq status            Show daemon status
     iq logs              Print recent daemon logs
     iq doctor            Check daemon and supported agent setup
+    iq backup            Write a consistent owner-only task database backup
     iq setup [agent...]  Configure supported agents (claude, codex)
     iq unsetup [agent...] Restore IndexQube setup backups
     iq audit [latest]     Write a local agent security report from the latest dump

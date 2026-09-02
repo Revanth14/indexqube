@@ -152,7 +152,7 @@ func (b *Backend) Execute(ctx context.Context, req agent.Request, sink agent.Eve
 	})
 	processResult, runErr := b.runner.Run(ctx, agent.ProcessSpec{
 		Path: b.binary, Args: append(append([]string(nil), b.prefixArgs...), args...), Dir: req.Workspace,
-		Env: b.env, Stdin: []byte(req.Prompt + "\n"),
+		Env: b.env, Stdin: []byte(req.Prompt + "\n"), TaskID: req.TaskID, TurnID: req.TurnID,
 	}, req.Guard, decoder, sink)
 	result.ExitCode = processResult.ExitCode
 	if runErr != nil && req.NativeSessionID != "" && isResumeLost(runErr.Error()+" "+processResult.Stderr) {

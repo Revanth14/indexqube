@@ -347,4 +347,12 @@ if [[ "${IQ_SMOKE_REAL_APPROVAL:-0}" == "1" ]]; then
   grep -q 'approved' <<<"$approval_show"
 fi
 
+backup_path="$state_dir/smoke-backup.db"
+INDEXQUBE_HOME="$state_dir" "$iq_bin" backup --output "$backup_path" >/dev/null
+test -s "$backup_path"
+doctor_output="$(INDEXQUBE_HOME="$state_dir" "$iq_bin" doctor)"
+grep -q 'task database: ok' <<<"$doctor_output"
+grep -q 'control API: ok' <<<"$doctor_output"
+grep -q 'telemetry: disabled (default)' <<<"$doctor_output"
+
 printf 'control-plane smoke passed: %s\n' "$task_id"

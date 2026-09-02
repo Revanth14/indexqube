@@ -4,11 +4,14 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 )
@@ -17,11 +20,13 @@ const maxAgentEventBytes = 1 << 20
 const maxAgentStderrBytes = 64 << 10
 
 type ProcessSpec struct {
-	Path  string
-	Args  []string
-	Dir   string
-	Env   []string
-	Stdin []byte
+	Path   string
+	Args   []string
+	Dir    string
+	Env    []string
+	Stdin  []byte
+	TaskID string
+	TurnID string
 }
 
 type EventDecoder interface {
@@ -74,6 +79,7 @@ func (e *ProcessError) Error() string {
 
 type Runner struct {
 	CancelGrace time.Duration
+	Observer    ProcessObserver
 }
 
 func NewRunner() *Runner {
@@ -89,7 +95,11 @@ func (r *Runner) Run(ctx context.Context, spec ProcessSpec, guard ProcessGuard, 
 	}
 	cmd := exec.Command(spec.Path, spec.Args...)
 	cmd.Dir = spec.Dir
-	cmd.Env = append(os.Environ(), spec.Env...)
+	processToken, err := newProcessToken()
+	if err != nil {
+		return ProcessResult{}, err
+	}
+	cmd.Env = trackedProcessEnv(os.Environ(), spec.Env, processToken)
 	cmd.Stdin = bytes.NewReader(spec.Stdin)
 	platformConfigureProcess(cmd)
 	if guard != nil {
@@ -109,6 +119,14 @@ func (r *Runner) Run(ctx context.Context, spec ProcessSpec, guard ProcessGuard, 
 		stdoutWriter.Close()
 		return ProcessResult{}, fmt.Errorf("agent: start: %w", err)
 	}
+	if err := r.processStarted(ctx, cmd.Process.Pid, processToken, spec); err != nil {
+		_ = stdoutWriter.Close()
+		terminateProcess(cmd, r.cancelGrace())
+		_ = cmd.Wait()
+		_ = stdout.Close()
+		return ProcessResult{}, fmt.Errorf("agent: register process: %w", err)
+	}
+	defer r.processExited(cmd.Process.Pid)
 	// The child owns its duplicate of the write descriptor. Closing the parent
 	// copy means the reader receives EOF exactly when the child exits; unlike
 	// Cmd.StdoutPipe, Cmd.Wait cannot close the reader before buffered JSONL is
@@ -196,7 +214,11 @@ func (r *Runner) RunInteractive(ctx context.Context, spec ProcessSpec, guard Pro
 	defer cancelHandler()
 	cmd := exec.Command(spec.Path, spec.Args...)
 	cmd.Dir = spec.Dir
-	cmd.Env = append(os.Environ(), spec.Env...)
+	processToken, err := newProcessToken()
+	if err != nil {
+		return ProcessResult{}, err
+	}
+	cmd.Env = trackedProcessEnv(os.Environ(), spec.Env, processToken)
 	platformConfigureProcess(cmd)
 	if guard != nil {
 		if err := guard.PrepareCommand(cmd); err != nil {
@@ -221,6 +243,15 @@ func (r *Runner) RunInteractive(ctx context.Context, spec ProcessSpec, guard Pro
 		stdoutWriter.Close()
 		return ProcessResult{}, fmt.Errorf("agent: start: %w", err)
 	}
+	if err := r.processStarted(ctx, cmd.Process.Pid, processToken, spec); err != nil {
+		_ = stdoutWriter.Close()
+		terminateProcess(cmd, r.cancelGrace())
+		_ = cmd.Wait()
+		_ = stdin.Close()
+		_ = stdout.Close()
+		return ProcessResult{}, fmt.Errorf("agent: register process: %w", err)
+	}
+	defer r.processExited(cmd.Process.Pid)
 	_ = stdoutWriter.Close()
 
 	var writeMu sync.Mutex
@@ -316,6 +347,41 @@ func (r *Runner) RunInteractive(ctx context.Context, spec ProcessSpec, guard Pro
 		}
 		return finish(processErr)
 	}
+}
+
+func (r *Runner) processStarted(ctx context.Context, pid int, token string, spec ProcessSpec) error {
+	if r.Observer == nil {
+		return nil
+	}
+	return r.Observer.ProcessStarted(ctx, ProcessInfo{
+		PID: pid, Token: token, TaskID: spec.TaskID, TurnID: spec.TurnID,
+		Executable: spec.Path, StartedAt: time.Now().UTC(),
+	})
+}
+
+func (r *Runner) processExited(pid int) {
+	if r.Observer != nil {
+		_ = r.Observer.ProcessExited(context.Background(), pid)
+	}
+}
+
+func newProcessToken() (string, error) {
+	raw := make([]byte, 24)
+	if _, err := rand.Read(raw); err != nil {
+		return "", fmt.Errorf("agent: generate process ownership token: %w", err)
+	}
+	return hex.EncodeToString(raw), nil
+}
+
+func trackedProcessEnv(base, extra []string, token string) []string {
+	const key = "INDEXQUBE_PROCESS_TOKEN="
+	env := make([]string, 0, len(base)+len(extra)+1)
+	for _, value := range append(append([]string(nil), base...), extra...) {
+		if !strings.HasPrefix(value, key) {
+			env = append(env, value)
+		}
+	}
+	return append(env, key+token)
 }
 
 func (r *Runner) cancelGrace() time.Duration {

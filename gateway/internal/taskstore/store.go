@@ -18,11 +18,6 @@ import (
 )
 
 const schema = `
-PRAGMA journal_mode = WAL;
-PRAGMA synchronous = NORMAL;
-PRAGMA foreign_keys = ON;
-PRAGMA busy_timeout = 5000;
-
 CREATE TABLE IF NOT EXISTS tasks (
     task_id            TEXT PRIMARY KEY,
     workspace_id       TEXT NOT NULL,
@@ -36,6 +31,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     updated_at         INTEGER NOT NULL,
     retention_deadline INTEGER NOT NULL
 );
+
+CREATE INDEX IF NOT EXISTS tasks_retention_idx ON tasks(status, retention_deadline);
 
 CREATE TABLE IF NOT EXISTS task_backend_pins (
     task_id     TEXT PRIMARY KEY REFERENCES tasks(task_id) ON DELETE CASCADE,
@@ -284,6 +281,15 @@ CREATE TABLE IF NOT EXISTS backend_health_observations (
     version             TEXT NOT NULL DEFAULT '',
     observed_at         INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS backend_processes (
+    pid                 INTEGER PRIMARY KEY,
+    process_token       TEXT NOT NULL UNIQUE,
+    task_id             TEXT NOT NULL DEFAULT '',
+    turn_id             TEXT NOT NULL DEFAULT '',
+    executable          TEXT NOT NULL,
+    started_at          INTEGER NOT NULL
+);
 `
 
 type Store struct {
@@ -294,19 +300,34 @@ func Open(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, fmt.Errorf("taskstore: create parent: %w", err)
 	}
+	existing := false
+	if info, err := os.Stat(path); err == nil {
+		existing = info.Size() > 0
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("taskstore: stat: %w", err)
+	}
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, fmt.Errorf("taskstore: open: %w", err)
 	}
 	db.SetMaxOpenConns(1)
-	if _, err := db.Exec(schema); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("taskstore: migrate: %w", err)
+	if existing {
+		if err := integrityCheckDB(context.Background(), db); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("taskstore: database integrity check failed for %s: %w", path, err)
+		}
 	}
-	if err := ensureColumn(db, "route_attempts", "fallback_eligible",
-		`ALTER TABLE route_attempts ADD COLUMN fallback_eligible INTEGER NOT NULL DEFAULT 0`); err != nil {
+	if _, err := db.Exec(databasePragmas); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("taskstore: migrate fallback eligibility: %w", err)
+		return nil, fmt.Errorf("taskstore: configure: %w", err)
+	}
+	if err := migrate(db, path, existing); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err := integrityCheckDB(context.Background(), db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("taskstore: post-migration integrity check failed for %s: %w", path, err)
 	}
 	if err := os.Chmod(path, 0o600); err != nil {
 		db.Close()
@@ -325,7 +346,12 @@ var (
 	ErrFallbackRejected      = errors.New("taskstore: automatic fallback rejected")
 )
 
-func ensureColumn(db *sql.DB, table, column, alterStatement string) error {
+type queryExecer interface {
+	Query(query string, args ...any) (*sql.Rows, error)
+	Exec(query string, args ...any) (sql.Result, error)
+}
+
+func ensureColumn(db queryExecer, table, column, alterStatement string) error {
 	rows, err := db.Query(`PRAGMA table_info(` + table + `)`)
 	if err != nil {
 		return err
@@ -427,8 +453,8 @@ func (s *Store) CreateTurn(ctx context.Context, in CreateTurnInput) (Turn, Route
 		return Turn{}, RouteAttempt{}, err
 	}
 	defer tx.Rollback()
-	result, err := tx.ExecContext(ctx, `UPDATE tasks SET status=?,revision=revision+1,updated_at=? WHERE task_id=? AND status=?`,
-		TaskRunning, in.Now.UnixMilli(), in.TaskID, TaskOpen)
+	result, err := tx.ExecContext(ctx, `UPDATE tasks SET status=?,revision=revision+1,updated_at=?,retention_deadline=? WHERE task_id=? AND status=?`,
+		TaskRunning, in.Now.UnixMilli(), in.Now.Add(defaultRetention).UnixMilli(), in.TaskID, TaskOpen)
 	if err != nil {
 		return Turn{}, RouteAttempt{}, err
 	}
@@ -697,6 +723,7 @@ func (s *Store) RecordVerificationRun(ctx context.Context, run VerificationRun) 
 	if run.StartedAt.IsZero() {
 		run.StartedAt = time.Now().UTC()
 	}
+	run = normalizeVerificationRun(run)
 	var completedAt any
 	if run.CompletedAt != nil {
 		completedAt = run.CompletedAt.UnixMilli()
@@ -1015,6 +1042,7 @@ func (s *Store) transitionTask(ctx context.Context, taskID string, target TaskSt
 // never observe a pause without the request needed to resolve it.
 func (s *Store) CreateApproval(ctx context.Context, in CreateApprovalInput) (Approval, error) {
 	approval := in.Approval
+	approval = normalizeApproval(approval)
 	if approval.ID == "" {
 		approval.ID = NewID("approval")
 	}
@@ -1179,6 +1207,7 @@ func (s *Store) AppendEvent(ctx context.Context, event agent.Event) (agent.Event
 	if event.Timestamp.IsZero() {
 		event.Timestamp = time.Now().UTC()
 	}
+	event = normalizeDurableEvent(event)
 	payload, err := json.Marshal(event)
 	if err != nil {
 		return agent.Event{}, err
@@ -1274,6 +1303,9 @@ func (s *Store) finishTurn(ctx context.Context, taskID, turnID, attemptID string
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
+	assistant = safeText(assistant, maxMessageBytes)
+	code = safeText(code, maxMetadataValue)
+	message = safeText(message, maxErrorBytes)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err

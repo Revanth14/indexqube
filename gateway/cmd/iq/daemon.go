@@ -35,6 +35,9 @@ const (
 	defaultControlAddr = "127.0.0.1:17374"
 	daemonStateFile    = "daemon.json"
 	defaultLogLines    = 80
+	maxDaemonLogs      = 10
+	maxDaemonLogBytes  = 8 << 20
+	maxDaemonLogAge    = 14 * 24 * time.Hour
 )
 
 type daemonState struct {
@@ -142,6 +145,9 @@ func startDaemonWithControl(addr, controlAddr string) error {
 	if err := os.MkdirAll(logDir, 0o700); err != nil {
 		return fmt.Errorf("create log dir: %w", err)
 	}
+	if err := maintainDaemonLogs(logDir, time.Now().UTC()); err != nil {
+		return fmt.Errorf("rotate daemon logs: %w", err)
+	}
 	logPath := filepath.Join(logDir, "daemon-"+time.Now().Format("20060102-150405")+".log")
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
@@ -229,6 +235,20 @@ func runDaemonForegroundWithControl(addr, controlAddr string) error {
 		return err
 	}
 	defer store.Close()
+	cleaned, err := cleanupRecordedProcesses(context.Background(), store, os.Stderr)
+	if err != nil {
+		return fmt.Errorf("clean up orphan backend processes: %w", err)
+	}
+	if cleaned > 0 {
+		fmt.Fprintf(os.Stderr, "indexqube: cleaned %d orphan backend process(es)\n", cleaned)
+	}
+	retention, err := store.ApplyRetention(context.Background(), time.Now().UTC())
+	if err != nil {
+		return fmt.Errorf("apply task retention: %w", err)
+	}
+	if retention.TasksDeleted > 0 {
+		fmt.Fprintf(os.Stderr, "indexqube: retention removed %d expired closed task(s)\n", retention.TasksDeleted)
+	}
 	locks, err := workspace.NewLockManager(filepath.Join(home, "locks"), store, fmt.Sprintf("daemon_%d", os.Getpid()))
 	if err != nil {
 		return err
@@ -241,7 +261,9 @@ func runDaemonForegroundWithControl(addr, controlAddr string) error {
 	defer stop()
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	go runRetentionLoop(runCtx, store, os.Stderr)
 	runner := agent.NewRunner()
+	runner.Observer = store
 	claudePath, _ := exec.LookPath("claude")
 	codexPath, _ := exec.LookPath("codex")
 	service, err := orchestrator.NewService(runCtx, store, locks, orchestrator.NewRegistry(
@@ -401,31 +423,7 @@ func printDaemonLogs(w io.Writer, lines int) error {
 }
 
 func printDoctor(w io.Writer) {
-	fmt.Fprintln(w, "IndexQube doctor")
-	fmt.Fprintln(w, "---------------")
-	st, err := readDaemonState()
-	addr := defaultDaemonAddr
-	if err == nil && st.Addr != "" {
-		addr = normalizeDaemonAddr(st.Addr)
-	}
-	if isDaemonHealthy(addr) {
-		fmt.Fprintf(w, "daemon: ok (%s)\n", daemonURL(addr))
-	} else {
-		fmt.Fprintf(w, "daemon: not running (%s)\n", daemonURL(addr))
-	}
-	printBinaryCheck(w, "claude")
-	printBinaryCheck(w, "codex")
-	printBinaryCheck(w, "gemini")
-	if codexConfigHasIndexQube() {
-		fmt.Fprintln(w, "codex setup: configured")
-	} else {
-		fmt.Fprintln(w, "codex setup: not configured")
-	}
-	if claudeShellHasIndexQube() {
-		fmt.Fprintln(w, "claude setup: configured")
-	} else {
-		fmt.Fprintln(w, "claude setup: not configured")
-	}
+	writeDoctor(w)
 }
 
 func printBinaryCheck(w io.Writer, name string) {

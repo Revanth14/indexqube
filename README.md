@@ -51,6 +51,7 @@ The operating rule is simple: **the agent is temporary; the task is not.**
 | Daemon-scoped authentication on every control endpoint and SSE stream | Shipped foundation |
 | Attachable `iq ui` terminal experience | Shipped foundation |
 | Authenticated workspace dashboard | Shipped foundation |
+| Versioned task storage, retention, backups, and crash cleanup | Shipped foundation |
 | Release installer | Planned |
 
 The existing Claude/OpenAI-compatible local proxy remains available as an
@@ -218,6 +219,27 @@ Stop the daemon when finished:
 By default, state lives under `~/.indexqube`. Set `INDEXQUBE_HOME` to isolate
 task history, logs, cache data, sessions, setup backups, and the local anonymous
 machine identifier.
+
+Task storage is explicitly schema-versioned and fails closed when an older
+binary sees a newer database. IndexQube runs a SQLite integrity check before
+opening existing state and writes a consistent owner-only snapshot before any
+legacy migration. `iq backup [--output PATH]` creates the same consistent
+snapshot on demand without overwriting an existing file.
+
+Closed tasks expire after 30 days of inactivity; open, running,
+awaiting-approval, and needs-attention tasks are never removed by retention.
+The daemon applies retention at startup and every six hours. Backend events,
+approval details, terminal errors, and verification output are centrally
+secret-redacted and size-bounded before durable storage. Supervised agent
+process groups carry an unguessable ownership token and are recorded in the
+database, allowing a restarted daemon to terminate its own orphans without
+risking an unrelated reused PID. Daemon logs retain a bounded count and age,
+and oversized inactive logs retain only their most recent 8 MiB.
+
+`iq doctor` checks state permissions, daemon/control health, database schema
+and integrity, backups, lock/log/credential permissions, the installed Codex
+and Claude protocol versions, optional proxy setup, and the opt-in telemetry
+state.
 
 ### Control API authentication
 
@@ -494,9 +516,9 @@ PLAN.md                            product gates and implementation order
 
 Work is currently focused on:
 
-1. broader Codex and Claude CLI compatibility fixtures and real-agent smokes;
-2. persistence, retention, recovery, and diagnostics hardening;
-3. signed release packaging and real-repository alpha feedback.
+1. signed macOS/Linux release packaging and installer rollback;
+2. local reliability metrics and opt-in anonymous reliability telemetry;
+3. real-repository alpha feedback and broader CLI compatibility fixtures.
 
 The acceptance gates and non-negotiable safety invariants live in
 [PLAN.md](./PLAN.md).

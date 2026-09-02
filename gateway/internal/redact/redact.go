@@ -6,6 +6,7 @@ package redact
 import (
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 const marker = "[redacted]"
@@ -68,7 +69,17 @@ func Truncate(value string, max int) string {
 		return value
 	}
 	if max <= 3 {
-		return value[:max]
+		return validPrefix(value, max)
 	}
-	return value[:max-3] + "..."
+	return validPrefix(value, max-3) + "..."
+}
+
+func validPrefix(value string, max int) string {
+	if max >= len(value) {
+		return value
+	}
+	for max > 0 && !utf8.ValidString(value[:max]) {
+		max--
+	}
+	return value[:max]
 }

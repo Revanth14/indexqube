@@ -77,7 +77,7 @@ func (b *Backend) executeAppServer(ctx context.Context, req agent.Request, sink 
 	}
 	args := append(append([]string(nil), b.prefixArgs...), "app-server", "--listen", "stdio://")
 	processResult, runErr := b.runner.RunInteractive(ctx, agent.ProcessSpec{
-		Path: b.binary, Args: args, Dir: req.Workspace, Env: b.env,
+		Path: b.binary, Args: args, Dir: req.Workspace, Env: b.env, TaskID: req.TaskID, TurnID: req.TurnID,
 	}, req.Guard, initial, func(lineCtx context.Context, line []byte, send func([]byte) error) (bool, error) {
 		var message appServerEnvelope
 		if err := json.Unmarshal(line, &message); err != nil {

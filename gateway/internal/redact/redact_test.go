@@ -3,6 +3,7 @@ package redact
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestString_RedactsKnownSecretShapes(t *testing.T) {
@@ -54,5 +55,12 @@ func TestValueForKey_RedactsSensitiveKeys(t *testing.T) {
 
 	if got := ValueForKey("message", "hello sk-test123456789"); strings.Contains(got, "sk-test123456789") {
 		t.Fatalf("message redaction leaked secret: %q", got)
+	}
+}
+
+func TestTruncatePreservesUTF8(t *testing.T) {
+	got := Truncate("a🙂b🙂c", 8)
+	if !utf8.ValidString(got) || len(got) > 8 || !strings.HasSuffix(got, "...") {
+		t.Fatalf("truncated=%q bytes=%d", got, len(got))
 	}
 }

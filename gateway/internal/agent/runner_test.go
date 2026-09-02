@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"sync"
 	"testing"
 	"time"
 )
@@ -93,6 +94,54 @@ func TestRunnerStreamsDecodedEvents(t *testing.T) {
 	}
 	if got != 1 {
 		t.Fatalf("events=%d want 1", got)
+	}
+}
+
+type recordingProcessObserver struct {
+	mu      sync.Mutex
+	started []ProcessInfo
+	exited  []int
+}
+
+func (o *recordingProcessObserver) ProcessStarted(_ context.Context, process ProcessInfo) error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.started = append(o.started, process)
+	return nil
+}
+
+func (o *recordingProcessObserver) ProcessExited(_ context.Context, pid int) error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.exited = append(o.exited, pid)
+	return nil
+}
+
+func TestRunnerRegistersAndClearsSupervisedProcess(t *testing.T) {
+	binary, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	observer := &recordingProcessObserver{}
+	runner := NewRunner()
+	runner.Observer = observer
+	_, err = runner.Run(context.Background(), ProcessSpec{
+		Path: binary, Args: []string{"-test.run=TestRunnerProcessHelper"}, Env: []string{"INDEXQUBE_RUNNER_HELPER=event"},
+		TaskID: "task_observed", TurnID: "turn_observed",
+	}, nil, EventDecoderFunc(func([]byte) (Event, bool, error) {
+		return Event{Type: EventCompleted}, true, nil
+	}), EventSinkFunc(func(context.Context, Event) error { return nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	observer.mu.Lock()
+	defer observer.mu.Unlock()
+	if len(observer.started) != 1 || len(observer.exited) != 1 {
+		t.Fatalf("started=%+v exited=%v", observer.started, observer.exited)
+	}
+	process := observer.started[0]
+	if process.PID <= 0 || process.Token == "" || process.TaskID != "task_observed" || process.TurnID != "turn_observed" || observer.exited[0] != process.PID {
+		t.Fatalf("process=%+v exited=%v", process, observer.exited)
 	}
 }
 

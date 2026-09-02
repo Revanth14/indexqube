@@ -232,10 +232,11 @@ Exit criteria:
 
 Goal: a dependable local product for Codex and Claude Code.
 
-- Add schema migrations with downgrade-safe backups and corruption diagnostics.
-- Add retention, redaction, bounded event payloads, orphan process cleanup, and log rotation.
+- [x] Add schema migrations with downgrade-safe backups and corruption diagnostics.
+- [x] Add retention, redaction, bounded event payloads, token-verified orphan process cleanup, and bounded log count/age/size rotation.
 - [x] Add compatibility fixtures for Codex CLI 0.149.x and Claude Code 2.1.x, fail closed outside those tested protocol lines, and provide opt-in real read/write, approval, and handoff smokes.
-- Add installer/update rollback, signed release artifacts, macOS/Linux builds, and `iq doctor` coverage for both task backends.
+- Add installer/update rollback and signed release artifacts for macOS/Linux builds.
+- [x] Expand `iq doctor` to cover storage integrity, owner-only state, daemon/control health, and both task backend protocol versions.
 - Measure end-to-end task latency, handoff count, verification outcome, crash recovery, and opt-in anonymous reliability telemetry.
 - Run an alpha on real repositories before calling routing automatic or intelligent.
 
