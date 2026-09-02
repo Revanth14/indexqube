@@ -134,6 +134,20 @@ func (s *Service) HandoffTask(ctx context.Context, input HandoffTaskInput) (Hand
 	if identity.ID != task.WorkspaceID {
 		return HandoffTaskResult{}, fmt.Errorf("orchestrator: workspace identity changed")
 	}
+	turnID := taskstore.NewID("turn")
+	var guard *workspace.WriteGuard
+	if task.Permission == agent.PermissionWrite {
+		guard, err = s.locks.AcquireWrite(ctx, identity.ID, task.ID, turnID)
+		if err != nil {
+			return HandoffTaskResult{}, fmt.Errorf("orchestrator: reserve workspace writer: %w", err)
+		}
+	}
+	releaseGuard := guard != nil
+	defer func() {
+		if releaseGuard {
+			_ = guard.Release(context.Background())
+		}
+	}()
 	evidence, found, err := s.store.TaskEvidence(ctx, task.ID)
 	if err != nil {
 		return HandoffTaskResult{}, err
@@ -154,7 +168,6 @@ func (s *Service) HandoffTask(ctx context.Context, input HandoffTaskInput) (Hand
 	if request == "" {
 		request = defaultHandoffRequest
 	}
-	turnID := taskstore.NewID("turn")
 	snapshot, err := workspace.Capture(ctx, identity, task.ID, turnID, "handoff")
 	if err != nil {
 		return HandoffTaskResult{}, fmt.Errorf("orchestrator: capture handoff workspace: %w", err)
@@ -183,6 +196,7 @@ func (s *Service) HandoffTask(ctx context.Context, input HandoffTaskInput) (Hand
 	s.cancels[task.ID] = activeTurn{turnID: turn.ID, cancel: cancel}
 	s.mu.Unlock()
 	s.wg.Add(1)
+	releaseGuard = false
 	go func() {
 		defer s.wg.Done()
 		s.execute(turnCtx, task, turn, attempt, destination, identity, executeOptions{
@@ -191,6 +205,7 @@ func (s *Service) HandoffTask(ctx context.Context, input HandoffTaskInput) (Hand
 				"decision_reason": "explicit_handoff", "handoff_id": handoff.ID,
 				"from_backend": string(handoff.FromBackend), "to_backend": string(handoff.ToBackend),
 			},
+			inheritedGuard: guard, releaseInheritedGuard: guard != nil,
 		})
 	}()
 	return HandoffTaskResult{Task: task, Handoff: handoff}, nil

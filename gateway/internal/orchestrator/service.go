@@ -75,6 +75,7 @@ type executeOptions struct {
 	predecessorSessionID  string
 	routeMetadata         map[string]string
 	inheritedGuard        *workspace.WriteGuard
+	releaseInheritedGuard bool
 }
 
 type Service struct {
@@ -134,13 +135,25 @@ func (s *Service) StartTask(ctx context.Context, input StartTaskInput) (taskstor
 	if err != nil {
 		return taskstore.Task{}, err
 	}
+	taskID := taskstore.NewID("task")
+	turnID := taskstore.NewID("turn")
+	var guard *workspace.WriteGuard
+	if input.Permission == agent.PermissionWrite {
+		guard, err = s.locks.AcquireWrite(ctx, identity.ID, taskID, turnID)
+		if err != nil {
+			return taskstore.Task{}, fmt.Errorf("orchestrator: reserve workspace writer: %w", err)
+		}
+	}
 	now := time.Now().UTC()
 	task, turn, attempt, err := s.store.CreateTask(ctx, taskstore.CreateTaskInput{
-		TaskID: taskstore.NewID("task"), TurnID: taskstore.NewID("turn"), RouteAttemptID: taskstore.NewID("route"),
+		TaskID: taskID, TurnID: turnID, RouteAttemptID: taskstore.NewID("route"),
 		WorkspaceID: identity.ID, WorkspacePath: identity.Root, Goal: input.Prompt, Permission: input.Permission,
 		PreferredBackend: backendID, PinBackend: input.PinBackend, IdempotencyKey: input.IdempotencyKey, Now: now,
 	})
 	if err != nil {
+		if guard != nil {
+			_ = guard.Release(context.Background())
+		}
 		return taskstore.Task{}, err
 	}
 	turnCtx, cancel := context.WithCancel(s.ctx)
@@ -150,7 +163,9 @@ func (s *Service) StartTask(ctx context.Context, input StartTaskInput) (taskstor
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
-		s.execute(turnCtx, task, turn, attempt, backend, identity, executeOptions{})
+		s.execute(turnCtx, task, turn, attempt, backend, identity, executeOptions{
+			inheritedGuard: guard, releaseInheritedGuard: guard != nil,
+		})
 	}()
 	return task, nil
 }
@@ -191,12 +206,23 @@ func (s *Service) ContinueTask(ctx context.Context, input ContinueTaskInput) (ta
 	} else if found && session.Status == "active" {
 		prior = &session
 	}
+	turnID := taskstore.NewID("turn")
+	var guard *workspace.WriteGuard
+	if task.Permission == agent.PermissionWrite {
+		guard, err = s.locks.AcquireWrite(ctx, identity.ID, task.ID, turnID)
+		if err != nil {
+			return taskstore.Task{}, fmt.Errorf("orchestrator: reserve workspace writer: %w", err)
+		}
+	}
 	turn, attempt, err := s.store.CreateTurn(ctx, taskstore.CreateTurnInput{
-		TurnID: taskstore.NewID("turn"), RouteAttemptID: taskstore.NewID("route"), TaskID: task.ID,
+		TurnID: turnID, RouteAttemptID: taskstore.NewID("route"), TaskID: task.ID,
 		Message: input.Prompt, Permission: task.Permission, Backend: backend.ID(),
 		IdempotencyKey: input.IdempotencyKey, Now: time.Now().UTC(),
 	})
 	if err != nil {
+		if guard != nil {
+			_ = guard.Release(context.Background())
+		}
 		return taskstore.Task{}, err
 	}
 	turnCtx, cancel := context.WithCancel(s.ctx)
@@ -209,7 +235,9 @@ func (s *Service) ContinueTask(ctx context.Context, input ContinueTaskInput) (ta
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
-		s.execute(turnCtx, task, turn, attempt, backend, identity, executeOptions{priorSession: prior})
+		s.execute(turnCtx, task, turn, attempt, backend, identity, executeOptions{
+			priorSession: prior, inheritedGuard: guard, releaseInheritedGuard: guard != nil,
+		})
 	}()
 	return task, nil
 }
@@ -224,7 +252,7 @@ func (s *Service) execute(ctx context.Context, task taskstore.Task, turn tasksto
 	}()
 
 	guard := options.inheritedGuard
-	ownsGuard := false
+	ownsGuard := guard != nil && options.releaseInheritedGuard
 	var err error
 	if task.Permission == agent.PermissionWrite && guard == nil {
 		guard, err = s.locks.AcquireWrite(ctx, identity.ID, task.ID, turn.ID)

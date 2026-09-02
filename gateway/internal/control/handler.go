@@ -14,6 +14,7 @@ import (
 	"github.com/Revanth14/indexqube/gateway/internal/agent"
 	"github.com/Revanth14/indexqube/gateway/internal/orchestrator"
 	"github.com/Revanth14/indexqube/gateway/internal/taskstore"
+	"github.com/Revanth14/indexqube/gateway/internal/workspace"
 )
 
 type Handler struct {
@@ -79,6 +80,10 @@ func (h *Handler) handoffTask(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "task_not_found", err)
 		return
 	}
+	if errors.Is(err, workspace.ErrWorkspaceLocked) {
+		writeError(w, http.StatusConflict, "workspace_busy", err)
+		return
+	}
 	if err != nil {
 		writeError(w, http.StatusConflict, "handoff_rejected", err)
 		return
@@ -105,6 +110,10 @@ func (h *Handler) continueTask(w http.ResponseWriter, r *http.Request) {
 	task, err := h.service.ContinueTask(r.Context(), orchestrator.ContinueTaskInput{
 		TaskID: r.PathValue("taskID"), Prompt: body.Prompt, IdempotencyKey: body.IdempotencyKey,
 	})
+	if errors.Is(err, workspace.ErrWorkspaceLocked) {
+		writeError(w, http.StatusConflict, "workspace_busy", err)
+		return
+	}
 	if err != nil {
 		writeError(w, http.StatusConflict, "continuation_rejected", err)
 		return
@@ -157,6 +166,10 @@ func (h *Handler) createTask(w http.ResponseWriter, r *http.Request) {
 		Workspace: body.Workspace, Prompt: body.Prompt, Backend: body.Backend, Provider: body.Provider,
 		Permission: body.Permission, PinBackend: body.PinBackend, IdempotencyKey: body.IdempotencyKey,
 	})
+	if errors.Is(err, workspace.ErrWorkspaceLocked) {
+		writeError(w, http.StatusConflict, "workspace_busy", err)
+		return
+	}
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "task_rejected", err)
 		return

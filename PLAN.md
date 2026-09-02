@@ -151,6 +151,7 @@ Goal: one real agent can safely finish useful read and write tasks under IndexQu
 - [x] Compare per-path pre/post state even when the adapter does not report a file event; persist the authoritative delta and move mismatches to `needs_attention`.
 - [x] Make cancellation durable and idempotent, including daemon-restart completion and a clear cancelled turn state.
 - [x] Add close/reopen semantics so `open`, `running`, `needs_attention`, and `closed` have user-visible meanings.
+- [x] Enforce the V1 concurrency contract: one active writer per canonical Git workspace, with preflight `workspace_busy` rejection and holder details before creating another task or turn; allow concurrent read-only work.
 - Test dirty baseline preservation, concurrent writer rejection, child-process crash, daemon crash, stale events, and mutation followed by failure.
 
 Exit criteria:

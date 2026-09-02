@@ -205,6 +205,12 @@ mode with its file tools confined to the working directory and all shell/file
 mutations routed through the durable permission bridge. Both run under
 IndexQube's OS workspace lock and fencing epoch.
 
+V1 deliberately allows one active writer per canonical Git workspace. A second
+write task, continuation, or write handoff is rejected with `workspace_busy`
+before a task or turn is created; when the holder belongs to the same daemon,
+the response identifies its task and turn. Read-only tasks may run concurrently.
+Parallel writers and worktree orchestration remain outside V1.
+
 If the backend requests a command or file-change escalation, IndexQube first
 commits the request to SQLite and moves the task to `awaiting_approval`. A user
 can then make a durable decision:

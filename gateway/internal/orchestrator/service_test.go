@@ -1007,6 +1007,66 @@ func TestFakeMutationUsesWriteEpochAndStaleEventFails(t *testing.T) {
 	}
 }
 
+func TestSingleWriterConflictIsRejectedBeforeTaskOrTurnCreation(t *testing.T) {
+	service, store, root := newTestService(t)
+	first, err := service.StartTask(context.Background(), StartTaskInput{
+		Workspace: root, Prompt: "[fake:sleep] hold writer", Backend: agent.BackendFake, Permission: agent.PermissionWrite,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.StartTask(context.Background(), StartTaskInput{
+		Workspace: root, Prompt: "second writer", Backend: agent.BackendFake, Permission: agent.PermissionWrite,
+	}); !errors.Is(err, workspace.ErrWorkspaceLocked) {
+		t.Fatalf("second writer error=%v", err)
+	} else {
+		var conflict *workspace.WorkspaceLockedError
+		if !errors.As(err, &conflict) || conflict.TaskID != first.ID || conflict.TurnID == "" {
+			t.Fatalf("conflict=%+v error=%v", conflict, err)
+		}
+	}
+	tasks, err := service.Tasks(context.Background(), 10)
+	if err != nil || len(tasks) != 1 || tasks[0].ID != first.ID {
+		t.Fatalf("tasks=%+v err=%v", tasks, err)
+	}
+	if _, err := service.Cancel(context.Background(), first.ID); err != nil {
+		t.Fatal(err)
+	}
+	waitForTerminal(t, service, first.ID)
+
+	completed, err := service.StartTask(context.Background(), StartTaskInput{
+		Workspace: root, Prompt: "writer after release", Backend: agent.BackendFake, Permission: agent.PermissionWrite,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForTerminal(t, service, completed.ID)
+	evidence, ok, err := store.TaskEvidence(context.Background(), completed.ID)
+	if err != nil || !ok || len(evidence.Turns) != 1 {
+		t.Fatalf("evidence=%+v ok=%v err=%v", evidence, ok, err)
+	}
+
+	active, err := service.StartTask(context.Background(), StartTaskInput{
+		Workspace: root, Prompt: "[fake:sleep] hold writer again", Backend: agent.BackendFake, Permission: agent.PermissionWrite,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.ContinueTask(context.Background(), ContinueTaskInput{
+		TaskID: completed.ID, Prompt: "conflicting continuation",
+	}); !errors.Is(err, workspace.ErrWorkspaceLocked) {
+		t.Fatalf("continuation error=%v", err)
+	}
+	evidence, ok, err = store.TaskEvidence(context.Background(), completed.ID)
+	if err != nil || !ok || len(evidence.Turns) != 1 {
+		t.Fatalf("conflicting continuation created a turn: evidence=%+v ok=%v err=%v", evidence, ok, err)
+	}
+	if _, err := service.Cancel(context.Background(), active.ID); err != nil {
+		t.Fatal(err)
+	}
+	waitForTerminal(t, service, active.ID)
+}
+
 func TestFakeFailureBeforeMutationLeavesTaskRecoverable(t *testing.T) {
 	service, _, root := newTestService(t)
 	task, err := service.StartTask(context.Background(), StartTaskInput{

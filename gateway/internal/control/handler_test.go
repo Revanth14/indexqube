@@ -227,6 +227,36 @@ func TestCreateTaskAndReplaySSE(t *testing.T) {
 	t.Fatal("timed out waiting for completed stream")
 }
 
+func TestCreateTaskReturnsWorkspaceBusyBeforePersistingSecondWriter(t *testing.T) {
+	handler, root := newControlTestHandler(t)
+	createWriter := func(prompt string) *httptest.ResponseRecorder {
+		body, _ := json.Marshal(createTaskRequest{
+			Workspace: root, Prompt: prompt, Backend: agent.BackendFake, Permission: agent.PermissionWrite,
+		})
+		request := authorizedControlRequest(http.MethodPost, "/control/v1/tasks", bytes.NewReader(body))
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
+	first := createWriter("[fake:sleep] hold writer")
+	if first.Code != http.StatusAccepted {
+		t.Fatalf("first status=%d body=%s", first.Code, first.Body.String())
+	}
+	var task taskstore.Task
+	if err := json.Unmarshal(first.Body.Bytes(), &task); err != nil {
+		t.Fatal(err)
+	}
+	second := createWriter("conflicting writer")
+	if second.Code != http.StatusConflict || !strings.Contains(second.Body.String(), `"code":"workspace_busy"`) ||
+		!strings.Contains(second.Body.String(), task.ID) {
+		t.Fatalf("second status=%d body=%s", second.Code, second.Body.String())
+	}
+	if _, err := handler.service.Cancel(context.Background(), task.ID); err != nil {
+		t.Fatal(err)
+	}
+	handler.service.Wait()
+}
+
 type controlApprovalBackend struct{}
 
 func (controlApprovalBackend) ID() agent.BackendID { return agent.BackendFake }

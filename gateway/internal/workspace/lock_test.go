@@ -29,6 +29,11 @@ func TestWriteLockExcludesSecondWriterAndIncrementsEpoch(t *testing.T) {
 	}
 	if _, err := manager.AcquireWrite(ctx, "ws_1", "task_2", "turn_2"); !errors.Is(err, ErrWorkspaceLocked) {
 		t.Fatalf("second writer error=%v want ErrWorkspaceLocked", err)
+	} else {
+		var conflict *WorkspaceLockedError
+		if !errors.As(err, &conflict) || conflict.TaskID != "task_1" || conflict.TurnID != "turn_1" {
+			t.Fatalf("conflict=%+v error=%v", conflict, err)
+		}
 	}
 	if err := first.Release(ctx); err != nil {
 		t.Fatal(err)

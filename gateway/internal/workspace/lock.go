@@ -20,7 +20,12 @@ type LockManager struct {
 	store  EpochStore
 	owner  string
 	mu     sync.Mutex
-	active map[string]bool
+	active map[string]activeWriter
+}
+
+type activeWriter struct {
+	taskID string
+	turnID string
 }
 
 func NewLockManager(dir string, store EpochStore, owner string) (*LockManager, error) {
@@ -33,7 +38,7 @@ func NewLockManager(dir string, store EpochStore, owner string) (*LockManager, e
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("workspace: create lock dir: %w", err)
 	}
-	return &LockManager{dir: dir, store: store, owner: owner, active: make(map[string]bool)}, nil
+	return &LockManager{dir: dir, store: store, owner: owner, active: make(map[string]activeWriter)}, nil
 }
 
 type WriteGuard struct {
@@ -47,11 +52,11 @@ type WriteGuard struct {
 
 func (m *LockManager) AcquireWrite(ctx context.Context, workspaceID, taskID, turnID string) (*WriteGuard, error) {
 	m.mu.Lock()
-	if m.active[workspaceID] {
+	if holder, ok := m.active[workspaceID]; ok {
 		m.mu.Unlock()
-		return nil, ErrWorkspaceLocked
+		return nil, &WorkspaceLockedError{WorkspaceID: workspaceID, TaskID: holder.taskID, TurnID: holder.turnID}
 	}
-	m.active[workspaceID] = true
+	m.active[workspaceID] = activeWriter{taskID: taskID, turnID: turnID}
 	m.mu.Unlock()
 	failed := true
 	defer func() {
@@ -67,6 +72,9 @@ func (m *LockManager) AcquireWrite(ctx context.Context, workspaceID, taskID, tur
 	}
 	if err := platformTryLock(f); err != nil {
 		f.Close()
+		if err == ErrWorkspaceLocked {
+			return nil, &WorkspaceLockedError{WorkspaceID: workspaceID}
+		}
 		return nil, err
 	}
 	epoch, err := m.store.BeginWriteEpoch(ctx, workspaceID, taskID, turnID, m.owner, time.Now().UTC())
