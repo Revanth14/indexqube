@@ -328,7 +328,7 @@ func renderTaskEvidence(out io.Writer, evidence taskstore.TaskEvidence) {
 func runTaskCommand(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("task", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	backend := fs.String("backend", "", "agent backend (fake, codex, or claude)")
+	backend := fs.String("backend", "", "agent backend (default: first compatible Codex or Claude)")
 	provider := fs.String("provider", "", "deprecated alias for --backend")
 	workspacePath := fs.String("workspace", "", "Git workspace (default: current directory)")
 	write := fs.Bool("write", false, "grant workspace-write permission")
@@ -342,9 +342,6 @@ func runTaskCommand(ctx context.Context, args []string, stdout, stderr io.Writer
 	backendID := *backend
 	if backendID == "" {
 		backendID = *provider
-	}
-	if backendID == "" {
-		backendID = string(agent.BackendFake)
 	}
 	prompt := strings.TrimSpace(strings.Join(fs.Args(), " "))
 	if prompt == "" {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/Revanth14/indexqube/gateway/internal/agent"
 )
@@ -30,6 +31,32 @@ func (r *Registry) Get(id agent.BackendID) (agent.Backend, error) {
 		return nil, fmt.Errorf("orchestrator: backend %q is not registered", id)
 	}
 	return backend, nil
+}
+
+// PreferredAvailable selects the first compatible real coding backend in the
+// stable V1 order. The deterministic fake backend is test-only and is never a
+// user-facing default.
+func (r *Registry) PreferredAvailable(ctx context.Context) (agent.Backend, error) {
+	reasons := make([]string, 0, len(automaticFallbackOrder))
+	for _, id := range automaticFallbackOrder {
+		backend, ok := r.backends[id]
+		if !ok {
+			continue
+		}
+		health := backend.Probe(ctx)
+		if health.Status == agent.HealthAvailable {
+			return backend, nil
+		}
+		reason := health.Reason
+		if reason == "" {
+			reason = string(health.Status)
+		}
+		reasons = append(reasons, fmt.Sprintf("%s: %s", id, reason))
+	}
+	if len(reasons) == 0 {
+		return nil, fmt.Errorf("orchestrator: no Codex or Claude backend is registered")
+	}
+	return nil, fmt.Errorf("orchestrator: no compatible coding backend is available (%s)", strings.Join(reasons, "; "))
 }
 
 // NextAutomaticFallback returns the first registered backend in the stable V1

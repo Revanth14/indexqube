@@ -122,6 +122,51 @@ func TestFakeTaskPersistsCanonicalMilestone(t *testing.T) {
 	}
 }
 
+func TestStartTaskWithoutBackendSelectsFirstCompatibleRealBackend(t *testing.T) {
+	service, _, root := newTestService(t)
+	claude := &handoffCaptureBackend{id: agent.BackendClaude, requests: make(chan agent.Request, 1)}
+	codex := &handoffCaptureBackend{id: agent.BackendCodex, requests: make(chan agent.Request, 1)}
+	service.registry = NewRegistry(claude, codex)
+	task, err := service.StartTask(context.Background(), StartTaskInput{
+		Workspace: root, Prompt: "auto route", Permission: agent.PermissionReadOnly,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.PreferredBackend != agent.BackendCodex {
+		t.Fatalf("backend=%s", task.PreferredBackend)
+	}
+	waitForTerminal(t, service, task.ID)
+	select {
+	case <-codex.requests:
+	default:
+		t.Fatal("Codex did not receive the automatically routed task")
+	}
+	select {
+	case <-claude.requests:
+		t.Fatal("Claude received a task even though Codex was available")
+	default:
+	}
+
+	codex.health = agent.HealthIncompatible
+	task, err = service.StartTask(context.Background(), StartTaskInput{
+		Workspace: root, Prompt: "fallback selection", Permission: agent.PermissionReadOnly,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.PreferredBackend != agent.BackendClaude {
+		t.Fatalf("backend=%s", task.PreferredBackend)
+	}
+	waitForTerminal(t, service, task.ID)
+	claude.health = agent.HealthUnavailable
+	if _, err := service.StartTask(context.Background(), StartTaskInput{
+		Workspace: root, Prompt: "no unsafe test default", Permission: agent.PermissionReadOnly,
+	}); err == nil || !strings.Contains(err.Error(), "no compatible coding backend") {
+		t.Fatalf("error=%v", err)
+	}
+}
+
 type handoffCaptureBackend struct {
 	id         agent.BackendID
 	requests   chan agent.Request

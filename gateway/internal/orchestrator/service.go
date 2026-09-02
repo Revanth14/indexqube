@@ -110,9 +110,6 @@ func (s *Service) StartTask(ctx context.Context, input StartTaskInput) (taskstor
 	if backendID == "" {
 		backendID = input.Provider
 	}
-	if backendID == "" {
-		backendID = agent.BackendFake
-	}
 	if input.Permission == "" {
 		input.Permission = agent.PermissionReadOnly
 	}
@@ -122,7 +119,16 @@ func (s *Service) StartTask(ctx context.Context, input StartTaskInput) (taskstor
 	if input.Prompt == "" {
 		return taskstore.Task{}, fmt.Errorf("orchestrator: empty prompt")
 	}
-	backend, err := s.registry.Get(backendID)
+	var backend agent.Backend
+	var err error
+	if backendID == "" {
+		backend, err = s.registry.PreferredAvailable(ctx)
+		if err == nil {
+			backendID = backend.ID()
+		}
+	} else {
+		backend, err = s.registry.Get(backendID)
+	}
 	if err != nil {
 		return taskstore.Task{}, err
 	}

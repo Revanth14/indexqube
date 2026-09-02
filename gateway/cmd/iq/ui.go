@@ -251,7 +251,8 @@ func (a *uiApp) refresh(ctx context.Context) error {
 		}
 	}
 	if a.selectedID == "" && len(a.tasks) > 0 {
-		a.selectedID = a.tasks[0].ID
+		a.selected = defaultUITaskIndex(a.tasks)
+		a.selectedID = a.tasks[a.selected].ID
 	}
 	a.syncSelection()
 	a.backends, _ = a.client.backends(ctx)
@@ -363,6 +364,14 @@ func (a *uiApp) submitPrompt(ctx context.Context, prompt string, forceNew bool, 
 	}
 	if !forceNew && a.evidence != nil && (a.evidence.Task.Status == taskstore.TaskRunning || a.evidence.Task.Status == taskstore.TaskAwaitingApproval) {
 		a.status = "The selected task is active. Select another task or wait for it to finish."
+		return
+	}
+	if !forceNew && a.evidence != nil {
+		if a.evidence.Task.Status == taskstore.TaskNeedsAttention {
+			a.status = "This task needs inspection. Use /reopen after reviewing evidence, or /new to start another."
+		} else {
+			a.status = "This task is closed. Use /reopen or /new to start another."
+		}
 		return
 	}
 	if backend == "" {
@@ -625,6 +634,19 @@ func sameWorkspace(left, right string) bool {
 		right = rightResolved
 	}
 	return filepath.Clean(left) == filepath.Clean(right)
+}
+
+func defaultUITaskIndex(tasks []taskstore.Task) int {
+	for _, status := range []taskstore.TaskStatus{
+		taskstore.TaskAwaitingApproval, taskstore.TaskRunning, taskstore.TaskOpen, taskstore.TaskNeedsAttention, taskstore.TaskClosed,
+	} {
+		for index := range tasks {
+			if tasks[index].Status == status {
+				return index
+			}
+		}
+	}
+	return 0
 }
 
 func renderUIScreen(snapshot uiSnapshot, width, height int) string {

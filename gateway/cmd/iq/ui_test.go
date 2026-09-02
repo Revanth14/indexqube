@@ -90,3 +90,26 @@ func TestUITerminalTextRemovesControlSequencesAndAcceptsUTF8(t *testing.T) {
 		t.Fatalf("input=%q", got)
 	}
 }
+
+func TestUIDefaultTaskAndBackendSelectionAreDeterministic(t *testing.T) {
+	tasks := []taskstore.Task{
+		{ID: "closed", Status: taskstore.TaskClosed},
+		{ID: "open", Status: taskstore.TaskOpen},
+		{ID: "running", Status: taskstore.TaskRunning},
+		{ID: "approval", Status: taskstore.TaskAwaitingApproval},
+	}
+	if got := defaultUITaskIndex(tasks); got != 3 {
+		t.Fatalf("default task index=%d", got)
+	}
+	app := uiApp{backends: []agent.BackendHealth{
+		{Backend: agent.BackendClaude, Status: agent.HealthAvailable},
+		{Backend: agent.BackendCodex, Status: agent.HealthAvailable},
+	}}
+	if got := app.preferredAvailableBackend(); got != agent.BackendCodex {
+		t.Fatalf("backend=%s", got)
+	}
+	app.backends[1].Status = agent.HealthIncompatible
+	if got := app.preferredAvailableBackend(); got != agent.BackendClaude {
+		t.Fatalf("backend=%s", got)
+	}
+}

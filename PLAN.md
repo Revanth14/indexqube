@@ -49,7 +49,7 @@ The original plan described a greenfield project. That is no longer accurate. Th
 | Claude task backend | Shipped foundation | Read-only and guarded workspace-write execution, private MCP permission routing, durable command/file approvals, normalized evidence, native-session continuation, lost-session recovery signals, handoff, supported-version protocol fixtures, and fail-closed probing work. |
 | Routing and handoff | Shipped foundation | Backend selection, durable task pins, canonical cross-backend handoff, fresh destination lineage, lost-session recovery, conservative failure classification, and restart-safe ordered fallback exist. |
 | Verification | Advanced foundation | Successful write turns persist verification runs/checks; strict configured recipes plus conservative Go, Node, Python, and Rust detection run with bounded output, timeouts, offline dependency controls, workspace-stability checks, and task-scoped security findings with explicit severity policy. |
-| User experience | Partial | Durable task listing, evidence inspection, and approval commands work; there is no TUI or active dashboard, and bare `iq` still opens the legacy Claude wrapper. |
+| User experience | Advanced foundation | Bare `iq` auto-starts the daemon and opens an attachable workspace TUI with plain-text tasks, deterministic backend detection, active-task selection, inline approvals, evidence, routing, and handoffs; the dashboard remains pending. |
 | Data plane | Advanced | Claude Messages and OpenAI Responses ingress, provider adapters, streaming, optimization, prompt-cache preservation, LSM/SQLite caches, telemetry, setup, audit, and benchmarking exist. |
 | Distributed coordination | Deferred | Redis is absent and is not required for the local product. Kubernetes assets apply to the gateway, not the canonical local task engine. |
 
@@ -216,10 +216,11 @@ Goal: make IndexQube feel like one persistent product rather than a collection o
 - [x] Build `iq ui` as the first rich client of the control API.
 - [x] Include task list, active task conversation, backend/health, approvals, changed files, commands, verification, route, and handoff views.
 - [x] Support attach/detach so closing the TUI does not cancel a running task.
-- Preserve backward compatibility during transition:
+- [x] Preserve an explicit optimized Claude path while completing the primary-interface migration:
   1. keep `iq claude` as the explicit optimized Claude wrapper;
-  2. introduce `iq ui` for the TUI;
-  3. after an announced migration, make bare `iq` open the TUI.
+  2. keep `iq ui` as an explicit TUI entrypoint;
+  3. make bare `iq` auto-start the daemon and open the TUI;
+  4. route `iq TEXT` as a durable read-only task using compatible Codex-first detection rather than the fake backend.
 - Build the local dashboard only after the TUI proves the API. Serve it from the loopback daemon with the same daemon-scoped authentication.
 - Treat the retired browser/extension surfaces as archived experiments, not active deliverables.
 

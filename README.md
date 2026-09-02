@@ -78,18 +78,19 @@ git clone https://github.com/Revanth14/indexqube.git
 cd indexqube
 make build
 ./bin/iq doctor
-./bin/iq start
-./bin/iq status
+./bin/iq
 ```
 
-The daemon starts in the background. Its model proxy listens on
+Bare `iq` starts the daemon when needed and opens the terminal UI. Its model proxy listens on
 `127.0.0.1:17373`; its task control API listens separately on
 `127.0.0.1:17374`.
 
-Open the terminal UI and start typing requests:
+Start typing requests. IndexQube picks the first compatible backend in a stable
+Codex-then-Claude order; it never silently selects the fake test backend. Use
+`/new write` when a task should be allowed to change the workspace:
 
 ```bash
-./bin/iq ui
+/new write fix the failing retry test and verify it
 ```
 
 The UI shows the current workspace's tasks and selected conversation alongside
@@ -99,6 +100,17 @@ starts a task when none is selected and continues an idle selected task.
 `/new`, `/approve`, `/deny`, `/cancel`, `/handoff`, `/view`, and `/help` expose
 the explicit control actions. Ctrl-C, Ctrl-D, `/detach`, and `/quit` only close
 the UI; they never cancel a running task.
+
+For a one-shot read-only task, positional text uses the same durable automatic
+backend selection without opening the UI:
+
+```bash
+./bin/iq explain the retry and cancellation path
+```
+
+The former implicit Claude wrapper is now explicit as `iq claude`; existing
+scripts should use that spelling when they intend to launch Claude Code through
+the optional optimization proxy.
 
 Create a read-only task in the current Git workspace:
 

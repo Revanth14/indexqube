@@ -1,7 +1,5 @@
-// Command iq wraps the Claude Code CLI with an in-process IndexQube optimizer.
-// It boots the gateway on a random local port, injects ANTHROPIC_BASE_URL into
-// Claude Code's environment, and forwards all traffic through the optimizer.
-// The user's real OAuth / API key flows through unchanged — iq never sees it.
+// Command iq is the local IndexQube task interface. Bare iq opens the durable
+// workspace TUI; iq claude retains the explicit optimized Claude wrapper.
 package main
 
 import (
@@ -42,8 +40,7 @@ func generateToken() string {
 
 func main() {
 	if len(os.Args) < 2 {
-		// iq alone → run claude (backward compat, no subcommand)
-		runClaude([]string{}, false, false)
+		runUI(nil)
 		return
 	}
 
@@ -100,9 +97,9 @@ func main() {
 	case "help", "--help", "-h":
 		printHelp()
 	default:
-		// Unknown subcommand → pass everything to claude (backward compat).
-		// Ensures `iq somefile.go` and `iq --resume` still work as before.
-		runClaude(os.Args[1:], false, false)
+		// Positional text is a zero-configuration durable task. Legacy Claude
+		// invocation remains available explicitly as `iq claude ...`.
+		runTask(os.Args[1:])
 	}
 }
 
@@ -562,7 +559,8 @@ func printHelp() {
   iq — IndexQube CLI
 
   USAGE
-    iq                   Start Claude Code (default)
+    iq                   Start the daemon if needed and open the workspace UI
+    iq TEXT              Run a durable read-only task on the first compatible backend
     iq ui                Open the attachable terminal UI
     iq task [flags] TEXT Create a durable agent task (--backend fake|codex|claude, --write, --pin)
     iq tasks             List durable tasks
