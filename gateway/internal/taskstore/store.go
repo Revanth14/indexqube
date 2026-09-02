@@ -37,6 +37,13 @@ CREATE TABLE IF NOT EXISTS tasks (
     retention_deadline INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS task_backend_pins (
+    task_id     TEXT PRIMARY KEY REFERENCES tasks(task_id) ON DELETE CASCADE,
+    backend     TEXT NOT NULL,
+    created_at  INTEGER NOT NULL,
+    updated_at  INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS turns (
     turn_id             TEXT PRIMARY KEY,
     task_id             TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
@@ -349,6 +356,12 @@ func (s *Store) CreateTask(ctx context.Context, in CreateTaskInput) (Task, Turn,
 		task.Permission, task.PreferredBackend, task.Status, task.Revision, in.Now.UnixMilli(), in.Now.UnixMilli(), retention); err != nil {
 		return Task{}, Turn{}, RouteAttempt{}, err
 	}
+	if in.PinBackend {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO task_backend_pins (task_id,backend,created_at,updated_at)
+			VALUES(?,?,?,?)`, task.ID, task.PreferredBackend, in.Now.UnixMilli(), in.Now.UnixMilli()); err != nil {
+			return Task{}, Turn{}, RouteAttempt{}, err
+		}
+	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO turns
 		(turn_id,task_id,sequence,idempotency_key,user_message,permission_mode,status,created_at)
 		VALUES(?,?,?,?,?,?,?,?)`, turn.ID, turn.TaskID, turn.Sequence, nullableString(turn.IdempotencyKey),
@@ -483,6 +496,11 @@ func (s *Store) CreateHandoffTurn(ctx context.Context, in CreateHandoffInput) (T
 		(handoff_id,task_id,turn_id,from_backend,to_backend,workspace_fingerprint,packet_json,created_at)
 		VALUES(?,?,?,?,?,?,?,?)`, handoff.ID, handoff.TaskID, handoff.TurnID, handoff.FromBackend,
 		handoff.ToBackend, handoff.WorkspaceFingerprint, string(handoff.Packet), handoff.CreatedAt.UnixMilli()); err != nil {
+		return Turn{}, RouteAttempt{}, Handoff{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO task_backend_pins (task_id,backend,created_at,updated_at)
+		VALUES(?,?,?,?) ON CONFLICT(task_id) DO UPDATE SET backend=excluded.backend,updated_at=excluded.updated_at`,
+		handoff.TaskID, handoff.ToBackend, handoff.CreatedAt.UnixMilli(), handoff.CreatedAt.UnixMilli()); err != nil {
 		return Turn{}, RouteAttempt{}, Handoff{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -828,6 +846,82 @@ func (s *Store) CloseTask(ctx context.Context, taskID string, now time.Time) (Ta
 
 func (s *Store) ReopenTask(ctx context.Context, taskID string, now time.Time) (Task, bool, error) {
 	return s.transitionTask(ctx, taskID, TaskOpen, now)
+}
+
+// SetBackendPin pins or unpins an idle task's current preferred backend. It
+// never changes the backend itself; that transition requires a handoff packet.
+func (s *Store) SetBackendPin(ctx context.Context, taskID string, pinned bool, now time.Time) (BackendPin, bool, error) {
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return BackendPin{}, false, err
+	}
+	defer tx.Rollback()
+	var backend agent.BackendID
+	var status TaskStatus
+	if err = tx.QueryRowContext(ctx, `SELECT preferred_backend,status FROM tasks WHERE task_id=?`, taskID).Scan(&backend, &status); errors.Is(err, sql.ErrNoRows) {
+		return BackendPin{}, false, ErrTaskNotFound
+	} else if err != nil {
+		return BackendPin{}, false, err
+	}
+	if status == TaskRunning || status == TaskAwaitingApproval {
+		return BackendPin{}, false, ErrTaskActive
+	}
+	existing, found, err := backendPin(tx.QueryRowContext(ctx,
+		`SELECT task_id,backend,created_at,updated_at FROM task_backend_pins WHERE task_id=?`, taskID))
+	if err != nil {
+		return BackendPin{}, false, err
+	}
+	if pinned {
+		if found && existing.Backend == backend {
+			return existing, false, nil
+		}
+		created := now
+		if found {
+			created = existing.CreatedAt
+		}
+		if _, err = tx.ExecContext(ctx, `INSERT INTO task_backend_pins (task_id,backend,created_at,updated_at)
+			VALUES(?,?,?,?) ON CONFLICT(task_id) DO UPDATE SET backend=excluded.backend,updated_at=excluded.updated_at`,
+			taskID, backend, created.UnixMilli(), now.UnixMilli()); err != nil {
+			return BackendPin{}, false, err
+		}
+		existing = BackendPin{TaskID: taskID, Backend: backend, CreatedAt: created, UpdatedAt: now}
+	} else {
+		if !found {
+			return BackendPin{TaskID: taskID, Backend: backend}, false, nil
+		}
+		if _, err = tx.ExecContext(ctx, `DELETE FROM task_backend_pins WHERE task_id=?`, taskID); err != nil {
+			return BackendPin{}, false, err
+		}
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE tasks SET revision=revision+1,updated_at=?,retention_deadline=? WHERE task_id=?`,
+		now.UnixMilli(), now.Add(30*24*time.Hour).UnixMilli(), taskID); err != nil {
+		return BackendPin{}, false, err
+	}
+	if err = tx.Commit(); err != nil {
+		return BackendPin{}, false, err
+	}
+	return existing, true, nil
+}
+
+func backendPin(row rowScanner) (BackendPin, bool, error) {
+	var pin BackendPin
+	var created, updated int64
+	if err := row.Scan(&pin.TaskID, &pin.Backend, &created, &updated); errors.Is(err, sql.ErrNoRows) {
+		return BackendPin{}, false, nil
+	} else if err != nil {
+		return BackendPin{}, false, err
+	}
+	pin.CreatedAt = time.UnixMilli(created).UTC()
+	pin.UpdatedAt = time.UnixMilli(updated).UTC()
+	return pin, true, nil
+}
+
+func (s *Store) BackendPin(ctx context.Context, taskID string) (BackendPin, bool, error) {
+	return backendPin(s.db.QueryRowContext(ctx,
+		`SELECT task_id,backend,created_at,updated_at FROM task_backend_pins WHERE task_id=?`, taskID))
 }
 
 // transitionTask gives the four user-visible task states precise lifecycle
@@ -1276,6 +1370,11 @@ func (s *Store) TaskEvidence(ctx context.Context, taskID string) (TaskEvidence, 
 		return TaskEvidence{}, ok, err
 	}
 	evidence := TaskEvidence{Task: task}
+	if pin, found, pinErr := s.BackendPin(ctx, taskID); pinErr != nil {
+		return TaskEvidence{}, false, pinErr
+	} else if found {
+		evidence.BackendPin = &pin
+	}
 	if evidence.Turns, err = s.turns(ctx, taskID); err != nil {
 		return TaskEvidence{}, false, err
 	}
@@ -1658,6 +1757,11 @@ func (s *Store) TaskState(ctx context.Context, taskID string) (TaskState, bool, 
 		return TaskState{}, ok, err
 	}
 	state := TaskState{Task: task}
+	if pin, found, pinErr := s.BackendPin(ctx, taskID); pinErr != nil {
+		return TaskState{}, false, pinErr
+	} else if found {
+		state.BackendPin = &pin
+	}
 	turn, found, err := s.latestTurn(ctx, taskID)
 	if err != nil {
 		return TaskState{}, false, err
@@ -1815,6 +1919,7 @@ func (s *Store) CountRows(ctx context.Context, table string) (int, error) {
 	allowed := map[string]bool{
 		"tasks": true, "turns": true, "backend_sessions": true, "route_attempts": true,
 		"task_handoffs":       true,
+		"task_backend_pins":   true,
 		"workspace_snapshots": true, "workspace_file_states": true, "workspace_file_deltas": true,
 		"approvals": true, "task_cancellations": true, "events": true, "outbox": true, "workspace_write_epochs": true,
 	}

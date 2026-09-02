@@ -43,6 +43,12 @@ func runTask(args []string) {
 				os.Exit(1)
 			}
 			return
+		case "pin", "unpin":
+			if err := runTaskPinCommand(ctx, args[1:], args[0], os.Stdout); err != nil {
+				fmt.Fprintf(os.Stderr, "iq: task %s failed: %v\n", args[0], err)
+				os.Exit(1)
+			}
+			return
 		}
 	}
 	if err := runTaskCommand(ctx, args, os.Stdout, os.Stderr); err != nil {
@@ -136,6 +142,11 @@ func runTaskStatus(ctx context.Context, args []string, out io.Writer) error {
 	}
 	fmt.Fprintf(out, "Task: %s\nStatus: %s\nBackend: %s\nPermission: %s\nWorkspace: %s\n",
 		state.Task.ID, state.Task.Status, state.Task.PreferredBackend, state.Task.Permission, state.Task.WorkspacePath)
+	if state.BackendPin != nil {
+		fmt.Fprintf(out, "Routing: pinned to %s\n", state.BackendPin.Backend)
+	} else {
+		fmt.Fprintln(out, "Routing: unpinned")
+	}
 	if state.LatestTurn != nil {
 		fmt.Fprintf(out, "Latest turn: %d (%s)\n", state.LatestTurn.Sequence, state.LatestTurn.Status)
 		if state.LatestTurn.ErrorCode != "" {
@@ -187,6 +198,11 @@ func renderTaskEvidence(out io.Writer, evidence taskstore.TaskEvidence) {
 	fmt.Fprintf(out, "Task: %s\nStatus: %s\nBackend: %s\nPermission: %s\nWorkspace: %s\nGoal: %s\n",
 		evidence.Task.ID, evidence.Task.Status, evidence.Task.PreferredBackend, evidence.Task.Permission,
 		evidence.Task.WorkspacePath, evidence.Task.OriginalGoal)
+	if evidence.BackendPin != nil {
+		fmt.Fprintf(out, "Routing: pinned to %s\n", evidence.BackendPin.Backend)
+	} else {
+		fmt.Fprintln(out, "Routing: unpinned")
+	}
 	if len(evidence.Turns) > 0 {
 		fmt.Fprintln(out, "\nTurns:")
 		for _, turn := range evidence.Turns {
@@ -309,6 +325,7 @@ func runTaskCommand(ctx context.Context, args []string, stdout, stderr io.Writer
 	provider := fs.String("provider", "", "deprecated alias for --backend")
 	workspacePath := fs.String("workspace", "", "Git workspace (default: current directory)")
 	write := fs.Bool("write", false, "grant workspace-write permission")
+	pin := fs.Bool("pin", false, "pin all continuations to the selected backend")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -342,10 +359,11 @@ func runTaskCommand(ctx context.Context, args []string, stdout, stderr io.Writer
 		return err
 	}
 	body, err := json.Marshal(map[string]any{
-		"workspace":  *workspacePath,
-		"prompt":     prompt,
-		"backend":    backendID,
-		"permission": permission,
+		"workspace":   *workspacePath,
+		"prompt":      prompt,
+		"backend":     backendID,
+		"permission":  permission,
+		"pin_backend": *pin,
 	})
 	if err != nil {
 		return err

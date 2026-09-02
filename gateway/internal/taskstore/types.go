@@ -48,6 +48,16 @@ type Task struct {
 	UpdatedAt        time.Time            `json:"updated_at"`
 }
 
+// BackendPin is an explicit durable routing constraint. Changing backends is
+// intentionally not part of this record; cross-backend continuation must use
+// a canonical handoff.
+type BackendPin struct {
+	TaskID    string          `json:"task_id"`
+	Backend   agent.BackendID `json:"backend"`
+	CreatedAt time.Time       `json:"created_at"`
+	UpdatedAt time.Time       `json:"updated_at"`
+}
+
 type Turn struct {
 	ID               string               `json:"turn_id"`
 	TaskID           string               `json:"task_id"`
@@ -153,6 +163,7 @@ type CreateTaskInput struct {
 	Goal             string
 	Permission       agent.PermissionMode
 	PreferredBackend agent.BackendID
+	PinBackend       bool
 	IdempotencyKey   string
 	Now              time.Time
 }
@@ -212,6 +223,7 @@ type InterruptedRun struct {
 
 type TaskState struct {
 	Task         Task            `json:"task"`
+	BackendPin   *BackendPin     `json:"backend_pin,omitempty"`
 	LatestTurn   *Turn           `json:"latest_turn,omitempty"`
 	Session      *BackendSession `json:"latest_backend_session,omitempty"`
 	Cancellation *Cancellation   `json:"latest_cancellation,omitempty"`
@@ -370,6 +382,7 @@ type VerificationFinding struct {
 // as another source of truth.
 type TaskEvidence struct {
 	Task             Task                `json:"task"`
+	BackendPin       *BackendPin         `json:"backend_pin,omitempty"`
 	Turns            []Turn              `json:"turns"`
 	Sessions         []BackendSession    `json:"backend_sessions"`
 	Routes           []RouteAttempt      `json:"route_attempts"`

@@ -41,6 +41,8 @@ func NewHandler(service *orchestrator.Service, token string) *Handler {
 	h.mux.HandleFunc("POST /control/v1/tasks/{taskID}/cancel", h.cancelTask)
 	h.mux.HandleFunc("POST /control/v1/tasks/{taskID}/close", h.closeTask)
 	h.mux.HandleFunc("POST /control/v1/tasks/{taskID}/reopen", h.reopenTask)
+	h.mux.HandleFunc("POST /control/v1/tasks/{taskID}/pin", h.pinTask)
+	h.mux.HandleFunc("POST /control/v1/tasks/{taskID}/unpin", h.unpinTask)
 	h.mux.HandleFunc("GET /control/v1/tasks/{taskID}/events", h.taskEvents)
 	return h
 }
@@ -134,6 +136,7 @@ type createTaskRequest struct {
 	Backend        agent.BackendID      `json:"backend"`
 	Provider       agent.BackendID      `json:"provider,omitempty"`
 	Permission     agent.PermissionMode `json:"permission"`
+	PinBackend     bool                 `json:"pin_backend,omitempty"`
 	IdempotencyKey string               `json:"idempotency_key,omitempty"`
 }
 
@@ -152,7 +155,7 @@ func (h *Handler) createTask(w http.ResponseWriter, r *http.Request) {
 	}
 	task, err := h.service.StartTask(r.Context(), orchestrator.StartTaskInput{
 		Workspace: body.Workspace, Prompt: body.Prompt, Backend: body.Backend, Provider: body.Provider,
-		Permission: body.Permission, IdempotencyKey: body.IdempotencyKey,
+		Permission: body.Permission, PinBackend: body.PinBackend, IdempotencyKey: body.IdempotencyKey,
 	})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "task_rejected", err)
@@ -270,6 +273,31 @@ func (h *Handler) closeTask(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) reopenTask(w http.ResponseWriter, r *http.Request) {
 	h.transitionTask(w, r, false)
+}
+
+func (h *Handler) pinTask(w http.ResponseWriter, r *http.Request) {
+	h.setTaskPin(w, r, true)
+}
+
+func (h *Handler) unpinTask(w http.ResponseWriter, r *http.Request) {
+	h.setTaskPin(w, r, false)
+}
+
+func (h *Handler) setTaskPin(w http.ResponseWriter, r *http.Request, pinned bool) {
+	result, err := h.service.SetTaskBackendPin(r.Context(), r.PathValue("taskID"), pinned)
+	if errors.Is(err, taskstore.ErrTaskNotFound) {
+		writeError(w, http.StatusNotFound, "task_not_found", err)
+		return
+	}
+	if errors.Is(err, taskstore.ErrTaskActive) {
+		writeError(w, http.StatusConflict, "task_active", err)
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusConflict, "pin_rejected", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (h *Handler) transitionTask(w http.ResponseWriter, r *http.Request, closeTask bool) {

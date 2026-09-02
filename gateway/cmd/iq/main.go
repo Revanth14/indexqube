@@ -561,7 +561,7 @@ func printHelp() {
 
   USAGE
     iq                   Start Claude Code (default)
-    iq task [flags] TEXT Create a durable agent task (--backend fake|codex|claude, --write)
+    iq task [flags] TEXT Create a durable agent task (--backend fake|codex|claude, --write, --pin)
     iq tasks             List durable tasks
     iq task status TASK  Inspect canonical task and latest-turn state
     iq task show TASK    Show durable turns, commands, files, routes, and snapshots
@@ -571,6 +571,8 @@ func printHelp() {
     iq cancel TASK         Durably request cancellation; safe to retry
     iq task close TASK     Close an idle task
     iq task reopen TASK    Reopen a closed task or acknowledge needs_attention
+    iq task pin TASK       Pin future routing to the task's current backend
+    iq task unpin TASK     Allow future policy routing (handoff still stays explicit)
     iq continue TASK TEXT Continue a task; recover if its native session is lost
     iq handoff TASK --to BACKEND [TEXT]
                          Continue an open task on another backend using canonical context

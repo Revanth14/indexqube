@@ -58,6 +58,8 @@ func TestControlAPIRequiresAuthenticationOnEveryRoute(t *testing.T) {
 		{http.MethodPost, "/control/v1/tasks/task/cancel"},
 		{http.MethodPost, "/control/v1/tasks/task/close"},
 		{http.MethodPost, "/control/v1/tasks/task/reopen"},
+		{http.MethodPost, "/control/v1/tasks/task/pin"},
+		{http.MethodPost, "/control/v1/tasks/task/unpin"},
 		{http.MethodGet, "/control/v1/tasks/task/events"},
 	}
 	for _, route := range routes {
@@ -324,6 +326,12 @@ func TestCancellationAndLifecycleAPIIsIdempotent(t *testing.T) {
 	if err := json.Unmarshal(created.Body.Bytes(), &task); err != nil {
 		t.Fatal(err)
 	}
+	activePin := authorizedControlRequest(http.MethodPost, "/control/v1/tasks/"+task.ID+"/pin", nil)
+	activePinResponse := httptest.NewRecorder()
+	handler.ServeHTTP(activePinResponse, activePin)
+	if activePinResponse.Code != http.StatusConflict || !strings.Contains(activePinResponse.Body.String(), `"code":"task_active"`) {
+		t.Fatalf("active pin status=%d body=%s", activePinResponse.Code, activePinResponse.Body.String())
+	}
 
 	deadline := time.Now().Add(5 * time.Second)
 	requestCancel := func() (int, orchestrator.CancelTaskResult) {
@@ -394,6 +402,26 @@ func TestCancellationAndLifecycleAPIIsIdempotent(t *testing.T) {
 	}
 	if status, result := transition("reopen"); status != http.StatusOK || result.Changed || result.Task.Status != taskstore.TaskOpen {
 		t.Fatalf("second reopen status=%d result=%+v", status, result)
+	}
+	pinTransition := func(action string) (int, orchestrator.TaskPinResult) {
+		t.Helper()
+		req := authorizedControlRequest(http.MethodPost, "/control/v1/tasks/"+task.ID+"/"+action, nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		var result orchestrator.TaskPinResult
+		if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+			t.Fatalf("decode %s status=%d body=%s: %v", action, rec.Code, rec.Body.String(), err)
+		}
+		return rec.Code, result
+	}
+	if status, result := pinTransition("pin"); status != http.StatusOK || !result.Changed || result.BackendPin == nil || result.BackendPin.Backend != task.PreferredBackend {
+		t.Fatalf("pin status=%d result=%+v", status, result)
+	}
+	if status, result := pinTransition("pin"); status != http.StatusOK || result.Changed || result.BackendPin == nil {
+		t.Fatalf("second pin status=%d result=%+v", status, result)
+	}
+	if status, result := pinTransition("unpin"); status != http.StatusOK || !result.Changed || result.BackendPin != nil {
+		t.Fatalf("unpin status=%d result=%+v", status, result)
 	}
 }
 

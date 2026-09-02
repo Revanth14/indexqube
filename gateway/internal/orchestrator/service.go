@@ -31,6 +31,7 @@ type StartTaskInput struct {
 	// clients should use Backend; provider names belong to the model data plane.
 	Provider       agent.BackendID      `json:"provider,omitempty"`
 	Permission     agent.PermissionMode `json:"permission"`
+	PinBackend     bool                 `json:"pin_backend,omitempty"`
 	IdempotencyKey string               `json:"idempotency_key,omitempty"`
 }
 
@@ -54,6 +55,12 @@ type CancelTaskResult struct {
 type TaskTransitionResult struct {
 	Task    taskstore.Task `json:"task"`
 	Changed bool           `json:"changed"`
+}
+
+type TaskPinResult struct {
+	Task       taskstore.Task        `json:"task"`
+	BackendPin *taskstore.BackendPin `json:"backend_pin,omitempty"`
+	Changed    bool                  `json:"changed"`
 }
 
 type activeTurn struct {
@@ -134,7 +141,7 @@ func (s *Service) StartTask(ctx context.Context, input StartTaskInput) (taskstor
 	task, turn, attempt, err := s.store.CreateTask(ctx, taskstore.CreateTaskInput{
 		TaskID: taskstore.NewID("task"), TurnID: taskstore.NewID("turn"), RouteAttemptID: taskstore.NewID("route"),
 		WorkspaceID: identity.ID, WorkspacePath: identity.Root, Goal: input.Prompt, Permission: input.Permission,
-		PreferredBackend: backendID, IdempotencyKey: input.IdempotencyKey, Now: now,
+		PreferredBackend: backendID, PinBackend: input.PinBackend, IdempotencyKey: input.IdempotencyKey, Now: now,
 	})
 	if err != nil {
 		return taskstore.Task{}, err
@@ -854,6 +861,25 @@ func (s *Service) CloseTask(ctx context.Context, taskID string) (TaskTransitionR
 func (s *Service) ReopenTask(ctx context.Context, taskID string) (TaskTransitionResult, error) {
 	task, changed, err := s.store.ReopenTask(ctx, taskID, time.Now().UTC())
 	return TaskTransitionResult{Task: task, Changed: changed}, err
+}
+
+func (s *Service) SetTaskBackendPin(ctx context.Context, taskID string, pinned bool) (TaskPinResult, error) {
+	pin, changed, err := s.store.SetBackendPin(ctx, taskID, pinned, time.Now().UTC())
+	if err != nil {
+		return TaskPinResult{}, err
+	}
+	task, ok, err := s.store.TaskByID(ctx, taskID)
+	if err != nil {
+		return TaskPinResult{}, err
+	}
+	if !ok {
+		return TaskPinResult{}, taskstore.ErrTaskNotFound
+	}
+	result := TaskPinResult{Task: task, Changed: changed}
+	if pinned {
+		result.BackendPin = &pin
+	}
+	return result, nil
 }
 
 // Wait blocks until every supervised backend process has stopped and its

@@ -67,6 +67,53 @@ func TestCreateHandoffTurnAtomicallyPinsBackendAndPersistsPacket(t *testing.T) {
 	if count, err := store.CountRows(ctx, "task_handoffs"); err != nil || count != 1 {
 		t.Fatalf("handoff count=%d err=%v", count, err)
 	}
+	if pin, found, err := store.BackendPin(ctx, task.ID); err != nil || !found || pin.Backend != agent.BackendClaude {
+		t.Fatalf("handoff pin=%+v found=%v err=%v", pin, found, err)
+	}
+}
+
+func TestBackendPinIsDurableIdempotentAndIdleOnly(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	task, turn, route, err := store.CreateTask(ctx, CreateTaskInput{
+		TaskID: "task_pin", TurnID: "turn_pin", RouteAttemptID: "route_pin", WorkspaceID: "ws",
+		WorkspacePath: "/repo", Goal: "stay on codex", Permission: agent.PermissionReadOnly,
+		PreferredBackend: agent.BackendCodex, PinBackend: true, Now: now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pin, found, err := store.BackendPin(ctx, task.ID); err != nil || !found || pin.Backend != agent.BackendCodex {
+		t.Fatalf("initial pin=%+v found=%v err=%v", pin, found, err)
+	}
+	if evidence, found, err := store.TaskEvidence(ctx, task.ID); err != nil || !found || evidence.BackendPin == nil || evidence.BackendPin.Backend != agent.BackendCodex {
+		t.Fatalf("initial evidence=%+v found=%v err=%v", evidence, found, err)
+	}
+	if _, _, err := store.SetBackendPin(ctx, task.ID, false, now.Add(time.Second)); !errors.Is(err, ErrTaskActive) {
+		t.Fatalf("active unpin error=%v", err)
+	}
+	if err := store.CompleteTurn(ctx, task.ID, turn.ID, route.ID, "done", "fp", false, false, now.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, changed, err := store.SetBackendPin(ctx, task.ID, false, now.Add(3*time.Second)); err != nil || !changed {
+		t.Fatalf("unpin changed=%v err=%v", changed, err)
+	}
+	if _, found, err := store.BackendPin(ctx, task.ID); err != nil || found {
+		t.Fatalf("pin remains found=%v err=%v", found, err)
+	}
+	if _, changed, err := store.SetBackendPin(ctx, task.ID, false, now.Add(4*time.Second)); err != nil || changed {
+		t.Fatalf("idempotent unpin changed=%v err=%v", changed, err)
+	}
+	if pin, changed, err := store.SetBackendPin(ctx, task.ID, true, now.Add(5*time.Second)); err != nil || !changed || pin.Backend != agent.BackendCodex {
+		t.Fatalf("repin=%+v changed=%v err=%v", pin, changed, err)
+	}
+	if pin, changed, err := store.SetBackendPin(ctx, task.ID, true, now.Add(6*time.Second)); err != nil || changed || pin.Backend != agent.BackendCodex {
+		t.Fatalf("idempotent repin=%+v changed=%v err=%v", pin, changed, err)
+	}
+	if state, found, err := store.TaskState(ctx, task.ID); err != nil || !found || state.BackendPin == nil || state.BackendPin.Backend != agent.BackendCodex {
+		t.Fatalf("final state=%+v found=%v err=%v", state, found, err)
+	}
 }
 
 func TestCreateTaskPersistsCanonicalBundleAndLineage(t *testing.T) {

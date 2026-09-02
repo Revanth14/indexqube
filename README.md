@@ -45,6 +45,7 @@ The operating rule is simple: **the agent is temporary; the task is not.**
 | Claude Code read-only/write task execution and native-session continuation | In progress |
 | Claude durable write approvals | Shipped foundation |
 | Explicit Codex/Claude handoff with durable canonical packets | Shipped foundation |
+| Durable per-task backend pin/unpin policy | Shipped foundation |
 | Daemon-scoped authentication on every control endpoint and SSE stream | Shipped foundation |
 | TUI and release installer | Planned |
 
@@ -126,6 +127,20 @@ current request, current workspace fingerprint/diff, authoritative changed
 files, command summaries, latest verification result, and latest failure.
 Handoffs are rejected while a task is active, awaiting approval, closed, or
 `needs_attention`; inspect and explicitly reopen uncertain tasks first.
+
+Pin an idle task to its current backend when future policy routing must not
+move it automatically, or remove that constraint explicitly:
+
+```bash
+./bin/iq task pin TASK_ID
+./bin/iq task unpin TASK_ID
+./bin/iq task --backend codex --pin "keep this task on Codex"
+```
+
+Pinning never changes backends or starts a turn. Use `iq handoff` for a backend
+change so the destination always receives canonical context. Handoffs pin their
+destination atomically; pin/unpin requests are idempotent and rejected while a
+task is running or awaiting approval.
 
 IndexQube streams the run and prints the task ID. The durable record remains
 available after the command exits:
@@ -408,7 +423,7 @@ PLAN.md                            product gates and implementation order
 
 Work is currently focused on:
 
-1. Claude Code task execution and deterministic handoff;
+1. conservative pre-mutation failure classification and fallback;
 2. an attachable local TUI;
 3. signed release packaging and real-repository alpha feedback.
 

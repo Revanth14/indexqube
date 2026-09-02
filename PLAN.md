@@ -43,11 +43,11 @@ The original plan described a greenfield project. That is no longer accurate. Th
 | Fake backend | Shipped foundation | Deterministic success, failure, mutation, stale epoch, sleep/cancel, and lost-session scenarios are testable. |
 | Workspace safety | Shipped foundation | Git-root identity, per-path dirty-baseline state, authoritative turn deltas, bounded diffs, OS write locks, inherited lock lifetime, fencing checks, and agent-evidence mismatch detection exist. |
 | Recovery | Shipped foundation | Interrupted daemon work is reconciled; lost native sessions can be replaced from canonical history when safe. |
-| Control API | Shipped foundation | Create, list, inspect, continue, durable cancel, close/reopen, backend health, assembled task evidence, and replayable/live SSE task events exist; every route is authenticated. |
-| Task CLI | Shipped foundation | Task creation/listing/evidence/continuation plus retry-safe `iq cancel` and explicit task close/reopen use authenticated loopback requests. |
+| Control API | Shipped foundation | Create, list, inspect, continue, durable cancel, close/reopen, pin/unpin, backend health, assembled task evidence, and replayable/live SSE task events exist; every route is authenticated. |
+| Task CLI | Shipped foundation | Task creation/listing/evidence/continuation plus retry-safe `iq cancel`, explicit close/reopen, and durable backend pin/unpin use authenticated loopback requests. |
 | Codex task backend | Shipped foundation | Read-only execution plus guarded App Server workspace-write execution, durable command/file approvals, event parsing, evidence, native-session resume, and lost-session detection work. |
-| Claude task backend | Partial | Read-only and guarded workspace-write execution, private MCP permission routing, durable command/file approvals, normalized evidence, native-session continuation, lost-session recovery signals, and protocol fixtures exist; handoff and broader compatibility coverage remain. |
-| Routing and handoff | Partial | Backend selection, durable canonical cross-backend handoff, fresh destination lineage, and lost-session recovery exist; task pinning, failure classification, and automatic policy routing remain. |
+| Claude task backend | Partial | Read-only and guarded workspace-write execution, private MCP permission routing, durable command/file approvals, normalized evidence, native-session continuation, lost-session recovery signals, handoff, and protocol fixtures exist; broader compatibility coverage remains. |
+| Routing and handoff | Partial | Backend selection, durable task pins, canonical cross-backend handoff, fresh destination lineage, and lost-session recovery exist; failure classification and automatic policy routing remain. |
 | Verification | Advanced foundation | Successful write turns persist verification runs/checks; strict configured recipes plus conservative Go, Node, Python, and Rust detection run with bounded output, timeouts, offline dependency controls, workspace-stability checks, and task-scoped security findings with explicit severity policy. |
 | User experience | Partial | Durable task listing, evidence inspection, and approval commands work; there is no TUI or active dashboard, and bare `iq` still opens the legacy Claude wrapper. |
 | Data plane | Advanced | Claude Messages and OpenAI Responses ingress, provider adapters, streaming, optimization, prompt-cache preservation, LSM/SQLite caches, telemetry, setup, audit, and benchmarking exist. |
@@ -175,7 +175,7 @@ Goal: make “one task, multiple workers” real without pretending routing is i
   - changed files and command summaries;
   - latest verification result;
   - bounded failure reason.
-- [x] Add explicit backend selection and `iq handoff TASK --to claude`; task pinning remains.
+- [x] Add explicit backend selection, durable task pin/unpin policy, and `iq handoff TASK --to claude`.
 - Add deterministic ordered fallback only for classified pre-mutation failures such as unavailable binary, rate limit, provider unavailability, or lost native session.
 - [x] Record every route decision and handoff as canonical state.
 
@@ -259,7 +259,7 @@ Work in this order:
 7. **In progress:** durable verification, strict recipes, Go/Node/Python/Rust detection, and post-turn evidence are done; separate audit evidence remains.
 8. **Done:** daemon-scoped control API authentication, owner-only credential storage, restart rotation, CLI injection, and legacy-daemon rejection.
 9. **In progress:** Claude read-only/write execution, private permission MCP routing, durable approvals, and protocol fixtures are implemented; broader CLI-version compatibility fixtures remain.
-10. **In progress:** explicit handoff is implemented; task pinning and conservative failure classification remain.
+10. **In progress:** explicit handoff and durable task pinning are implemented; conservative failure classification remains.
 11. TUI.
 12. V1 hardening, packaging, and alpha feedback.
 
