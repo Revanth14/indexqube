@@ -213,9 +213,9 @@ Exit criteria:
 
 Goal: make IndexQube feel like one persistent product rather than a collection of subcommands.
 
-- Build the TUI as the first rich client of the control API.
-- Required views: task list, active task conversation, backend/health, approvals, changed files, commands, verification, and handoff history.
-- Support attach/detach so closing the TUI does not cancel a running task.
+- [x] Build `iq ui` as the first rich client of the control API.
+- [x] Include task list, active task conversation, backend/health, approvals, changed files, commands, verification, route, and handoff views.
+- [x] Support attach/detach so closing the TUI does not cancel a running task.
 - Preserve backward compatibility during transition:
   1. keep `iq claude` as the explicit optimized Claude wrapper;
   2. introduce `iq ui` for the TUI;
@@ -267,7 +267,7 @@ Work in this order:
 8. **Done:** daemon-scoped control API authentication, owner-only credential storage, restart rotation, CLI injection, and legacy-daemon rejection.
 9. **Done:** Claude read-only/write execution, private permission MCP routing, durable approvals, supported-version protocol fixtures, fail-closed CLI probing, and opt-in real-agent smokes.
 10. **Done:** explicit handoff, durable task pinning, conservative failure classification, and deterministic restart-safe ordered fallback.
-11. TUI.
+11. **Done:** attachable `iq ui` with live canonical task/conversation, backend health, approval, evidence, route, and handoff views plus plain-text task input.
 12. V1 hardening, packaging, and alpha feedback.
 
 Items 1–6 complete the single-agent product. Items 7–9 deliver the multi-agent promise. Items 10–12 make it trustworthy and usable.

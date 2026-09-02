@@ -56,6 +56,8 @@ func main() {
 		runTask(os.Args[2:])
 	case "tasks":
 		runTasks(os.Args[2:])
+	case "ui":
+		runUI(os.Args[2:])
 	case "approvals":
 		runApprovals(os.Args[2:])
 	case "approve":
@@ -561,6 +563,7 @@ func printHelp() {
 
   USAGE
     iq                   Start Claude Code (default)
+    iq ui                Open the attachable terminal UI
     iq task [flags] TEXT Create a durable agent task (--backend fake|codex|claude, --write, --pin)
     iq tasks             List durable tasks
     iq task status TASK  Inspect canonical task and latest-turn state

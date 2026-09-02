@@ -49,7 +49,8 @@ The operating rule is simple: **the agent is temporary; the task is not.**
 | Conservative pre-mutation backend failure classification | Shipped foundation |
 | Durable ordered Codex/Claude fallback with restart recovery | Shipped foundation |
 | Daemon-scoped authentication on every control endpoint and SSE stream | Shipped foundation |
-| TUI and release installer | Planned |
+| Attachable `iq ui` terminal experience | Shipped foundation |
+| Release installer | Planned |
 
 The existing Claude/OpenAI-compatible local proxy remains available as an
 optional data plane. The durable task control plane is the primary product.
@@ -84,6 +85,20 @@ make build
 The daemon starts in the background. Its model proxy listens on
 `127.0.0.1:17373`; its task control API listens separately on
 `127.0.0.1:17374`.
+
+Open the terminal UI and start typing requests:
+
+```bash
+./bin/iq ui
+```
+
+The UI shows the current workspace's tasks and selected conversation alongside
+backend health, pending approvals, changed files, commands, verification,
+routes, and handoffs. Ctrl-N/Ctrl-P or the arrow keys change tasks. Plain text
+starts a task when none is selected and continues an idle selected task.
+`/new`, `/approve`, `/deny`, `/cancel`, `/handoff`, `/view`, and `/help` expose
+the explicit control actions. Ctrl-C, Ctrl-D, `/detach`, and `/quit` only close
+the UI; they never cancel a running task.
 
 Create a read-only task in the current Git workspace:
 
@@ -454,7 +469,7 @@ PLAN.md                            product gates and implementation order
 Work is currently focused on:
 
 1. broader Codex and Claude CLI compatibility fixtures and real-agent smokes;
-2. an attachable local TUI and zero-configuration `iq` entrypoint;
+2. a zero-configuration bare `iq` entrypoint and authenticated local dashboard;
 3. signed release packaging and real-repository alpha feedback.
 
 The acceptance gates and non-negotiable safety invariants live in
