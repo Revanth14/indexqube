@@ -130,9 +130,10 @@ type handoffCaptureBackend struct {
 }
 
 type classifiedFailureBackend struct {
-	id       agent.BackendID
-	failure  error
-	mutation bool
+	id           agent.BackendID
+	failure      error
+	mutation     bool
+	requireGuard bool
 }
 
 func (b *classifiedFailureBackend) ID() agent.BackendID { return b.id }
@@ -140,6 +141,9 @@ func (b *classifiedFailureBackend) Probe(context.Context) agent.BackendHealth {
 	return agent.BackendHealth{Backend: b.id, Status: agent.HealthAvailable, CheckedAt: time.Now().UTC()}
 }
 func (b *classifiedFailureBackend) Execute(_ context.Context, request agent.Request, _ agent.EventSink) (agent.Result, error) {
+	if b.requireGuard && request.Guard == nil {
+		return agent.Result{}, errors.New("missing inherited write guard")
+	}
 	if b.mutation {
 		if err := os.WriteFile(filepath.Join(request.Workspace, "classified-failure.txt"), []byte("changed\n"), 0o600); err != nil {
 			return agent.Result{}, err
@@ -195,6 +199,181 @@ func TestBackendFailureClassificationRequiresSafeUnpinnedWorkspace(t *testing.T)
 				t.Fatalf("route=%+v task=%+v", route, evidence.Task)
 			}
 		})
+	}
+}
+
+func TestAutomaticFallbackUsesDurableOrderedRouteAndCanonicalContext(t *testing.T) {
+	service, store, root := newTestService(t)
+	source := &classifiedFailureBackend{id: agent.BackendCodex, failure: errors.New("request failed: rate_limit_exceeded")}
+	destination := &handoffCaptureBackend{id: agent.BackendClaude, requests: make(chan agent.Request, 1)}
+	service.registry = NewRegistry(source, destination)
+	task, err := service.StartTask(context.Background(), StartTaskInput{
+		Workspace: root, Prompt: "finish the fallback fixture", Backend: agent.BackendCodex, Permission: agent.PermissionReadOnly,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := waitForTerminal(t, service, task.ID)
+	if events[len(events)-1].Type != agent.EventCompleted {
+		t.Fatalf("events=%+v", events)
+	}
+	request := <-destination.requests
+	if request.NativeSessionID != "" || !strings.Contains(request.Prompt, "INDEXQUBE AUTOMATIC FALLBACK") ||
+		!strings.Contains(request.Prompt, "rate_limited") || !strings.Contains(request.Prompt, "finish the fallback fixture") {
+		t.Fatalf("fallback request=%+v", request)
+	}
+	evidence, found, err := store.TaskEvidence(context.Background(), task.ID)
+	if err != nil || !found || len(evidence.Routes) != 2 {
+		t.Fatalf("evidence=%+v found=%v err=%v", evidence, found, err)
+	}
+	first, second := evidence.Routes[0], evidence.Routes[1]
+	if first.Backend != agent.BackendCodex || first.Status != "failed" || first.FailureClass != agent.FailureRateLimited ||
+		!first.FallbackEligible || first.PreFingerprint == "" || first.PreFingerprint != first.PostFingerprint {
+		t.Fatalf("source route=%+v", first)
+	}
+	if second.Backend != agent.BackendClaude || second.Status != string(taskstore.TurnSucceeded) ||
+		second.DecisionReason != "automatic_fallback_v1" || second.Ordinal != 2 {
+		t.Fatalf("destination route=%+v", second)
+	}
+	if evidence.Task.PreferredBackend != agent.BackendCodex || evidence.BackendPin != nil || evidence.Task.Status != taskstore.TaskOpen {
+		t.Fatalf("task=%+v pin=%+v", evidence.Task, evidence.BackendPin)
+	}
+	session, found, err := store.LatestBackendSession(context.Background(), task.ID, agent.BackendClaude)
+	if err != nil || !found || session.CreationReason != "automatic_fallback" {
+		t.Fatalf("session=%+v found=%v err=%v", session, found, err)
+	}
+}
+
+func TestAutomaticFallbackNeverCyclesAndRetainsWriteGuard(t *testing.T) {
+	service, store, root := newTestService(t)
+	source := &classifiedFailureBackend{id: agent.BackendCodex, failure: errors.New("service unavailable")}
+	destination := &classifiedFailureBackend{id: agent.BackendClaude, failure: errors.New("rate limit exceeded"), requireGuard: true}
+	service.registry = NewRegistry(source, destination)
+	task, err := service.StartTask(context.Background(), StartTaskInput{
+		Workspace: root, Prompt: "bounded fallback", Backend: agent.BackendCodex, Permission: agent.PermissionWrite,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := waitForTerminal(t, service, task.ID)
+	if events[len(events)-1].Type != agent.EventError {
+		t.Fatalf("events=%+v", events)
+	}
+	evidence, found, err := store.TaskEvidence(context.Background(), task.ID)
+	if err != nil || !found || len(evidence.Routes) != 2 {
+		t.Fatalf("routes=%+v found=%v err=%v", evidence.Routes, found, err)
+	}
+	if evidence.Routes[0].Backend != agent.BackendCodex || evidence.Routes[1].Backend != agent.BackendClaude ||
+		!evidence.Routes[0].FallbackEligible || !evidence.Routes[1].FallbackEligible {
+		t.Fatalf("routes=%+v", evidence.Routes)
+	}
+	if evidence.Task.Status != taskstore.TaskOpen {
+		t.Fatalf("task=%+v", evidence.Task)
+	}
+}
+
+func TestAutomaticFallbackRespectsPinsAndMutationBoundaries(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		permission agent.PermissionMode
+		pin        bool
+		mutation   bool
+		wantStatus taskstore.TaskStatus
+	}{
+		{name: "pinned task", permission: agent.PermissionReadOnly, pin: true, wantStatus: taskstore.TaskOpen},
+		{name: "uncertain write boundary", permission: agent.PermissionWrite, mutation: true, wantStatus: taskstore.TaskNeedsAttention},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			service, store, root := newTestService(t)
+			source := &classifiedFailureBackend{
+				id: agent.BackendCodex, failure: errors.New("rate limit exceeded"), mutation: test.mutation,
+			}
+			destination := &handoffCaptureBackend{id: agent.BackendClaude, requests: make(chan agent.Request, 1)}
+			service.registry = NewRegistry(source, destination)
+			task, err := service.StartTask(context.Background(), StartTaskInput{
+				Workspace: root, Prompt: "do not cross this boundary", Backend: agent.BackendCodex,
+				Permission: test.permission, PinBackend: test.pin,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			events := waitForTerminal(t, service, task.ID)
+			if events[len(events)-1].Type != agent.EventError {
+				t.Fatalf("events=%+v", events)
+			}
+			select {
+			case request := <-destination.requests:
+				t.Fatalf("unsafe destination started: %+v", request)
+			default:
+			}
+			evidence, found, err := store.TaskEvidence(context.Background(), task.ID)
+			if err != nil || !found || len(evidence.Routes) != 1 || evidence.Routes[0].FallbackEligible ||
+				evidence.Task.Status != test.wantStatus {
+				t.Fatalf("evidence=%+v found=%v err=%v", evidence, found, err)
+			}
+		})
+	}
+}
+
+func TestReconcileResumesDurablyQueuedAutomaticFallback(t *testing.T) {
+	service, store, root := newTestService(t)
+	destination := &handoffCaptureBackend{id: agent.BackendClaude, requests: make(chan agent.Request, 1)}
+	service.registry = NewRegistry(destination)
+	identity, err := workspace.Resolve(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	task, turn, source, err := store.CreateTask(context.Background(), taskstore.CreateTaskInput{
+		TaskID: taskstore.NewID("task"), TurnID: taskstore.NewID("turn"), RouteAttemptID: taskstore.NewID("route"),
+		WorkspaceID: identity.ID, WorkspacePath: identity.Root, Goal: "resume queued fallback",
+		Permission: agent.PermissionReadOnly, PreferredBackend: agent.BackendCodex, Now: now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pre, err := workspace.Capture(context.Background(), identity, task.ID, turn.ID, "pre")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddSnapshot(context.Background(), pre); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetAttemptPreFingerprint(context.Background(), source.ID, pre.Fingerprint); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.StartTurn(context.Background(), task.ID, turn.ID, source.ID, 0, now); err != nil {
+		t.Fatal(err)
+	}
+	next := taskstore.RouteAttempt{
+		ID: taskstore.NewID("route"), TurnID: turn.ID, Ordinal: 2, Backend: agent.BackendClaude,
+		DecisionReason: "automatic_fallback_v1", Status: "queued", StartedAt: now.Add(time.Second),
+	}
+	if err := store.BeginAutomaticFallback(context.Background(), taskstore.BeginAutomaticFallbackInput{
+		CurrentAttemptID: source.ID, NextAttempt: next, FailureClass: agent.FailureRateLimited,
+		PostFingerprint: pre.Fingerprint, Now: now.Add(time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	report, err := service.ReconcileInterrupted(context.Background())
+	if err != nil || report.Recovered != 1 || report.NeedsAttention != 0 {
+		t.Fatalf("report=%+v err=%v", report, err)
+	}
+	select {
+	case request := <-destination.requests:
+		if !strings.Contains(request.Prompt, "INDEXQUBE AUTOMATIC FALLBACK") {
+			t.Fatalf("request=%+v", request)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("queued fallback did not resume")
+	}
+	events := waitForTerminal(t, service, task.ID)
+	if events[len(events)-1].Type != agent.EventCompleted {
+		t.Fatalf("events=%+v", events)
+	}
+	evidence, found, err := store.TaskEvidence(context.Background(), task.ID)
+	if err != nil || !found || len(evidence.Routes) != 2 || evidence.Routes[1].Status != string(taskstore.TurnSucceeded) {
+		t.Fatalf("evidence=%+v found=%v err=%v", evidence, found, err)
 	}
 }
 

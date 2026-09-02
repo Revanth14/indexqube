@@ -100,11 +100,13 @@ type RouteAttempt struct {
 	Status           string             `json:"status"`
 	FailureClass     agent.FailureClass `json:"failure_class,omitempty"`
 	MutationObserved bool               `json:"mutation_observed"`
-	FallbackEligible bool               `json:"automatic_fallback_eligible"`
-	PreFingerprint   string             `json:"pre_fingerprint,omitempty"`
-	PostFingerprint  string             `json:"post_fingerprint,omitempty"`
-	StartedAt        time.Time          `json:"started_at"`
-	CompletedAt      *time.Time         `json:"completed_at,omitempty"`
+	// FallbackEligible is the decision persisted at the failure boundary. It
+	// must never be recomputed from mutable task state when evidence is read.
+	FallbackEligible bool       `json:"automatic_fallback_eligible"`
+	PreFingerprint   string     `json:"pre_fingerprint,omitempty"`
+	PostFingerprint  string     `json:"post_fingerprint,omitempty"`
+	StartedAt        time.Time  `json:"started_at"`
+	CompletedAt      *time.Time `json:"completed_at,omitempty"`
 }
 
 func (r RouteAttempt) CanAutomaticallyFallback() bool {
@@ -200,6 +202,18 @@ type CreateHandoffInput struct {
 	Now                  time.Time
 }
 
+// BeginAutomaticFallbackInput describes the single durable transition from a
+// safely failed route to its next ordered candidate. The store revalidates the
+// safety proof, pin, cancellation, route ordering, and cycle constraints in
+// the same transaction that queues NextAttempt.
+type BeginAutomaticFallbackInput struct {
+	CurrentAttemptID string
+	NextAttempt      RouteAttempt
+	FailureClass     agent.FailureClass
+	PostFingerprint  string
+	Now              time.Time
+}
+
 // Handoff is the durable boundary between two backend-native conversations.
 // Packet is the exact bounded canonical context delivered to the destination.
 type Handoff struct {
@@ -223,6 +237,10 @@ type InterruptedRun struct {
 	WorkspacePath         string
 	Permission            agent.PermissionMode
 	TurnStatus            TurnStatus
+	AttemptBackend        agent.BackendID
+	AttemptOrdinal        int
+	AttemptStatus         string
+	AttemptDecisionReason string
 	PreFingerprint        string
 	CancellationRequested bool
 }

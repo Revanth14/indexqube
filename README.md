@@ -47,6 +47,7 @@ The operating rule is simple: **the agent is temporary; the task is not.**
 | Explicit Codex/Claude handoff with durable canonical packets | Shipped foundation |
 | Durable per-task backend pin/unpin policy | Shipped foundation |
 | Conservative pre-mutation backend failure classification | Shipped foundation |
+| Durable ordered Codex/Claude fallback with restart recovery | Shipped foundation |
 | Daemon-scoped authentication on every control endpoint and SSE stream | Shipped foundation |
 | TUI and release installer | Planned |
 
@@ -146,8 +147,9 @@ task is running or awaiting approval.
 Failed route attempts record a bounded backend-neutral failure class. A route
 is marked fallback-eligible only for an allowlisted unavailable/rate-limit/lost-
 session class, an unpinned task, and an exact unchanged pre/post workspace
-fingerprint. This release reports that decision in task evidence; automatic
-cross-backend fallback is still disabled until the ordered policy step ships.
+fingerprint. IndexQube durably queues the other V1 backend only after persisting
+that proof. The ordered policy never repeats a backend, never overrides a pin
+or cancellation, and safely resumes a queued fallback after daemon restart.
 
 IndexQube streams the run and prints the task ID. The durable record remains
 available after the command exits:
@@ -430,8 +432,8 @@ PLAN.md                            product gates and implementation order
 
 Work is currently focused on:
 
-1. deterministic ordered fallback for eligible pre-mutation failures;
-2. an attachable local TUI;
+1. broader Codex and Claude CLI compatibility fixtures and real-agent smokes;
+2. an attachable local TUI and zero-configuration `iq` entrypoint;
 3. signed release packaging and real-repository alpha feedback.
 
 The acceptance gates and non-negotiable safety invariants live in

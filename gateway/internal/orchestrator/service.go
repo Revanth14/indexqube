@@ -74,6 +74,7 @@ type executeOptions struct {
 	sessionCreationReason string
 	predecessorSessionID  string
 	routeMetadata         map[string]string
+	inheritedGuard        *workspace.WriteGuard
 }
 
 type Service struct {
@@ -129,10 +130,6 @@ func (s *Service) StartTask(ctx context.Context, input StartTaskInput) (taskstor
 			return taskstore.Task{}, err
 		}
 	}
-	health := backend.Probe(ctx)
-	if health.Status != agent.HealthAvailable {
-		return taskstore.Task{}, fmt.Errorf("orchestrator: backend %q unavailable: %s", backendID, health.Reason)
-	}
 	identity, err := workspace.Resolve(ctx, input.Workspace)
 	if err != nil {
 		return taskstore.Task{}, err
@@ -181,9 +178,6 @@ func (s *Service) ContinueTask(ctx context.Context, input ContinueTaskInput) (ta
 			return taskstore.Task{}, err
 		}
 	}
-	if health := backend.Probe(ctx); health.Status != agent.HealthAvailable {
-		return taskstore.Task{}, fmt.Errorf("orchestrator: backend %q unavailable: %s", backend.ID(), health.Reason)
-	}
 	identity, err := workspace.Resolve(ctx, task.WorkspacePath)
 	if err != nil {
 		return taskstore.Task{}, err
@@ -229,18 +223,22 @@ func (s *Service) execute(ctx context.Context, task taskstore.Task, turn tasksto
 		s.mu.Unlock()
 	}()
 
-	var guard *workspace.WriteGuard
+	guard := options.inheritedGuard
+	ownsGuard := false
 	var err error
-	if task.Permission == agent.PermissionWrite {
+	if task.Permission == agent.PermissionWrite && guard == nil {
 		guard, err = s.locks.AcquireWrite(ctx, identity.ID, task.ID, turn.ID)
 		if err != nil {
 			s.failBeforeRun(ctx, task, turn, attempt, "workspace_locked", err)
 			return
 		}
+		ownsGuard = true
+	}
+	if ownsGuard {
 		defer guard.Release(context.Background())
 	}
 
-	pre, err := workspace.Capture(ctx, identity, task.ID, turn.ID, "pre")
+	pre, err := workspace.Capture(ctx, identity, task.ID, turn.ID, routeSnapshotPhase("pre", attempt.Ordinal))
 	if err != nil {
 		s.failBeforeRun(ctx, task, turn, attempt, "snapshot_failed", err)
 		return
@@ -291,7 +289,8 @@ func (s *Service) execute(ctx context.Context, task taskstore.Task, turn tasksto
 	mutationBeforeRecovery := false
 	recoveredNativeSession := false
 	if result.ResumeLost && options.priorSession != nil && !errors.Is(runErr, context.Canceled) {
-		check, checkErr := workspace.Capture(context.Background(), identity, task.ID, turn.ID, "resume_recovery_check")
+		check, checkErr := workspace.Capture(context.Background(), identity, task.ID, turn.ID,
+			routeSnapshotPhase("resume_recovery_check", currentAttempt.Ordinal))
 		if checkErr == nil {
 			checkErr = s.store.AddSnapshot(context.Background(), check)
 		}
@@ -301,7 +300,10 @@ func (s *Service) execute(ctx context.Context, task taskstore.Task, turn tasksto
 		}
 		mutationBeforeRecovery = tracker.mutationSeen || result.MutationSeen || (checkErr == nil && pre.Fingerprint != check.Fingerprint)
 		if checkErr == nil && !mutationBeforeRecovery {
-			_ = s.store.FailRouteAttempt(context.Background(), currentAttempt.ID, agent.FailureNativeSessionLost, check.Fingerprint, false, time.Now().UTC())
+			nativeEligible := s.fallbackEligible(context.Background(), task.ID, agent.FailureNativeSessionLost,
+				false, pre.Fingerprint, check.Fingerprint)
+			_ = s.store.FailRouteAttempt(context.Background(), currentAttempt.ID, agent.FailureNativeSessionLost,
+				check.Fingerprint, false, nativeEligible, time.Now().UTC())
 			_ = s.store.SetBackendSessionStatus(context.Background(), options.priorSession.ID, "resume_lost", time.Now().UTC())
 			recoveryAttempt := taskstore.RouteAttempt{
 				ID: taskstore.NewID("route"), TurnID: turn.ID, Ordinal: currentAttempt.Ordinal + 1, Backend: backend.ID(),
@@ -328,7 +330,8 @@ func (s *Service) execute(ctx context.Context, task taskstore.Task, turn tasksto
 		}
 	}
 
-	post, snapshotErr := workspace.Capture(context.Background(), identity, task.ID, turn.ID, "post")
+	post, snapshotErr := workspace.Capture(context.Background(), identity, task.ID, turn.ID,
+		routeSnapshotPhase("post", currentAttempt.Ordinal))
 	var fileDeltas []taskstore.WorkspaceFileDelta
 	if snapshotErr == nil {
 		if err := s.store.AddSnapshot(context.Background(), post); err != nil {
@@ -458,11 +461,24 @@ func (s *Service) execute(ctx context.Context, task taskstore.Task, turn tasksto
 		mutationObserved := mutation || evidenceMismatch
 		failureClass := classifyRouteFailure(code, failure, result)
 		eligible := s.fallbackEligible(context.Background(), task.ID, failureClass, mutationObserved, pre.Fingerprint, postFingerprint)
+		if !cancelled && eligible {
+			fallbackStarted, fallbackErr := s.startAutomaticFallback(context.Background(), ctx, task, turn,
+				currentAttempt, backend, identity, guard, failureClass, safeError(failure), postFingerprint)
+			if fallbackStarted {
+				return
+			}
+			if fallbackErr != nil && !errors.Is(fallbackErr, taskstore.ErrFallbackRejected) {
+				failure = fmt.Errorf("%w; automatic fallback setup failed: %v", failure, fallbackErr)
+				failureClass = agent.FailurePlatformState
+				eligible = false
+				code = "fallback_state_failed"
+			}
+		}
 		var finishErr error
 		if cancelled {
 			finishErr = s.store.CancelTurn(context.Background(), task.ID, turn.ID, currentAttempt.ID, safeError(failure), postFingerprint, mutationObserved, time.Now().UTC())
 		} else {
-			finishErr = s.store.FailTurnClassified(context.Background(), task.ID, turn.ID, currentAttempt.ID, code, failureClass, safeError(failure), postFingerprint, mutationObserved, time.Now().UTC())
+			finishErr = s.store.FailTurnClassified(context.Background(), task.ID, turn.ID, currentAttempt.ID, code, failureClass, safeError(failure), postFingerprint, mutationObserved, eligible, time.Now().UTC())
 		}
 		if errors.Is(finishErr, taskstore.ErrCancellationRequested) {
 			cancelled = true
@@ -498,7 +514,7 @@ func (s *Service) execute(ctx context.Context, task taskstore.Task, turn tasksto
 		})
 		return
 	} else if err != nil {
-		if failErr := s.store.FailTurnClassified(context.Background(), task.ID, turn.ID, currentAttempt.ID, "state_failed", agent.FailurePlatformState, safeError(err), postFingerprint, mutation || evidenceMismatch, time.Now().UTC()); failErr == nil {
+		if failErr := s.store.FailTurnClassified(context.Background(), task.ID, turn.ID, currentAttempt.ID, "state_failed", agent.FailurePlatformState, safeError(err), postFingerprint, mutation || evidenceMismatch, false, time.Now().UTC()); failErr == nil {
 			_ = s.emit(context.Background(), agent.Event{Type: agent.EventError, TaskID: task.ID, TurnID: turn.ID, Backend: backend.ID(),
 				Result:   &agent.ResultEvent{Status: string(taskstore.TurnFailed), Error: safeError(err)},
 				Metadata: failureMetadata("state_failed", agent.FailurePlatformState, false)})
@@ -509,6 +525,75 @@ func (s *Service) execute(ctx context.Context, task taskstore.Task, turn tasksto
 		Type: agent.EventCompleted, TaskID: task.ID, TurnID: turn.ID, Backend: backend.ID(),
 		Result: &agent.ResultEvent{ExitCode: 0, Status: string(taskstore.TurnSucceeded)},
 	})
+}
+
+func (s *Service) startAutomaticFallback(storeCtx, turnCtx context.Context, task taskstore.Task, turn taskstore.Turn,
+	current taskstore.RouteAttempt, source agent.Backend, identity workspace.Identity, guard *workspace.WriteGuard,
+	class agent.FailureClass, failureMessage, fingerprint string) (bool, error) {
+	routes, err := s.store.RouteAttemptsForTurn(storeCtx, turn.ID)
+	if err != nil {
+		return false, err
+	}
+	attempted := make(map[agent.BackendID]bool, len(routes))
+	for _, route := range routes {
+		attempted[route.Backend] = true
+	}
+	destination, ok := s.registry.NextAutomaticFallback(source.ID(), attempted)
+	if !ok {
+		return false, nil
+	}
+	if validator, ok := destination.(agent.PermissionValidator); ok {
+		if err := validator.ValidatePermission(task.Permission); err != nil {
+			return false, err
+		}
+	}
+	prompt, err := s.canonicalAutomaticFallbackPrompt(storeCtx, task, turn, source.ID(), destination.ID(), class, failureMessage)
+	if err != nil {
+		return false, err
+	}
+	predecessor := ""
+	if session, found, sessionErr := s.store.LatestBackendSession(storeCtx, task.ID, source.ID()); sessionErr != nil {
+		return false, sessionErr
+	} else if found {
+		predecessor = session.ID
+	}
+	now := time.Now().UTC()
+	next := taskstore.RouteAttempt{
+		ID: taskstore.NewID("route"), TurnID: turn.ID, Ordinal: current.Ordinal + 1, Backend: destination.ID(),
+		DecisionReason: "automatic_fallback_v1", Status: "queued", PreFingerprint: fingerprint, StartedAt: now,
+	}
+	if err := s.store.BeginAutomaticFallback(storeCtx, taskstore.BeginAutomaticFallbackInput{
+		CurrentAttemptID: current.ID, NextAttempt: next, FailureClass: class,
+		PostFingerprint: fingerprint, Now: now,
+	}); err != nil {
+		return false, err
+	}
+	metadata := failureMetadata("backend_failed", class, true)
+	metadata["decision_reason"] = next.DecisionReason
+	metadata["from_backend"] = string(source.ID())
+	metadata["to_backend"] = string(destination.ID())
+	metadata["route_attempt_id"] = next.ID
+	_ = s.emit(storeCtx, agent.Event{
+		Type: agent.EventWarning, TaskID: task.ID, TurnID: turn.ID, Backend: source.ID(),
+		Message:  &agent.MessageEvent{Text: fmt.Sprintf("%s failed safely (%s); continuing with %s", source.ID(), class, destination.ID())},
+		Metadata: metadata,
+	})
+	s.execute(turnCtx, task, turn, next, destination, identity, executeOptions{
+		prompt: prompt, sessionCreationReason: "automatic_fallback", predecessorSessionID: predecessor,
+		routeMetadata: map[string]string{
+			"decision_reason": next.DecisionReason, "from_backend": string(source.ID()),
+			"to_backend": string(destination.ID()), "trigger_failure_class": string(class),
+		},
+		inheritedGuard: guard,
+	})
+	return true, nil
+}
+
+func routeSnapshotPhase(phase string, ordinal int) string {
+	if ordinal <= 1 {
+		return phase
+	}
+	return fmt.Sprintf("route_%d_%s", ordinal, phase)
 }
 
 func changedUntrackedPaths(snapshot taskstore.WorkspaceSnapshot, changedPaths []string) []string {
@@ -587,7 +672,7 @@ func persistedVerification(taskID, turnID string, result verification.Result) ta
 
 func (s *Service) failBeforeRun(ctx context.Context, task taskstore.Task, turn taskstore.Turn, attempt taskstore.RouteAttempt, code string, err error) {
 	failureClass := classifyRouteFailure(code, err, agent.Result{})
-	finishErr := s.store.FailTurnClassified(context.Background(), task.ID, turn.ID, attempt.ID, code, failureClass, safeError(err), "", false, time.Now().UTC())
+	finishErr := s.store.FailTurnClassified(context.Background(), task.ID, turn.ID, attempt.ID, code, failureClass, safeError(err), "", false, false, time.Now().UTC())
 	if errors.Is(finishErr, taskstore.ErrCancellationRequested) {
 		if cancelErr := s.store.CancelTurn(context.Background(), task.ID, turn.ID, attempt.ID, "cancellation requested", "", false, time.Now().UTC()); cancelErr != nil {
 			return
@@ -772,6 +857,16 @@ func (s *Service) ReconcileInterrupted(ctx context.Context) (ReconciliationRepor
 	}
 	var report ReconciliationReport
 	for _, run := range runs {
+		if !run.CancellationRequested && run.AttemptStatus == "queued" && run.AttemptDecisionReason == "automatic_fallback_v1" {
+			resumed, resumeErr := s.resumeQueuedAutomaticFallback(ctx, run)
+			if resumeErr != nil {
+				return report, resumeErr
+			}
+			if resumed {
+				report.Recovered++
+				continue
+			}
+		}
 		code := "daemon_interrupted_pre_run"
 		message := "daemon stopped before backend execution began"
 		mutationRisk := false
@@ -830,6 +925,91 @@ func (s *Service) ReconcileInterrupted(ctx context.Context) (ReconciliationRepor
 		}
 	}
 	return report, nil
+}
+
+func (s *Service) resumeQueuedAutomaticFallback(ctx context.Context, run taskstore.InterruptedRun) (bool, error) {
+	task, found, err := s.store.TaskByID(ctx, run.TaskID)
+	if err != nil || !found {
+		return false, err
+	}
+	turn, found, err := s.store.TurnByID(ctx, run.TurnID)
+	if err != nil || !found {
+		return false, err
+	}
+	if _, pinned, err := s.store.BackendPin(ctx, task.ID); err != nil || pinned {
+		return false, err
+	}
+	identity, err := workspace.Resolve(ctx, run.WorkspacePath)
+	if err != nil || identity.ID != run.WorkspaceID {
+		return false, nil
+	}
+	check, err := workspace.Capture(ctx, identity, run.TaskID, run.TurnID,
+		routeSnapshotPhase("fallback_recovery_check", run.AttemptOrdinal))
+	if err != nil || check.Fingerprint != run.PreFingerprint {
+		return false, nil
+	}
+	if err := s.store.AddSnapshot(ctx, check); err != nil {
+		return false, err
+	}
+	backend, err := s.registry.Get(run.AttemptBackend)
+	if err != nil {
+		return false, nil
+	}
+	if validator, ok := backend.(agent.PermissionValidator); ok {
+		if err := validator.ValidatePermission(task.Permission); err != nil {
+			return false, nil
+		}
+	}
+	routes, err := s.store.RouteAttemptsForTurn(ctx, turn.ID)
+	if err != nil || len(routes) == 0 {
+		return false, err
+	}
+	current := routes[len(routes)-1]
+	if current.ID != run.AttemptID || current.Status != "queued" {
+		return false, nil
+	}
+	from := agent.BackendID("")
+	class := agent.FailureUnknown
+	predecessor := ""
+	if len(routes) > 1 {
+		previous := routes[len(routes)-2]
+		from = previous.Backend
+		class = previous.FailureClass
+		if session, ok, sessionErr := s.store.LatestBackendSession(ctx, task.ID, from); sessionErr != nil {
+			return false, sessionErr
+		} else if ok {
+			predecessor = session.ID
+		}
+	}
+	prompt, err := s.canonicalAutomaticFallbackPrompt(ctx, task, turn, from, backend.ID(), class,
+		"daemon restarted after the fallback route was durably queued")
+	if err != nil {
+		return false, err
+	}
+	turnCtx, cancel := context.WithCancel(s.ctx)
+	s.mu.Lock()
+	s.cancels[task.ID] = activeTurn{turnID: turn.ID, cancel: cancel}
+	s.mu.Unlock()
+	_ = s.emit(ctx, agent.Event{
+		Type: agent.EventWarning, TaskID: task.ID, TurnID: turn.ID, Backend: backend.ID(),
+		Message: &agent.MessageEvent{Text: "resuming a durably queued automatic fallback after daemon restart"},
+		Metadata: map[string]string{
+			"decision_reason": current.DecisionReason, "route_attempt_id": current.ID,
+			"from_backend": string(from), "to_backend": string(backend.ID()),
+		},
+	})
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		s.execute(turnCtx, task, turn, current, backend, identity, executeOptions{
+			prompt: prompt, sessionCreationReason: "automatic_fallback", predecessorSessionID: predecessor,
+			routeMetadata: map[string]string{
+				"decision_reason": current.DecisionReason, "from_backend": string(from),
+				"to_backend": string(backend.ID()), "recovered_after_restart": "true",
+			},
+		})
+	}()
+	return true, nil
 }
 
 func (s *Service) EventsAfter(ctx context.Context, taskID string, sequence int64) ([]agent.Event, error) {
@@ -919,13 +1099,29 @@ func (s *Service) canonicalRecoveryPrompt(ctx context.Context, task taskstore.Ta
 	}
 	prompt.WriteString("\n\nCurrent request:\n")
 	prompt.WriteString(current.UserMessage)
-	prompt.WriteString("\n\nThe filesystem is authoritative. Inspect the current workspace before drawing conclusions. This is a read-only task; do not modify files.\n")
+	prompt.WriteString("\n\nThe filesystem is authoritative. Inspect the current workspace before drawing conclusions. ")
+	if task.Permission == agent.PermissionWrite {
+		prompt.WriteString("This task retains its explicit workspace-write grant; make only the changes required by the current request.\n")
+	} else {
+		prompt.WriteString("This is a read-only task; do not modify files.\n")
+	}
 	text := prompt.String()
 	const maxRecoveryPrompt = 256 << 10
 	if len(text) > maxRecoveryPrompt {
 		text = text[:maxRecoveryPrompt] + "\n[indexqube: canonical context truncated]\n"
 	}
 	return text, nil
+}
+
+func (s *Service) canonicalAutomaticFallbackPrompt(ctx context.Context, task taskstore.Task, current taskstore.Turn,
+	from, to agent.BackendID, class agent.FailureClass, failureMessage string) (string, error) {
+	recovery, err := s.canonicalRecoveryPrompt(ctx, task, current)
+	if err != nil {
+		return "", err
+	}
+	failureMessage = safeError(errors.New(failureMessage))
+	return fmt.Sprintf("INDEXQUBE AUTOMATIC FALLBACK\n\nThe %s backend failed before any workspace mutation. Failure class: %s. Destination: %s.\nBounded failure: %s\n\n%s",
+		from, class, to, failureMessage, recovery), nil
 }
 
 type turnEventSink struct {

@@ -88,6 +88,7 @@ CREATE TABLE IF NOT EXISTS route_attempts (
     status              TEXT NOT NULL,
     failure_class       TEXT NOT NULL DEFAULT '',
     mutation_observed   INTEGER NOT NULL DEFAULT 0,
+    fallback_eligible   INTEGER NOT NULL DEFAULT 0,
     pre_fingerprint     TEXT NOT NULL DEFAULT '',
     post_fingerprint    TEXT NOT NULL DEFAULT '',
     started_at          INTEGER NOT NULL,
@@ -302,6 +303,11 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("taskstore: migrate: %w", err)
 	}
+	if err := ensureColumn(db, "route_attempts", "fallback_eligible",
+		`ALTER TABLE route_attempts ADD COLUMN fallback_eligible INTEGER NOT NULL DEFAULT 0`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("taskstore: migrate fallback eligibility: %w", err)
+	}
 	if err := os.Chmod(path, 0o600); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("taskstore: chmod: %w", err)
@@ -316,7 +322,37 @@ var (
 	ErrTaskNotActive         = errors.New("taskstore: task has no active turn")
 	ErrTaskActive            = errors.New("taskstore: task has an active turn")
 	ErrCancellationRequested = errors.New("taskstore: cancellation requested")
+	ErrFallbackRejected      = errors.New("taskstore: automatic fallback rejected")
 )
+
+func ensureColumn(db *sql.DB, table, column, alterStatement string) error {
+	rows, err := db.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		return err
+	}
+	found := false
+	for rows.Next() {
+		var cid int
+		var name, dataType string
+		var notNull, primaryKey int
+		var defaultValue sql.NullString
+		if err := rows.Scan(&cid, &name, &dataType, &notNull, &defaultValue, &primaryKey); err != nil {
+			rows.Close()
+			return err
+		}
+		if name == column {
+			found = true
+		}
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if found {
+		return nil
+	}
+	_, err = db.Exec(alterStatement)
+	return err
+}
 
 func NewID(prefix string) string {
 	buf := make([]byte, 12)
@@ -1211,19 +1247,19 @@ func (s *Store) CompleteTurn(ctx context.Context, taskID, turnID, attemptID, mes
 	if needsAttention {
 		taskStatus = TaskNeedsAttention
 	}
-	return s.finishTurn(ctx, taskID, turnID, attemptID, TurnSucceeded, taskStatus, message, "", "", "", postFingerprint, mutation, now)
+	return s.finishTurn(ctx, taskID, turnID, attemptID, TurnSucceeded, taskStatus, message, "", "", "", postFingerprint, mutation, false, now)
 }
 
 func (s *Store) FailTurn(ctx context.Context, taskID, turnID, attemptID, code, message, postFingerprint string, mutation bool, now time.Time) error {
-	return s.FailTurnClassified(ctx, taskID, turnID, attemptID, code, agent.FailureClass(code), message, postFingerprint, mutation, now)
+	return s.FailTurnClassified(ctx, taskID, turnID, attemptID, code, agent.FailureClass(code), message, postFingerprint, mutation, false, now)
 }
 
-func (s *Store) FailTurnClassified(ctx context.Context, taskID, turnID, attemptID, code string, class agent.FailureClass, message, postFingerprint string, mutation bool, now time.Time) error {
+func (s *Store) FailTurnClassified(ctx context.Context, taskID, turnID, attemptID, code string, class agent.FailureClass, message, postFingerprint string, mutation, fallbackEligible bool, now time.Time) error {
 	taskStatus := TaskOpen
 	if mutation {
 		taskStatus = TaskNeedsAttention
 	}
-	return s.finishTurn(ctx, taskID, turnID, attemptID, TurnFailed, taskStatus, "", code, class, message, postFingerprint, mutation, now)
+	return s.finishTurn(ctx, taskID, turnID, attemptID, TurnFailed, taskStatus, "", code, class, message, postFingerprint, mutation, fallbackEligible, now)
 }
 
 func (s *Store) CancelTurn(ctx context.Context, taskID, turnID, attemptID, message, postFingerprint string, mutation bool, now time.Time) error {
@@ -1231,10 +1267,10 @@ func (s *Store) CancelTurn(ctx context.Context, taskID, turnID, attemptID, messa
 	if mutation {
 		taskStatus = TaskNeedsAttention
 	}
-	return s.finishTurn(ctx, taskID, turnID, attemptID, TurnCancelled, taskStatus, "", "cancelled", agent.FailureCancelled, message, postFingerprint, mutation, now)
+	return s.finishTurn(ctx, taskID, turnID, attemptID, TurnCancelled, taskStatus, "", "cancelled", agent.FailureCancelled, message, postFingerprint, mutation, false, now)
 }
 
-func (s *Store) finishTurn(ctx context.Context, taskID, turnID, attemptID string, turnStatus TurnStatus, taskStatus TaskStatus, assistant, code string, class agent.FailureClass, message, postFingerprint string, mutation bool, now time.Time) error {
+func (s *Store) finishTurn(ctx context.Context, taskID, turnID, attemptID string, turnStatus TurnStatus, taskStatus TaskStatus, assistant, code string, class agent.FailureClass, message, postFingerprint string, mutation, fallbackEligible bool, now time.Time) error {
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
@@ -1278,8 +1314,8 @@ func (s *Store) finishTurn(ctx context.Context, taskID, turnID, attemptID string
 		turnStatus, assistant, code, message, now.UnixMilli(), turnID); err != nil {
 		return err
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE route_attempts SET status=?,failure_class=?,mutation_observed=?,post_fingerprint=?,completed_at=? WHERE route_attempt_id=?`,
-		string(turnStatus), class, boolInt(mutation), postFingerprint, now.UnixMilli(), attemptID); err != nil {
+	if _, err = tx.ExecContext(ctx, `UPDATE route_attempts SET status=?,failure_class=?,mutation_observed=?,fallback_eligible=?,post_fingerprint=?,completed_at=? WHERE route_attempt_id=?`,
+		string(turnStatus), class, boolInt(mutation), boolInt(fallbackEligible), postFingerprint, now.UnixMilli(), attemptID); err != nil {
 		return err
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE tasks SET status=?,revision=revision+1,updated_at=?,retention_deadline=? WHERE task_id=?`,
@@ -1308,13 +1344,86 @@ func (s *Store) CreateRouteAttempt(ctx context.Context, attempt RouteAttempt) er
 	return err
 }
 
-func (s *Store) FailRouteAttempt(ctx context.Context, attemptID string, class agent.FailureClass, postFingerprint string, mutation bool, now time.Time) error {
+func (s *Store) FailRouteAttempt(ctx context.Context, attemptID string, class agent.FailureClass, postFingerprint string, mutation, fallbackEligible bool, now time.Time) error {
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	_, err := s.db.ExecContext(ctx, `UPDATE route_attempts SET status='failed',failure_class=?,mutation_observed=?,post_fingerprint=?,completed_at=? WHERE route_attempt_id=?`,
-		class, boolInt(mutation), postFingerprint, now.UnixMilli(), attemptID)
+	_, err := s.db.ExecContext(ctx, `UPDATE route_attempts SET status='failed',failure_class=?,mutation_observed=?,fallback_eligible=?,post_fingerprint=?,completed_at=? WHERE route_attempt_id=?`,
+		class, boolInt(mutation), boolInt(fallbackEligible), postFingerprint, now.UnixMilli(), attemptID)
 	return err
+}
+
+// BeginAutomaticFallback atomically persists the failed route's eligibility
+// and queues exactly one new ordered route. The next backend must not begin
+// until this transaction commits successfully.
+func (s *Store) BeginAutomaticFallback(ctx context.Context, in BeginAutomaticFallbackInput) error {
+	if in.Now.IsZero() {
+		in.Now = time.Now().UTC()
+	}
+	if !agent.AutomaticFallbackEligible(in.FailureClass) || in.PostFingerprint == "" {
+		return ErrFallbackRejected
+	}
+	next := in.NextAttempt
+	if next.ID == "" || next.Backend == "" || next.DecisionReason == "" {
+		return ErrFallbackRejected
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var taskID, turnID, currentBackend, currentStatus, preFingerprint string
+	var currentOrdinal int
+	err = tx.QueryRowContext(ctx, `SELECT tr.task_id,ra.turn_id,ra.ordinal,ra.backend,ra.status,ra.pre_fingerprint
+		FROM route_attempts ra JOIN turns tr ON tr.turn_id=ra.turn_id WHERE ra.route_attempt_id=?`,
+		in.CurrentAttemptID).Scan(&taskID, &turnID, &currentOrdinal, &currentBackend, &currentStatus, &preFingerprint)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrFallbackRejected
+	}
+	if err != nil {
+		return err
+	}
+	if next.TurnID != turnID || next.Ordinal != currentOrdinal+1 || next.Backend == agent.BackendID(currentBackend) ||
+		currentStatus != "running" || preFingerprint == "" || preFingerprint != in.PostFingerprint {
+		return ErrFallbackRejected
+	}
+	var taskStatus TaskStatus
+	if err := tx.QueryRowContext(ctx, `SELECT status FROM tasks WHERE task_id=?`, taskID).Scan(&taskStatus); err != nil {
+		return err
+	}
+	if taskStatus != TaskRunning {
+		return ErrFallbackRejected
+	}
+	var pinned, cancelled, repeated int
+	if err := tx.QueryRowContext(ctx, `SELECT
+		EXISTS(SELECT 1 FROM task_backend_pins WHERE task_id=?),
+		EXISTS(SELECT 1 FROM task_cancellations WHERE turn_id=? AND status=?),
+		EXISTS(SELECT 1 FROM route_attempts WHERE turn_id=? AND backend=?)`,
+		taskID, turnID, CancellationRequested, turnID, next.Backend).Scan(&pinned, &cancelled, &repeated); err != nil {
+		return err
+	}
+	if pinned != 0 || cancelled != 0 || repeated != 0 {
+		return ErrFallbackRejected
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE route_attempts SET status='failed',failure_class=?,mutation_observed=0,
+		fallback_eligible=1,post_fingerprint=?,completed_at=? WHERE route_attempt_id=? AND status='running'`,
+		in.FailureClass, in.PostFingerprint, in.Now.UnixMilli(), in.CurrentAttemptID)
+	if err != nil {
+		return err
+	}
+	if rows, err := result.RowsAffected(); err != nil || rows != 1 {
+		return ErrFallbackRejected
+	}
+	if next.StartedAt.IsZero() {
+		next.StartedAt = in.Now
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO route_attempts
+		(route_attempt_id,turn_id,ordinal,backend,decision_reason,status,pre_fingerprint,started_at)
+		VALUES(?,?,?,?,?,'queued',?,?)`, next.ID, next.TurnID, next.Ordinal, next.Backend,
+		next.DecisionReason, in.PostFingerprint, next.StartedAt.UnixMilli()); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) TaskByID(ctx context.Context, taskID string) (Task, bool, error) {
@@ -1387,9 +1496,6 @@ func (s *Store) TaskEvidence(ctx context.Context, taskID string) (TaskEvidence, 
 	}
 	if evidence.Routes, err = s.routeAttempts(ctx, taskID); err != nil {
 		return TaskEvidence{}, false, err
-	}
-	for index := range evidence.Routes {
-		evidence.Routes[index].FallbackEligible = evidence.BackendPin == nil && evidence.Routes[index].CanAutomaticallyFallback()
 	}
 	if evidence.Handoffs, err = s.handoffs(ctx, taskID); err != nil {
 		return TaskEvidence{}, false, err
@@ -1572,7 +1678,7 @@ func (s *Store) backendSessions(ctx context.Context, taskID string) ([]BackendSe
 
 func (s *Store) routeAttempts(ctx context.Context, taskID string) ([]RouteAttempt, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT ra.route_attempt_id,ra.turn_id,ra.ordinal,ra.backend,ra.backend_session_id,
-		ra.decision_reason,ra.status,ra.failure_class,ra.mutation_observed,ra.pre_fingerprint,ra.post_fingerprint,
+		ra.decision_reason,ra.status,ra.failure_class,ra.mutation_observed,ra.fallback_eligible,ra.pre_fingerprint,ra.post_fingerprint,
 		ra.started_at,ra.completed_at FROM route_attempts ra JOIN turns tr ON tr.turn_id=ra.turn_id
 		WHERE tr.task_id=? ORDER BY tr.sequence,ra.ordinal`, taskID)
 	if err != nil {
@@ -1583,16 +1689,17 @@ func (s *Store) routeAttempts(ctx context.Context, taskID string) ([]RouteAttemp
 	for rows.Next() {
 		var route RouteAttempt
 		var backendSession sql.NullString
-		var mutation int
+		var mutation, fallbackEligible int
 		var started int64
 		var completed sql.NullInt64
 		if err := rows.Scan(&route.ID, &route.TurnID, &route.Ordinal, &route.Backend, &backendSession,
-			&route.DecisionReason, &route.Status, &route.FailureClass, &mutation, &route.PreFingerprint,
+			&route.DecisionReason, &route.Status, &route.FailureClass, &mutation, &fallbackEligible, &route.PreFingerprint,
 			&route.PostFingerprint, &started, &completed); err != nil {
 			return nil, err
 		}
 		route.BackendSessionID = backendSession.String
 		route.MutationObserved = mutation != 0
+		route.FallbackEligible = fallbackEligible != 0
 		route.StartedAt = time.UnixMilli(started).UTC()
 		if completed.Valid {
 			value := time.UnixMilli(completed.Int64).UTC()
@@ -1601,6 +1708,47 @@ func (s *Store) routeAttempts(ctx context.Context, taskID string) ([]RouteAttemp
 		routes = append(routes, route)
 	}
 	return routes, rows.Err()
+}
+
+func (s *Store) RouteAttemptsForTurn(ctx context.Context, turnID string) ([]RouteAttempt, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT route_attempt_id,turn_id,ordinal,backend,backend_session_id,
+		decision_reason,status,failure_class,mutation_observed,fallback_eligible,pre_fingerprint,post_fingerprint,
+		started_at,completed_at FROM route_attempts WHERE turn_id=? ORDER BY ordinal`, turnID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var routes []RouteAttempt
+	for rows.Next() {
+		route, err := scanRouteAttempt(rows)
+		if err != nil {
+			return nil, err
+		}
+		routes = append(routes, route)
+	}
+	return routes, rows.Err()
+}
+
+func scanRouteAttempt(row rowScanner) (RouteAttempt, error) {
+	var route RouteAttempt
+	var backendSession sql.NullString
+	var mutation, fallbackEligible int
+	var started int64
+	var completed sql.NullInt64
+	if err := row.Scan(&route.ID, &route.TurnID, &route.Ordinal, &route.Backend, &backendSession,
+		&route.DecisionReason, &route.Status, &route.FailureClass, &mutation, &fallbackEligible,
+		&route.PreFingerprint, &route.PostFingerprint, &started, &completed); err != nil {
+		return RouteAttempt{}, err
+	}
+	route.BackendSessionID = backendSession.String
+	route.MutationObserved = mutation != 0
+	route.FallbackEligible = fallbackEligible != 0
+	route.StartedAt = time.UnixMilli(started).UTC()
+	if completed.Valid {
+		value := time.UnixMilli(completed.Int64).UTC()
+		route.CompletedAt = &value
+	}
+	return route, nil
 }
 
 func (s *Store) handoffs(ctx context.Context, taskID string) ([]Handoff, error) {
@@ -1838,6 +1986,20 @@ func (s *Store) latestTurn(ctx context.Context, taskID string) (Turn, bool, erro
 	return turn, true, nil
 }
 
+func (s *Store) TurnByID(ctx context.Context, turnID string) (Turn, bool, error) {
+	row := s.db.QueryRowContext(ctx, `SELECT turn_id,task_id,sequence,idempotency_key,user_message,assistant_message,
+		backend_session_id,permission_mode,status,write_epoch,error_code,error_message,created_at,started_at,completed_at
+		FROM turns WHERE turn_id=?`, turnID)
+	turn, err := scanTurn(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Turn{}, false, nil
+	}
+	if err != nil {
+		return Turn{}, false, err
+	}
+	return turn, true, nil
+}
+
 func (s *Store) TurnsBefore(ctx context.Context, taskID string, sequence int64) ([]Turn, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT turn_id,task_id,sequence,idempotency_key,user_message,assistant_message,
 		backend_session_id,permission_mode,status,write_epoch,error_code,error_message,created_at,started_at,completed_at
@@ -1861,6 +2023,10 @@ func (s *Store) InterruptedRuns(ctx context.Context) ([]InterruptedRun, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT t.task_id,tr.turn_id,
 		COALESCE((SELECT ra.route_attempt_id FROM route_attempts ra WHERE ra.turn_id=tr.turn_id ORDER BY ra.ordinal DESC LIMIT 1),''),
 		t.workspace_id,t.workspace_path,t.permission_mode,tr.status,
+		COALESCE((SELECT ra.backend FROM route_attempts ra WHERE ra.turn_id=tr.turn_id ORDER BY ra.ordinal DESC LIMIT 1),''),
+		COALESCE((SELECT ra.ordinal FROM route_attempts ra WHERE ra.turn_id=tr.turn_id ORDER BY ra.ordinal DESC LIMIT 1),0),
+		COALESCE((SELECT ra.status FROM route_attempts ra WHERE ra.turn_id=tr.turn_id ORDER BY ra.ordinal DESC LIMIT 1),''),
+		COALESCE((SELECT ra.decision_reason FROM route_attempts ra WHERE ra.turn_id=tr.turn_id ORDER BY ra.ordinal DESC LIMIT 1),''),
 		COALESCE((SELECT ra.pre_fingerprint FROM route_attempts ra WHERE ra.turn_id=tr.turn_id ORDER BY ra.ordinal DESC LIMIT 1),''),
 		EXISTS(SELECT 1 FROM task_cancellations c WHERE c.turn_id=tr.turn_id AND c.status=?)
 		FROM tasks t JOIN turns tr ON tr.task_id=t.task_id
@@ -1874,7 +2040,8 @@ func (s *Store) InterruptedRuns(ctx context.Context) ([]InterruptedRun, error) {
 	for rows.Next() {
 		var run InterruptedRun
 		if err := rows.Scan(&run.TaskID, &run.TurnID, &run.AttemptID, &run.WorkspaceID, &run.WorkspacePath,
-			&run.Permission, &run.TurnStatus, &run.PreFingerprint, &run.CancellationRequested); err != nil {
+			&run.Permission, &run.TurnStatus, &run.AttemptBackend, &run.AttemptOrdinal, &run.AttemptStatus,
+			&run.AttemptDecisionReason, &run.PreFingerprint, &run.CancellationRequested); err != nil {
 			return nil, err
 		}
 		runs = append(runs, run)
@@ -1886,7 +2053,7 @@ func (s *Store) RecoverInterrupted(ctx context.Context, run InterruptedRun, code
 	if run.AttemptID == "" {
 		return fmt.Errorf("taskstore: interrupted turn %s has no route attempt", run.TurnID)
 	}
-	return s.FailTurnClassified(ctx, run.TaskID, run.TurnID, run.AttemptID, code, agent.FailureDaemonInterrupted, message, postFingerprint, mutation, now)
+	return s.FailTurnClassified(ctx, run.TaskID, run.TurnID, run.AttemptID, code, agent.FailureDaemonInterrupted, message, postFingerprint, mutation, false, now)
 }
 
 func (s *Store) BeginWriteEpoch(ctx context.Context, workspaceID, taskID, turnID, owner string, now time.Time) (uint64, error) {
