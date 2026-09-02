@@ -18,17 +18,20 @@ import (
 )
 
 type Handler struct {
-	service *orchestrator.Service
-	mux     *http.ServeMux
-	token   string
+	service   *orchestrator.Service
+	mux       *http.ServeMux
+	token     string
+	dashboard *dashboardSessions
 }
 
 func NewHandler(service *orchestrator.Service, token string) *Handler {
 	if strings.TrimSpace(token) == "" {
 		panic("control API token must not be empty")
 	}
-	h := &Handler{service: service, mux: http.NewServeMux(), token: token}
+	h := &Handler{service: service, mux: http.NewServeMux(), token: token, dashboard: newDashboardSessions()}
 	h.mux.HandleFunc("GET /control/healthz", h.health)
+	h.mux.HandleFunc("POST /control/v1/dashboard-sessions", h.createDashboardSession)
+	h.mux.HandleFunc("GET /control/v1/dashboard-context", h.dashboardContext)
 	h.mux.HandleFunc("GET /control/v1/backends", h.backends)
 	h.mux.HandleFunc("GET /control/v1/approvals", h.listApprovals)
 	h.mux.HandleFunc("POST /control/v1/approvals/{approvalID}/decision", h.decideApproval)
@@ -124,8 +127,18 @@ func (h *Handler) continueTask(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set(AuthContractHeader, AuthContractValue)
-	if !authenticate(h.token, r) {
+	if strings.HasPrefix(r.URL.Path, "/control/ui") {
+		h.serveDashboard(w, r)
+		return
+	}
+	bearer := authenticate(h.token, r)
+	dashboard := h.authenticateDashboard(r)
+	if !bearer && !dashboard {
 		writeUnauthorized(w)
+		return
+	}
+	if dashboard && !bearer && r.Method != http.MethodGet && !validDashboardMutation(r) {
+		writeError(w, http.StatusForbidden, "dashboard_csrf_rejected", errors.New("dashboard mutation requires same-origin proof"))
 		return
 	}
 	h.mux.ServeHTTP(w, r)

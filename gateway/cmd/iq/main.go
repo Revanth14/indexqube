@@ -55,6 +55,8 @@ func main() {
 		runTasks(os.Args[2:])
 	case "ui":
 		runUI(os.Args[2:])
+	case "dashboard":
+		runDashboard(os.Args[2:])
 	case "approvals":
 		runApprovals(os.Args[2:])
 	case "approve":
@@ -562,6 +564,7 @@ func printHelp() {
     iq                   Start the daemon if needed and open the workspace UI
     iq TEXT              Run a durable read-only task on the first compatible backend
     iq ui                Open the attachable terminal UI
+    iq dashboard         Open the authenticated local dashboard
     iq task [flags] TEXT Create a durable agent task (--backend fake|codex|claude, --write, --pin)
     iq tasks             List durable tasks
     iq task status TASK  Inspect canonical task and latest-turn state

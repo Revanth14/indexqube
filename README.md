@@ -50,6 +50,7 @@ The operating rule is simple: **the agent is temporary; the task is not.**
 | Durable ordered Codex/Claude fallback with restart recovery | Shipped foundation |
 | Daemon-scoped authentication on every control endpoint and SSE stream | Shipped foundation |
 | Attachable `iq ui` terminal experience | Shipped foundation |
+| Authenticated workspace dashboard | Shipped foundation |
 | Release installer | Planned |
 
 The existing Claude/OpenAI-compatible local proxy remains available as an
@@ -111,6 +112,19 @@ backend selection without opening the UI:
 The former implicit Claude wrapper is now explicit as `iq claude`; existing
 scripts should use that spelling when they intend to launch Claude Code through
 the optional optimization proxy.
+
+For a browser view of the same canonical workspace state:
+
+```bash
+./bin/iq dashboard
+```
+
+The CLI mints a one-minute, single-use browser ticket and exchanges it for an
+HttpOnly, SameSite session scoped to the current daemon and workspace. The
+daemon bearer credential is never placed in the URL or exposed to JavaScript.
+Dashboard mutations require same-origin proof; restarting the daemon invalidates
+all browser sessions. Use `iq dashboard --no-open` to print the one-time local
+URL instead of launching a browser.
 
 Create a read-only task in the current Git workspace:
 
@@ -481,7 +495,7 @@ PLAN.md                            product gates and implementation order
 Work is currently focused on:
 
 1. broader Codex and Claude CLI compatibility fixtures and real-agent smokes;
-2. a zero-configuration bare `iq` entrypoint and authenticated local dashboard;
+2. persistence, retention, recovery, and diagnostics hardening;
 3. signed release packaging and real-repository alpha feedback.
 
 The acceptance gates and non-negotiable safety invariants live in

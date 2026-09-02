@@ -49,7 +49,7 @@ The original plan described a greenfield project. That is no longer accurate. Th
 | Claude task backend | Shipped foundation | Read-only and guarded workspace-write execution, private MCP permission routing, durable command/file approvals, normalized evidence, native-session continuation, lost-session recovery signals, handoff, supported-version protocol fixtures, and fail-closed probing work. |
 | Routing and handoff | Shipped foundation | Backend selection, durable task pins, canonical cross-backend handoff, fresh destination lineage, lost-session recovery, conservative failure classification, and restart-safe ordered fallback exist. |
 | Verification | Advanced foundation | Successful write turns persist verification runs/checks; strict configured recipes plus conservative Go, Node, Python, and Rust detection run with bounded output, timeouts, offline dependency controls, workspace-stability checks, and task-scoped security findings with explicit severity policy. |
-| User experience | Advanced foundation | Bare `iq` auto-starts the daemon and opens an attachable workspace TUI with plain-text tasks, deterministic backend detection, active-task selection, inline approvals, evidence, routing, and handoffs; the dashboard remains pending. |
+| User experience | Shipped foundation | Bare `iq` auto-starts the daemon and opens an attachable workspace TUI with plain-text tasks, deterministic backend detection, active-task selection, inline approvals, evidence, routing, and handoffs; `iq dashboard` exposes the same workspace through single-use browser authentication. |
 | Data plane | Advanced | Claude Messages and OpenAI Responses ingress, provider adapters, streaming, optimization, prompt-cache preservation, LSM/SQLite caches, telemetry, setup, audit, and benchmarking exist. |
 | Distributed coordination | Deferred | Redis is absent and is not required for the local product. Kubernetes assets apply to the gateway, not the canonical local task engine. |
 
@@ -221,7 +221,7 @@ Goal: make IndexQube feel like one persistent product rather than a collection o
   2. keep `iq ui` as an explicit TUI entrypoint;
   3. make bare `iq` auto-start the daemon and open the TUI;
   4. route `iq TEXT` as a durable read-only task using compatible Codex-first detection rather than the fake backend.
-- Build the local dashboard only after the TUI proves the API. Serve it from the loopback daemon with the same daemon-scoped authentication.
+- [x] Build the local dashboard after the TUI proves the API. Serve it from the loopback daemon using bearer-minted, single-use browser tickets, daemon-memory sessions, and same-origin mutation protection.
 - Treat the retired browser/extension surfaces as archived experiments, not active deliverables.
 
 Exit criteria:
@@ -268,7 +268,7 @@ Work in this order:
 8. **Done:** daemon-scoped control API authentication, owner-only credential storage, restart rotation, CLI injection, and legacy-daemon rejection.
 9. **Done:** Claude read-only/write execution, private permission MCP routing, durable approvals, supported-version protocol fixtures, fail-closed CLI probing, and opt-in real-agent smokes.
 10. **Done:** explicit handoff, durable task pinning, conservative failure classification, and deterministic restart-safe ordered fallback.
-11. **Done:** attachable `iq ui` with live canonical task/conversation, backend health, approval, evidence, route, and handoff views plus plain-text task input.
+11. **Done:** zero-config bare `iq`, attachable TUI, and authenticated local dashboard with live canonical task/conversation, backend health, approval, evidence, route, and handoff views.
 12. V1 hardening, packaging, and alpha feedback.
 
 Items 1–6 complete the single-agent product. Items 7–9 deliver the multi-agent promise. Items 10–12 make it trustworthy and usable.

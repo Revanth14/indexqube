@@ -45,6 +45,9 @@ func TestControlAPIRequiresAuthenticationOnEveryRoute(t *testing.T) {
 		path   string
 	}{
 		{http.MethodGet, "/control/healthz"},
+		{http.MethodPost, "/control/v1/dashboard-sessions"},
+		{http.MethodGet, "/control/v1/dashboard-context"},
+		{http.MethodGet, "/control/ui/"},
 		{http.MethodGet, "/control/v1/backends"},
 		{http.MethodGet, "/control/v1/approvals"},
 		{http.MethodPost, "/control/v1/approvals/approval/decision"},
@@ -95,6 +98,84 @@ func TestControlAPIRequiresAuthenticationOnEveryRoute(t *testing.T) {
 	}
 	if got := rec.Header().Get(AuthContractHeader); got != AuthContractValue {
 		t.Fatalf("authenticated health contract header=%q", got)
+	}
+}
+
+func TestDashboardTicketIsSingleUseAndBrowserMutationsRequireSameOriginProof(t *testing.T) {
+	handler, root := newControlTestHandler(t)
+	body, _ := json.Marshal(map[string]string{"workspace": root})
+	issue := authorizedControlRequest(http.MethodPost, "/control/v1/dashboard-sessions", bytes.NewReader(body))
+	issue.Host = "127.0.0.1:17374"
+	issued := httptest.NewRecorder()
+	handler.ServeHTTP(issued, issue)
+	if issued.Code != http.StatusCreated {
+		t.Fatalf("issue status=%d body=%s", issued.Code, issued.Body.String())
+	}
+	var ticketResult struct {
+		URL string `json:"url"`
+	}
+	if err := json.Unmarshal(issued.Body.Bytes(), &ticketResult); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(ticketResult.URL, controlTestToken) || !strings.Contains(ticketResult.URL, "ticket=") {
+		t.Fatalf("unsafe ticket URL=%q", ticketResult.URL)
+	}
+
+	exchange := httptest.NewRequest(http.MethodGet, ticketResult.URL, nil)
+	exchanged := httptest.NewRecorder()
+	handler.ServeHTTP(exchanged, exchange)
+	if exchanged.Code != http.StatusSeeOther || exchanged.Header().Get("Location") != "/control/ui/" {
+		t.Fatalf("exchange status=%d location=%q body=%s", exchanged.Code, exchanged.Header().Get("Location"), exchanged.Body.String())
+	}
+	var sessionCookie *http.Cookie
+	for _, cookie := range exchanged.Result().Cookies() {
+		if cookie.Name == dashboardCookieName {
+			sessionCookie = cookie
+		}
+	}
+	if sessionCookie == nil || !sessionCookie.HttpOnly || sessionCookie.SameSite != http.SameSiteStrictMode || sessionCookie.Value == controlTestToken {
+		t.Fatalf("cookie=%+v", sessionCookie)
+	}
+
+	replay := httptest.NewRequest(http.MethodGet, ticketResult.URL, nil)
+	replayed := httptest.NewRecorder()
+	handler.ServeHTTP(replayed, replay)
+	if replayed.Code != http.StatusUnauthorized {
+		t.Fatalf("ticket replay status=%d body=%s", replayed.Code, replayed.Body.String())
+	}
+
+	dashboard := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:17374/control/ui/", nil)
+	dashboard.AddCookie(sessionCookie)
+	dashboardPage := httptest.NewRecorder()
+	handler.ServeHTTP(dashboardPage, dashboard)
+	if dashboardPage.Code != http.StatusOK || !strings.Contains(dashboardPage.Body.String(), "IndexQube") ||
+		strings.Contains(dashboardPage.Body.String(), controlTestToken) || dashboardPage.Header().Get("Content-Security-Policy") == "" {
+		t.Fatalf("dashboard status=%d headers=%v body=%s", dashboardPage.Code, dashboardPage.Header(), dashboardPage.Body.String())
+	}
+
+	contextRequest := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:17374/control/v1/dashboard-context", nil)
+	contextRequest.AddCookie(sessionCookie)
+	contextResponse := httptest.NewRecorder()
+	handler.ServeHTTP(contextResponse, contextRequest)
+	if contextResponse.Code != http.StatusOK || !strings.Contains(contextResponse.Body.String(), root) {
+		t.Fatalf("context status=%d body=%s", contextResponse.Code, contextResponse.Body.String())
+	}
+
+	mutation := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:17374/control/v1/tasks", strings.NewReader(`{}`))
+	mutation.AddCookie(sessionCookie)
+	rejected := httptest.NewRecorder()
+	handler.ServeHTTP(rejected, mutation)
+	if rejected.Code != http.StatusForbidden || !strings.Contains(rejected.Body.String(), "dashboard_csrf_rejected") {
+		t.Fatalf("mutation status=%d body=%s", rejected.Code, rejected.Body.String())
+	}
+	mutation = httptest.NewRequest(http.MethodPost, "http://127.0.0.1:17374/control/v1/tasks", strings.NewReader(`{}`))
+	mutation.AddCookie(sessionCookie)
+	mutation.Header.Set(dashboardCSRFHeader, "1")
+	mutation.Header.Set("Origin", "http://127.0.0.1:17374")
+	acceptedAuth := httptest.NewRecorder()
+	handler.ServeHTTP(acceptedAuth, mutation)
+	if acceptedAuth.Code != http.StatusBadRequest || strings.Contains(acceptedAuth.Body.String(), "dashboard_csrf_rejected") {
+		t.Fatalf("same-origin mutation status=%d body=%s", acceptedAuth.Code, acceptedAuth.Body.String())
 	}
 }
 

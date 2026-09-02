@@ -105,6 +105,24 @@ if [[ "$(authenticated_control_status 'wrong-token')" != "401" ]]; then
   exit 1
 fi
 
+dashboard_url="$(INDEXQUBE_HOME="$state_dir" INDEXQUBE_CONTROL_URL="$control_url" \
+  "$iq_bin" dashboard --workspace "$workspace" --no-open)"
+dashboard_cookie_jar="$smoke_root/dashboard-cookies"
+if [[ "$(curl --silent --output /dev/null --cookie-jar "$dashboard_cookie_jar" --write-out '%{http_code}' "$dashboard_url")" != "303" ]]; then
+  printf 'dashboard ticket exchange failed\n' >&2
+  exit 1
+fi
+if [[ "$(curl --silent --output /dev/null --cookie "$dashboard_cookie_jar" --write-out '%{http_code}' "$control_url/control/ui/")" != "200" ]]; then
+  printf 'dashboard session could not read the UI\n' >&2
+  exit 1
+fi
+dashboard_context="$(curl --silent --cookie "$dashboard_cookie_jar" "$control_url/control/v1/dashboard-context")"
+python3 -c 'import json,os,sys; assert os.path.realpath(json.loads(sys.argv[1])["workspace"]) == os.path.realpath(sys.argv[2])' "$dashboard_context" "$workspace"
+if [[ "$(curl --silent --output /dev/null --write-out '%{http_code}' "$dashboard_url")" != "401" ]]; then
+  printf 'dashboard ticket was reusable\n' >&2
+  exit 1
+fi
+
 task_log="$smoke_root/task.log"
 INDEXQUBE_HOME="$state_dir" INDEXQUBE_CONTROL_URL="$control_url" \
   "$iq_bin" task --backend fake --workspace "$workspace" --write \
